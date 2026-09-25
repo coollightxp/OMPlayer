@@ -35,14 +35,41 @@ jobs:
       - name: Create Android project files
         run: flutter create . --platforms=android --project-name omplayer
 
+      - name: Debug Android config
+        run: |
+          echo "=== android/build.gradle ==="
+          cat android/build.gradle
+          echo ""
+          echo "=== android/settings.gradle ==="
+          cat android/settings.gradle
+          echo ""
+          echo "=== android/app/build.gradle (sdk lines) ==="
+          grep -n -E "compileSdk|minSdk|targetSdk|flutter" android/app/build.gradle
+
       - name: Fix Android build config
         run: |
-          # 固定 compileSdk 为 35，避免 flutter.compileSdkVersion 解析失败
+          # 1. 修复 app/build.gradle 中的 SDK 版本
           sed -i 's/compileSdk flutter.compileSdkVersion/compileSdk 35/g' android/app/build.gradle
           sed -i 's/minSdk flutter.minSdkVersion/minSdk 21/g' android/app/build.gradle
           sed -i 's/targetSdk flutter.targetSdkVersion/targetSdk 35/g' android/app/build.gradle
-          # 显示修复后的配置
-          cat android/app/build.gradle | grep -E "compileSdk|minSdk|targetSdk"
+
+          # 2. 在 android/build.gradle 中添加 ext.flutter 定义，供插件使用
+          cat > /tmp/flutter_ext.gradle << 'EOF'
+          ext.flutter = [
+              minSdkVersion   : 21,
+              targetSdkVersion: 35,
+              compileSdkVersion: 35
+          ]
+          EOF
+          # 在 build.gradle 开头插入 ext 定义
+          sed -i '1r /tmp/flutter_ext.gradle' android/build.gradle
+
+          # 3. 显示修复后的配置
+          echo "=== Fixed android/build.gradle ==="
+          head -20 android/build.gradle
+          echo ""
+          echo "=== Fixed SDK lines ==="
+          grep -n -E "compileSdk|minSdk|targetSdk" android/app/build.gradle
 
       - name: Install dependencies
         run: flutter pub get
@@ -110,12 +137,21 @@ jobs:
       - name: Create Windows project files
         run: flutter create . --platforms=windows --project-name omplayer
 
+      - name: Debug Windows CMake
+        run: |
+          echo "=== windows/CMakeLists.txt ==="
+          Get-Content windows/CMakeLists.txt | Select-Object -First 10
+
       - name: Fix Windows CMake generator
         run: |
           # 将 CMake 生成器从 VS 2019 改为 VS 2022
-          (Get-Content windows/CMakeLists.txt) -replace 'Visual Studio 16 2019', 'Visual Studio 17 2022' | Set-Content windows/CMakeLists.txt
-          # 显示修改后的生成器配置
-          Select-String -Path windows/CMakeLists.txt -Pattern "Visual Studio"
+          $cmakeFile = "windows/CMakeLists.txt"
+          $content = Get-Content $cmakeFile -Raw
+          $content = $content -replace 'Visual Studio 16 2019', 'Visual Studio 17 2022'
+          Set-Content -Path $cmakeFile -Value $content -NoNewline
+          # 验证修改
+          echo "=== After fix ==="
+          Get-Content $cmakeFile | Select-Object -First 10
 
       - name: Install dependencies
         run: flutter pub get
