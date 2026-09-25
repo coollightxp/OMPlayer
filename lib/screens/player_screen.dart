@@ -109,6 +109,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
             _onShortcut('settings'),
         const SingleActivator(LogicalKeyboardKey.keyR): () =>
             _onShortcut('record'),
+        // ←/→ 切换播放源，↑/↓ 切换频道
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
+            _onArrow('prevSource'),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
+            _onArrow('nextSource'),
+        const SingleActivator(LogicalKeyboardKey.arrowUp): () =>
+            _onArrow('prevChannel'),
+        const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
+            _onArrow('nextChannel'),
       },
       child: Focus(
         autofocus: true,
@@ -329,6 +338,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _toggleSettings();
       case 'record':
         _toggleRecording(context.read<PlayerController>());
+    }
+  }
+
+  /// 方向键：←/→ 切换播放源，↑/↓ 切换频道
+  /// 抽屉或设置打开时不响应，避免与列表滚动、输入框光标移动冲突
+  void _onArrow(String action) {
+    if (_settingsOpen || _leftDrawerOpen || _rightEpgOpen) return;
+    final controller = context.read<PlayerController>();
+    switch (action) {
+      case 'prevSource':
+        controller.prevSource();
+      case 'nextSource':
+        controller.nextSource();
+      case 'prevChannel':
+        controller.previousChannel();
+      case 'nextChannel':
+        controller.nextChannel();
     }
   }
 

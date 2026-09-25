@@ -187,6 +187,28 @@ class _BottomProgramPanelState extends State<BottomProgramPanel> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        // 上一个播放源（无更多源时禁用）
+        IconButton(
+          icon: const Icon(Icons.skip_previous, size: 24),
+          color: Colors.white,
+          disabledColor: Colors.white24,
+          onPressed: controller.hasPrevSource ? controller.prevSource : null,
+          tooltip: '上一个源',
+        ),
+        // 源序号
+        Text(
+          '源${controller.sourceIndex + 1}/${controller.sourceCount}',
+          style: const TextStyle(color: Colors.white54, fontSize: 11),
+        ),
+        // 下一个播放源（无更多源时禁用）
+        IconButton(
+          icon: const Icon(Icons.skip_next, size: 24),
+          color: Colors.white,
+          disabledColor: Colors.white24,
+          onPressed: controller.hasNextSource ? controller.nextSource : null,
+          tooltip: '下一个源',
+        ),
+        const SizedBox(width: 4),
         // 播放/暂停
         IconButton(
           icon: Icon(

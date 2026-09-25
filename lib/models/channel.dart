@@ -32,7 +32,8 @@ class Channel {
   final String id;
   final String name;
   final String logoUrl;
-  final String streamUrl;
+  /// 所有播放源地址（同名频道合并后可能有多个）
+  final List<String> streamUrls;
   final String categoryId;
   final bool isFavorite;
   /// EPG 频道标识（用于匹配 XMLTV 节目单）
@@ -42,11 +43,14 @@ class Channel {
   /// 分组标题（group-title）
   final String groupTitle;
 
+  /// 默认播放源（第一个）
+  String get streamUrl => streamUrls.first;
+
   const Channel({
     required this.id,
     required this.name,
     this.logoUrl = '',
-    required this.streamUrl,
+    required this.streamUrls,
     required this.categoryId,
     this.isFavorite = false,
     this.tvgId = '',
@@ -58,7 +62,7 @@ class Channel {
     String? id,
     String? name,
     String? logoUrl,
-    String? streamUrl,
+    List<String>? streamUrls,
     String? categoryId,
     bool? isFavorite,
     String? tvgId,
@@ -69,7 +73,7 @@ class Channel {
       id: id ?? this.id,
       name: name ?? this.name,
       logoUrl: logoUrl ?? this.logoUrl,
-      streamUrl: streamUrl ?? this.streamUrl,
+      streamUrls: streamUrls ?? this.streamUrls,
       categoryId: categoryId ?? this.categoryId,
       isFavorite: isFavorite ?? this.isFavorite,
       tvgId: tvgId ?? this.tvgId,

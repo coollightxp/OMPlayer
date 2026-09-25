@@ -1,5 +1,7 @@
+import 'dart:convert' show utf8;
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -201,7 +203,13 @@ class SourceManager {
         throw Exception('HTTP ${resp.statusCode}');
       }
 
-      _cachedEpg = XmltvEpgParser.parse(resp.body);
+      // 支持 .gz 压缩的 EPG（按 gzip 魔数 1f 8b 判断，不依赖扩展名）
+      final bytes = resp.bodyBytes;
+      final body =
+          (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b)
+              ? utf8.decode(GZipDecoder().decodeBytes(bytes))
+              : resp.body;
+      _cachedEpg = XmltvEpgParser.parse(body);
       _epgLoaded = true;
 
       final idx = _epgs.indexWhere((e) => e.id == source.id);

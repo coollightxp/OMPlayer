@@ -73,7 +73,7 @@ class PlaylistParser {
           channels.add(Channel(
             id: _genId(line),
             name: Uri.tryParse(line)?.pathSegments.lastOrNull ?? line,
-            streamUrl: line,
+            streamUrls: [line],
             categoryId: '未分类',
             groupTitle: '未分类',
           ));
@@ -109,7 +109,7 @@ class PlaylistParser {
       return Channel(
         id: _genId(url),
         name: name,
-        streamUrl: url,
+        streamUrls: [url],
         logoUrl: logo,
         categoryId: groupTitle,
         groupTitle: groupTitle,
@@ -155,7 +155,7 @@ class PlaylistParser {
       channels.add(Channel(
         id: _genId(url),
         name: name,
-        streamUrl: url,
+        streamUrls: [url],
         categoryId: group,
         groupTitle: group,
       ));
@@ -164,12 +164,27 @@ class PlaylistParser {
     return _groupChannels(channels);
   }
 
-  /// 按分类对频道分组
+  /// 按分类对频道分组（先合并同名频道为多个播放源）
   static List<ChannelCategory> _groupChannels(List<Channel> channels) {
-    final map = <String, List<Channel>>{};
+    // 同名频道（忽略大小写、空格、横线、括号差异）合并为一个频道的多个源
+    final mergedByKey = <String, Channel>{};
+    final order = <String>[];
     for (final ch in channels) {
-      final key = ch.groupTitle.isEmpty ? '未分类' : ch.groupTitle;
-      map.putIfAbsent(key, () => []).add(ch);
+      final key = _mergeKey(ch.name);
+      final existing = mergedByKey[key];
+      if (existing == null) {
+        mergedByKey[key] = ch;
+        order.add(key);
+      } else if (!existing.streamUrls.contains(ch.streamUrl)) {
+        existing.streamUrls.add(ch.streamUrl);
+      }
+    }
+
+    final map = <String, List<Channel>>{};
+    for (final key in order) {
+      final ch = mergedByKey[key]!;
+      final gk = ch.groupTitle.isEmpty ? '未分类' : ch.groupTitle;
+      map.putIfAbsent(gk, () => []).add(ch);
     }
 
     return map.entries.map((e) {
@@ -179,6 +194,13 @@ class PlaylistParser {
         channels: e.value,
       );
     }).toList();
+  }
+
+  /// 合并键：归一化频道名，"CCTV-1 综合"/"cctv1综合" 视为同一频道
+  static String _mergeKey(String name) {
+    return name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[\s\-_（）()\[\]]'), '');
   }
 
   static String _genId(String url) {

@@ -45,6 +45,9 @@ dependencies:
   # XML 解析（XMLTV 格式 EPG）
   xml: ^6.5.0
 
+  # gzip 解压（.gz 压缩的 EPG 文件）
+  archive: ^4.0.2
+
   # 本地持久化（保存播放列表/EPG 源配置）
   shared_preferences: ^2.2.3
 

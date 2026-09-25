@@ -155,9 +155,61 @@ class PlayerController extends ChangeNotifier {
 
   // ==================== 播放控制 ====================
 
-  /// 播放指定频道
+  /// 当前播放源索引（同名频道合并后有多个源）
+  int _sourceIndex = 0;
+  int get sourceIndex => _sourceIndex;
+  int get sourceCount => _currentChannel?.streamUrls.length ?? 0;
+  bool get hasPrevSource => _sourceIndex > 0;
+  bool get hasNextSource => _sourceIndex < sourceCount - 1;
+
+  /// 播放指定频道（从第一个源开始，失败自动尝试下一个源）
   Future<void> playChannel(Channel channel) async {
     _currentChannel = channel;
+    _sourceIndex = 0;
+    await _playCurrentSource();
+  }
+
+  /// 切换到上一个播放源
+  Future<void> prevSource() async {
+    if (!hasPrevSource) return;
+    _sourceIndex--;
+    await _playCurrentSource();
+  }
+
+  /// 切换到下一个播放源
+  Future<void> nextSource() async {
+    if (!hasNextSource) return;
+    _sourceIndex++;
+    await _playCurrentSource();
+  }
+
+  /// 上一个频道
+  Future<void> previousChannel() => playAdjacentChannel(-1);
+
+  /// 下一个频道
+  Future<void> nextChannel() => playAdjacentChannel(1);
+
+  /// 按偏移量切换频道（跨分类、循环）
+  Future<void> playAdjacentChannel(int delta) async {
+    final all = [for (final cat in _categories) ...cat.channels];
+    if (all.isEmpty) return;
+    if (_currentChannel == null) {
+      await playChannel(all.first);
+      return;
+    }
+    final idx = all.indexWhere((c) => c.id == _currentChannel!.id);
+    if (idx < 0) {
+      await playChannel(all.first);
+      return;
+    }
+    final next = (idx + delta + all.length) % all.length;
+    await playChannel(all[next]);
+  }
+
+  /// 播放当前频道的当前源；初始化失败时自动尝试下一个源
+  Future<void> _playCurrentSource() async {
+    final channel = _currentChannel;
+    if (channel == null) return;
     _state = PlayerState.loading;
     notifyListeners();
 
@@ -165,7 +217,7 @@ class PlayerController extends ChangeNotifier {
 
     try {
       _videoController = VideoPlayerController.networkUrl(
-        Uri.parse(channel.streamUrl),
+        Uri.parse(channel.streamUrls[_sourceIndex]),
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
       );
 
@@ -179,7 +231,13 @@ class PlayerController extends ChangeNotifier {
 
       _state = PlayerState.playing;
     } catch (e) {
-      debugPrint('播放失败: $e');
+      debugPrint('源 ${_sourceIndex + 1}/$sourceCount 播放失败: $e');
+      // 自动尝试下一个源
+      if (hasNextSource) {
+        _sourceIndex++;
+        await _playCurrentSource();
+        return;
+      }
       _state = PlayerState.error;
     }
     notifyListeners();
@@ -188,6 +246,11 @@ class PlayerController extends ChangeNotifier {
   void _onVideoListener() {
     if (_videoController == null) return;
     if (_videoController!.value.hasError) {
+      // 播放中途出错且有备用源时自动切换
+      if (hasNextSource) {
+        nextSource();
+        return;
+      }
       _state = PlayerState.error;
       notifyListeners();
     }
@@ -338,7 +401,7 @@ class PlayerController extends ChangeNotifier {
     if (_currentChannel == null || !isDesktop) return false;
     try {
       final ok = await captureService.startRecording(
-        _currentChannel!.streamUrl,
+        _currentChannel!.streamUrls[_sourceIndex],
         _currentChannel!.name,
       );
       notifyListeners();
