@@ -170,7 +170,9 @@ class PlayerController extends ChangeNotifier {
       );
 
       _videoController!.addListener(_onVideoListener);
-      await _videoController!.initialize();
+      // 加超时：流地址失效或后端不支持时显示"播放失败"，避免永远转圈
+      await _videoController!.initialize()
+          .timeout(const Duration(seconds: 15));
       await _videoController!.setLooping(false);
       await _videoController!.play();
       await WakelockPlus.enable();

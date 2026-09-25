@@ -1,7 +1,7 @@
 name: omplayer
 description: A cross-platform Flutter live streaming media player.
 publish_to: 'none'
-version: 1.0.1+2
+version: 1.0.3+4
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -17,6 +17,9 @@ dependencies:
   video_player_android: ^2.4.16
   video_player_avfoundation: ^2.6.1
   video_player_web: ^2.3.1
+
+  # Windows/Linux 视频播放后端（video_player 官方不支持桌面，fvp 基于 MDK 提供实现）
+  fvp: ^0.38.1
 
   # 状态管理
   provider: ^6.1.2

@@ -130,6 +130,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 onTogglePlayPause: controller.togglePlayPause,
               ),
 
+              // 顶部栏：未播放时常驻（保证设置入口可达），播放时随底部面板一起显隐
+              // 注意：必须放在抽屉/面板之前，否则会盖住它们的头部按钮
+              if (_bottomPanelVisible ||
+                  controller.state != PlayerState.playing)
+                _buildTopBar(),
+
               // 左侧频道抽屉
               LeftChannelDrawer(
                 isOpen: _leftDrawerOpen,
@@ -173,11 +179,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
               // 边缘打开抽屉的提示条
               if (!_leftDrawerOpen && !_rightEpgOpen)
                 _buildEdgeHints(),
-
-              // 顶部栏：未播放时常驻（保证设置入口可达），播放时随底部面板一起显隐
-              if (_bottomPanelVisible ||
-                  controller.state != PlayerState.playing)
-                _buildTopBar(),
             ],
           );
         },
