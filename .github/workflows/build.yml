@@ -28,48 +28,12 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.44.8'
           channel: 'stable'
           cache: true
 
       - name: Create Android project files
         run: flutter create . --platforms=android --project-name omplayer
-
-      - name: Debug Android config
-        run: |
-          echo "=== android/build.gradle ==="
-          cat android/build.gradle
-          echo ""
-          echo "=== android/settings.gradle ==="
-          cat android/settings.gradle
-          echo ""
-          echo "=== android/app/build.gradle (sdk lines) ==="
-          grep -n -E "compileSdk|minSdk|targetSdk|flutter" android/app/build.gradle
-
-      - name: Fix Android build config
-        run: |
-          # 1. 修复 app/build.gradle 中的 SDK 版本
-          sed -i 's/compileSdk flutter.compileSdkVersion/compileSdk 35/g' android/app/build.gradle
-          sed -i 's/minSdk flutter.minSdkVersion/minSdk 21/g' android/app/build.gradle
-          sed -i 's/targetSdk flutter.targetSdkVersion/targetSdk 35/g' android/app/build.gradle
-
-          # 2. 在 android/build.gradle 中添加 ext.flutter 定义，供插件使用
-          cat > /tmp/flutter_ext.gradle << 'EOF'
-          ext.flutter = [
-              minSdkVersion   : 21,
-              targetSdkVersion: 35,
-              compileSdkVersion: 35
-          ]
-          EOF
-          # 在 build.gradle 开头插入 ext 定义
-          sed -i '1r /tmp/flutter_ext.gradle' android/build.gradle
-
-          # 3. 显示修复后的配置
-          echo "=== Fixed android/build.gradle ==="
-          head -20 android/build.gradle
-          echo ""
-          echo "=== Fixed SDK lines ==="
-          grep -n -E "compileSdk|minSdk|targetSdk" android/app/build.gradle
 
       - name: Install dependencies
         run: flutter pub get
@@ -100,7 +64,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.44.8'
           channel: 'stable'
           cache: true
 
@@ -122,7 +86,7 @@ jobs:
   # ==================== Windows Desktop ====================
   build-windows:
     name: Build Windows
-    runs-on: windows-2025-vs2026
+    runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -130,42 +94,18 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.44.8'
           channel: 'stable'
           cache: true
 
       - name: Create Windows project files
         run: flutter create . --platforms=windows --project-name omplayer
 
-      - name: Debug Windows CMake
-        run: |
-          echo "=== windows/CMakeLists.txt ==="
-          Get-Content windows/CMakeLists.txt | Select-Object -First 10
-
-      - name: Fix Windows CMake generator
-        run: |
-          # 将 CMake 生成器从 VS 2019 改为 VS 2022
-          $cmakeFile = "windows/CMakeLists.txt"
-          $content = Get-Content $cmakeFile -Raw
-          $content = $content -replace 'Visual Studio 16 2019', 'Visual Studio 17 2022'
-          Set-Content -Path $cmakeFile -Value $content -NoNewline
-          # 验证修改
-          echo "=== After fix ==="
-          Get-Content $cmakeFile | Select-Object -First 10
-
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Enable Windows desktop
-        run: flutter config --enable-windows-desktop
-
       - name: Build Windows
-        env:
-          CMAKE_GENERATOR: "Visual Studio 17 2022"
-        run: |
-          # 清理可能存在的旧构建缓存
-          if (Test-Path build) { Remove-Item -Recurse -Force build }
-          flutter build windows --release
+        run: flutter build windows --release
 
       - name: Zip Windows build
         run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath OMPlayer-windows.zip
@@ -193,7 +133,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.44.8'
           channel: 'stable'
           cache: true
 
@@ -202,9 +142,6 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
-
-      - name: Enable macOS desktop
-        run: flutter config --enable-macos-desktop
 
       - name: Build macOS
         run: flutter build macos --release
