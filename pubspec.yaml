@@ -33,9 +33,6 @@ dependencies:
   # 日期时间格式化
   intl: ^0.19.0
 
-  # 设备信息/平台判断
-  device_info_plus: ^10.1.0
-
   # 网络请求（拉取播放列表/EPG）
   http: ^1.2.1
 
