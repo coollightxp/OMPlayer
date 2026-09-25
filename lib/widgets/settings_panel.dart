@@ -153,13 +153,14 @@ class _PlaylistTabState extends State<_PlaylistTab> {
   }
 
   Future<void> _pickLocalFile() async {
-    final result = await FilePicker.platform.pickFiles(
+    // file_picker 12+ 新 API：FilePicker.pickFile 直接返回 PlatformFile?
+    final file = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: ['m3u', 'm3u8', 'txt'],
     );
-    if (result != null && result.files.single.path != null) {
+    if (file?.path != null) {
       setState(() {
-        _urlController.text = result.files.single.path!;
+        _urlController.text = file!.path!;
         _type = PlaylistSourceType.local;
       });
     }
