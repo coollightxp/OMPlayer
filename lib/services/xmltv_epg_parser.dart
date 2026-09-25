@@ -3,19 +3,27 @@ import 'package:xml/xml.dart';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 
+/// XMLTV 解析结果：节目表 + 频道 id 到显示名的映射
+typedef XmltvResult = ({
+  Map<String, List<EpgProgram>> programs,
+  Map<String, String> channelNames,
+});
+
 /// XMLTV 格式 EPG 解析器
 /// XMLTV 是 EPG 数据的标准格式，XML 结构
 class XmltvEpgParser {
-  /// 解析 XMLTV 内容，返回频道ID -> 节目列表的映射
-  static Map<String, List<EpgProgram>> parse(String xmlContent) {
+  /// 解析 XMLTV 内容，返回频道ID -> 节目列表的映射 + 频道ID -> 显示名
+  static XmltvResult parse(String xmlContent) {
     final result = <String, List<EpgProgram>>{};
+    final channelNames = <String, String>{};
     try {
       final document = XmlDocument.parse(xmlContent);
       final tvElement = document.findElements('tv').firstOrNull;
-      if (tvElement == null) return result;
+      if (tvElement == null) {
+        return (programs: result, channelNames: channelNames);
+      }
 
       // 先建立频道 id -> 显示名 的映射
-      final channelNames = <String, String>{};
       for (final ch in tvElement.findElements('channel')) {
         final id = ch.getAttribute('id') ?? '';
         final displayName =
@@ -56,34 +64,48 @@ class XmltvEpgParser {
     } catch (e) {
       debugPrintEpg('解析 XMLTV 失败: $e');
     }
-    return result;
+    return (programs: result, channelNames: channelNames);
   }
 
   /// 根据频道信息查找匹配的 EPG 节目列表
-  /// 优先按 tvgId 匹配，其次按 tvgName/频道名匹配
+  /// 优先按 tvgId 匹配，其次按频道名称匹配 EPG 的 display-name
   static List<EpgProgram> findProgramsForChannel(
     Channel channel,
     Map<String, List<EpgProgram>> epgData,
+    Map<String, String> channelNames,
   ) {
     // 1. 按 tvg-id 精确匹配
     if (channel.tvgId.isNotEmpty && epgData.containsKey(channel.tvgId)) {
       return epgData[channel.tvgId]!;
     }
 
-    // 2. 按 tvg-name 匹配（不区分大小写）
-    if (channel.tvgName.isNotEmpty) {
-      for (final entry in epgData.entries) {
-        // 这里 entry.key 是 channel id，需要通过 channelNames 映射
-        // 简化处理：遍历所有节目找标题匹配的
+    // 归一化：忽略大小写、空格、横线、括号差异
+    String norm(String s) =>
+        s.toLowerCase().replaceAll(RegExp(r'[\s\-_（）()\[\].]'), '');
+
+    // 候选名称：tvg-name + 频道显示名
+    final candidates = <String>[
+      if (channel.tvgName.isNotEmpty) norm(channel.tvgName),
+      norm(channel.name),
+    ]..removeWhere((e) => e.isEmpty);
+
+    // 2. 按名称精确匹配（EPG display-name 或 channel id）
+    for (final entry in epgData.entries) {
+      final dn = norm(channelNames[entry.key] ?? '');
+      final id = norm(entry.key);
+      for (final c in candidates) {
+        if (dn == c || id == c) return entry.value;
       }
     }
 
-    // 3. 模糊匹配：遍历所有频道 id 和节目，找名称包含关系
-    final lowerName = channel.name.toLowerCase();
+    // 3. 名称包含模糊匹配（只对 display-name，且双方长度 ≥3，
+    //    避免 "cctv1" 错误命中 "cctv13"）
     for (final entry in epgData.entries) {
-      final key = entry.key.toLowerCase();
-      if (key.contains(lowerName) || lowerName.contains(key)) {
-        return entry.value;
+      final dn = norm(channelNames[entry.key] ?? '');
+      if (dn.length < 3) continue;
+      for (final c in candidates) {
+        if (c.length < 3) continue;
+        if (dn.contains(c) || c.contains(dn)) return entry.value;
       }
     }
 

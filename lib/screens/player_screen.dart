@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/player_controller.dart';
+import '../services/window_drag.dart';
 import '../widgets/bottom_program_panel.dart';
 import '../widgets/gesture_indicator_overlay.dart';
 import '../widgets/left_channel_drawer.dart';
@@ -53,6 +56,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   PlayerController? _controllerRef;
   PlayerState _prevState = PlayerState.idle;
 
+  // 鼠标自动隐藏（播放中 3 秒无动作隐藏）
+  Timer? _cursorHideTimer;
+  bool _cursorHidden = false;
+
   @override
   void initState() {
     super.initState();
@@ -83,11 +90,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _lastInteraction = DateTime.now();
       });
       _scheduleAutoHide();
+      _pokeCursor();
     }
+  }
+
+  /// 鼠标活动：恢复显示并重置 3 秒隐藏计时（仅播放中计时）
+  void _pokeCursor() {
+    if (!mounted) return;
+    if (_cursorHidden) setState(() => _cursorHidden = false);
+    _cursorHideTimer?.cancel();
+    final controller = context.read<PlayerController>();
+    if (!controller.isPlaying) return;
+    _cursorHideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted &&
+          controller.isPlaying &&
+          !_settingsOpen &&
+          !_leftDrawerOpen &&
+          !_rightEpgOpen) {
+        setState(() => _cursorHidden = true);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _cursorHideTimer?.cancel();
     _controllerRef?.removeListener(_onControllerChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
@@ -123,7 +150,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         autofocus: true,
         child: Scaffold(
       backgroundColor: Colors.black,
-      body: Consumer<PlayerController>(
+  body: MouseRegion(
+    // 播放中 3 秒无动作隐藏鼠标
+    cursor: _cursorHidden ? SystemMouseCursors.none : MouseCursor.defer,
+    onHover: (_) => _pokeCursor(),
+    child: Consumer<PlayerController>(
         builder: (context, controller, _) {
           return Stack(
             children: [
@@ -192,6 +223,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           );
         },
       ),
+    ),
         ),
       ),
     );
@@ -241,13 +273,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 },
               ),
             ),
-            // 中间：点击切换面板显示，双击播放暂停（桌面端双击切换全屏）
+            // 中间：点击切换面板显示，双击播放暂停（桌面端双击切换全屏，按住左键拖动窗口）
             Expanded(
               child: GestureDetector(
                 onTap: _toggleBottomPanel,
                 onDoubleTap: controller.isDesktop
                     ? controller.toggleFullscreen
                     : controller.togglePlayPause,
+                // 桌面端：按住左键拖动可移动窗口（快速点击仍是 tap，不受影响）
+                onPanStart: controller.isDesktop
+                    ? (_) => startWindowDrag()
+                    : null,
               ),
             ),
             // 右侧：音量调节 + 右边缘滑出 EPG

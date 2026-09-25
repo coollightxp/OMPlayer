@@ -28,6 +28,8 @@ class SourceManager {
   // 缓存解析后的数据
   List<ChannelCategory> _cachedChannels = [];
   Map<String, List<EpgProgram>> _cachedEpg = {};
+  /// EPG 频道 id -> 显示名映射（用于按名称匹配节目单）
+  Map<String, String> _cachedEpgChannelNames = {};
   bool _channelsLoaded = false;
   bool _epgLoaded = false;
 
@@ -209,7 +211,9 @@ class SourceManager {
           (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b)
               ? utf8.decode(GZipDecoder().decodeBytes(bytes))
               : utf8.decode(bytes);
-      _cachedEpg = XmltvEpgParser.parse(body);
+      final parsed = XmltvEpgParser.parse(body);
+      _cachedEpg = parsed.programs;
+      _cachedEpgChannelNames = parsed.channelNames;
       _epgLoaded = true;
 
       final idx = _epgs.indexWhere((e) => e.id == source.id);
@@ -227,6 +231,7 @@ class SourceManager {
 
   /// 根据频道获取 EPG 节目列表
   List<EpgProgram> getProgramsForChannel(Channel channel) {
-    return XmltvEpgParser.findProgramsForChannel(channel, _cachedEpg);
+    return XmltvEpgParser.findProgramsForChannel(
+        channel, _cachedEpg, _cachedEpgChannelNames);
   }
 }
