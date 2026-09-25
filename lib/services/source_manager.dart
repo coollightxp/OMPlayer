@@ -140,7 +140,7 @@ class SourceManager {
         if (resp.statusCode != 200) {
           throw Exception('HTTP ${resp.statusCode}');
         }
-        content = resp.body;
+        content = utf8.decode(resp.bodyBytes);
       }
 
       final format = PlaylistParser.detectFormat(content, source.url);
@@ -208,7 +208,7 @@ class SourceManager {
       final body =
           (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b)
               ? utf8.decode(GZipDecoder().decodeBytes(bytes))
-              : resp.body;
+              : utf8.decode(bytes);
       _cachedEpg = XmltvEpgParser.parse(body);
       _epgLoaded = true;
 
