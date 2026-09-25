@@ -35,6 +35,15 @@ jobs:
       - name: Create Android project files
         run: flutter create . --platforms=android --project-name omplayer
 
+      - name: Fix Android build config
+        run: |
+          # 固定 compileSdk 为 35，避免 flutter.compileSdkVersion 解析失败
+          sed -i 's/compileSdk flutter.compileSdkVersion/compileSdk 35/g' android/app/build.gradle
+          sed -i 's/minSdk flutter.minSdkVersion/minSdk 21/g' android/app/build.gradle
+          sed -i 's/targetSdk flutter.targetSdkVersion/targetSdk 35/g' android/app/build.gradle
+          # 显示修复后的配置
+          cat android/app/build.gradle | grep -E "compileSdk|minSdk|targetSdk"
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -100,6 +109,13 @@ jobs:
 
       - name: Create Windows project files
         run: flutter create . --platforms=windows --project-name omplayer
+
+      - name: Fix Windows CMake generator
+        run: |
+          # 将 CMake 生成器从 VS 2019 改为 VS 2022
+          (Get-Content windows/CMakeLists.txt) -replace 'Visual Studio 16 2019', 'Visual Studio 17 2022' | Set-Content windows/CMakeLists.txt
+          # 显示修改后的生成器配置
+          Select-String -Path windows/CMakeLists.txt -Pattern "Visual Studio"
 
       - name: Install dependencies
         run: flutter pub get
