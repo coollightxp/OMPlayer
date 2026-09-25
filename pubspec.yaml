@@ -21,8 +21,8 @@ dependencies:
   # 状态管理
   provider: ^6.1.2
 
-  # 屏幕亮度控制 (iOS/Android/Windows)
-  screen_brightness: ^1.0.1
+  # 屏幕亮度控制（Android/iOS/macOS/Windows，2.x 使用 instance API）
+  screen_brightness: ^2.1.11
 
   # 音量控制（多平台，3.x 使用 VolumeController.instance 单例 API）
   volume_controller: ^3.7.1

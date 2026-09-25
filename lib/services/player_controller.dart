@@ -110,7 +110,7 @@ class PlayerController extends ChangeNotifier {
   /// 初始化系统音量和亮度
   Future<void> _initSystemValues() async {
     try {
-      _brightness = await ScreenBrightness().current;
+      _brightness = await ScreenBrightness.instance.application;
     } catch (_) {
       _brightness = _settings.defaultBrightness;
     }
@@ -220,7 +220,8 @@ class PlayerController extends ChangeNotifier {
   Future<void> setBrightness(double value) async {
     _brightness = value.clamp(0.0, 1.0);
     try {
-      await ScreenBrightness().setScreenBrightness(_brightness);
+      await ScreenBrightness.instance
+          .setApplicationScreenBrightness(_brightness);
     } catch (_) {}
     notifyListeners();
   }
