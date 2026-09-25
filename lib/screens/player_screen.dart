@@ -49,6 +49,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // 自动隐藏定时器
   DateTime? _lastInteraction;
 
+  // 控制器监听（用于播放开始时自动弹出底部面板）
+  PlayerController? _controllerRef;
+  PlayerState _prevState = PlayerState.idle;
+
   @override
   void initState() {
     super.initState();
@@ -57,19 +61,54 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final c = context.read<PlayerController>();
+    if (_controllerRef != c) {
+      _controllerRef?.removeListener(_onControllerChanged);
+      _controllerRef = c..addListener(_onControllerChanged);
+    }
+  }
+
+  /// 频道开始播放时自动显示底部节目信息面板（随后按设置自动隐藏）
+  void _onControllerChanged() {
+    final c = _controllerRef;
+    if (c == null || !mounted) return;
+    final becamePlaying =
+        c.state == PlayerState.playing && _prevState != PlayerState.playing;
+    _prevState = c.state;
+    if (becamePlaying && c.currentChannel != null) {
+      setState(() {
+        _bottomPanelVisible = true;
+        _lastInteraction = DateTime.now();
+      });
+      _scheduleAutoHide();
+    }
+  }
+
+  @override
   void dispose() {
+    _controllerRef?.removeListener(_onControllerChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return CallbackShortcuts(
-      // 桌面端全屏时按 ESC 退出全屏
-      bindings: {
+    return CallbackShortcuts(bindings: {
+        // 桌面端全屏时按 ESC 退出全屏
         const SingleActivator(LogicalKeyboardKey.escape): () {
           context.read<PlayerController>().exitFullscreenIfNeeded();
         },
+        // C 频道列表 / E 节目单 / S 设置 / R 录制
+        const SingleActivator(LogicalKeyboardKey.keyC): () =>
+            _onShortcut('channels'),
+        const SingleActivator(LogicalKeyboardKey.keyE): () =>
+            _onShortcut('epg'),
+        const SingleActivator(LogicalKeyboardKey.keyS): () =>
+            _onShortcut('settings'),
+        const SingleActivator(LogicalKeyboardKey.keyR): () =>
+            _onShortcut('record'),
       },
       child: Focus(
         autofocus: true,
@@ -269,6 +308,55 @@ class _PlayerScreenState extends State<PlayerScreen> {
     setState(() => _settingsOpen = !_settingsOpen);
   }
 
+  /// 桌面端快捷键处理
+  /// C 频道列表 / E 节目单 / S 设置 / R 录制
+  void _onShortcut(String action) {
+    // 设置面板打开时可能在输入框打字，除 S 外不响应字母快捷键
+    if (_settingsOpen && action != 'settings') return;
+    switch (action) {
+      case 'channels':
+        setState(() {
+          _leftDrawerOpen = !_leftDrawerOpen;
+          if (_leftDrawerOpen) _rightEpgOpen = false;
+        });
+      case 'epg':
+        setState(() {
+          _rightEpgOpen = !_rightEpgOpen;
+          if (_rightEpgOpen) _leftDrawerOpen = false;
+        });
+      case 'settings':
+        _toggleSettings();
+      case 'record':
+        _toggleRecording(context.read<PlayerController>());
+    }
+  }
+
+  /// 开始/停止录制（顶栏按钮与 R 快捷键共用）
+  Future<void> _toggleRecording(PlayerController controller) async {
+    if (!controller.isDesktop) return;
+    if (controller.isRecording) {
+      final path = await controller.stopRecording();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('录制已停止，保存至: ${path ?? "未知"}'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } else {
+      final ok = await controller.startRecording();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(ok ? '开始录制...' : '录制失败，请确保已安装 ffmpeg'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
   void _scheduleAutoHide() {
     Future.delayed(Duration(
       milliseconds: context.read<PlayerController>().settings.autoHideDelay,
@@ -383,32 +471,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 ? Colors.redAccent
                                 : Colors.white,
                           ),
-                          onPressed: () async {
-                            if (controller.isRecording) {
-                              final path = await controller.stopRecording();
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                        '录制已停止，保存至: ${path ?? "未知"}'),
-                                    duration: const Duration(seconds: 3),
-                                  ),
-                                );
-                              }
-                            } else {
-                              final ok = await controller.startRecording();
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(ok
-                                        ? '开始录制...'
-                                        : '录制失败，请确保已安装 ffmpeg'),
-                                    duration: const Duration(seconds: 3),
-                                  ),
-                                );
-                              }
-                            }
-                          },
+                          onPressed: () => _toggleRecording(controller),
                           tooltip: controller.isRecording ? '停止录制' : '录制',
                         ),
                         const SizedBox(width: 8),

@@ -134,6 +134,31 @@ class _EpgProgramTile extends StatelessWidget {
     final isPast = program.isPast;
     final canReserve = !isPast;
 
+    // 单击节目条目：找到对应频道并播放，底部信息面板随之同步
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => _playProgramChannel(context),
+        child: _buildCard(context, isNow, isPast, canReserve),
+      ),
+    );
+  }
+
+  void _playProgramChannel(BuildContext context) {
+    final controller = context.read<PlayerController>();
+    final channel = controller.findChannelForProgram(program);
+    if (channel != null) {
+      controller.playChannel(channel);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('未找到该节目对应的频道')),
+      );
+    }
+  }
+
+  Widget _buildCard(
+      BuildContext context, bool isNow, bool isPast, bool canReserve) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       padding: const EdgeInsets.all(12),

@@ -306,6 +306,25 @@ class PlayerController extends ChangeNotifier {
     return result;
   }
 
+  /// 根据 EPG 节目反查对应频道（tvgId 精确匹配，其次名称模糊匹配）
+  Channel? findChannelForProgram(EpgProgram program) {
+    for (final cat in _categories) {
+      for (final ch in cat.channels) {
+        if (ch.tvgId.isNotEmpty && ch.tvgId == program.channelId) return ch;
+      }
+    }
+    final lowerId = program.channelId.toLowerCase();
+    for (final cat in _categories) {
+      for (final ch in cat.channels) {
+        if (ch.tvgName.isNotEmpty &&
+            ch.tvgName.toLowerCase() == lowerId) return ch;
+        final name = ch.name.toLowerCase();
+        if (name.contains(lowerId) || lowerId.contains(name)) return ch;
+      }
+    }
+    return null;
+  }
+
   /// 检查节目是否已预约
   bool isProgramReserved(EpgProgram program) {
     return reservationManager.isReserved(program.channelId, program.startTime);
@@ -344,7 +363,12 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> addPlaylist(PlaylistSource source) async {
     await sourceManager.addPlaylist(source);
-    notifyListeners();
+    // 首个播放列表自动选中并加载频道，让左侧列表立即可读
+    if (sourceManager.currentPlaylistId == null) {
+      await selectPlaylist(source.id);
+    } else {
+      notifyListeners();
+    }
   }
 
   Future<void> removePlaylist(String id) async {
@@ -367,7 +391,12 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> addEpg(EpgSource source) async {
     await sourceManager.addEpg(source);
-    notifyListeners();
+    // 首个 EPG 源自动选中并加载节目单
+    if (sourceManager.currentEpgId == null) {
+      await selectEpg(source.id);
+    } else {
+      notifyListeners();
+    }
   }
 
   Future<void> removeEpg(String id) async {
