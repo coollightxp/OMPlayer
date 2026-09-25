@@ -160,7 +160,12 @@ jobs:
         run: flutter config --enable-windows-desktop
 
       - name: Build Windows
-        run: flutter build windows --release
+        env:
+          CMAKE_GENERATOR: "Visual Studio 17 2022"
+        run: |
+          # 清理可能存在的旧构建缓存
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
+          flutter build windows --release
 
       - name: Zip Windows build
         run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath OMPlayer-windows.zip
