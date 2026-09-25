@@ -18,6 +18,7 @@ import '../widgets/video_player_widget.dart';
 /// - 左边缘右滑：打开频道抽屉
 /// - 右边缘左滑：打开 EPG 面板
 /// - 点击中间：显示/隐藏底部控制栏
+/// - 双击中间：移动端播放/暂停，桌面端切换全屏
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
 
@@ -63,7 +64,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return CallbackShortcuts(
+      // 桌面端全屏时按 ESC 退出全屏
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          context.read<PlayerController>().exitFullscreenIfNeeded();
+        },
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
       backgroundColor: Colors.black,
       body: Consumer<PlayerController>(
         builder: (context, controller, _) {
@@ -78,7 +88,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
               // 底部面板
               BottomProgramPanel(
                 isVisible: _bottomPanelVisible,
-                onToggleSettings: _toggleSettings,
                 onTogglePlayPause: controller.togglePlayPause,
               ),
 
@@ -126,12 +135,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
               if (!_leftDrawerOpen && !_rightEpgOpen)
                 _buildEdgeHints(),
 
-              // 顶部返回按钮（仅当面板显示时）
-              if (_bottomPanelVisible)
+              // 顶部栏：未播放时常驻（保证设置入口可达），播放时随底部面板一起显隐
+              if (_bottomPanelVisible ||
+                  controller.state != PlayerState.playing)
                 _buildTopBar(),
             ],
           );
         },
+      ),
+        ),
       ),
     );
   }
@@ -180,11 +192,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 },
               ),
             ),
-            // 中间：点击切换面板显示，双击播放暂停
+            // 中间：点击切换面板显示，双击播放暂停（桌面端双击切换全屏）
             Expanded(
               child: GestureDetector(
                 onTap: _toggleBottomPanel,
-                onDoubleTap: controller.togglePlayPause,
+                onDoubleTap: controller.isDesktop
+                    ? controller.toggleFullscreen
+                    : controller.togglePlayPause,
               ),
             ),
             // 右侧：音量调节 + 右边缘滑出 EPG
@@ -404,6 +418,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         onPressed: () =>
                             setState(() => _rightEpgOpen = true),
                         tooltip: '节目单',
+                      ),
+                      // 设置按钮（挪到顶栏，未播放时也可打开）
+                      IconButton(
+                        icon: const Icon(Icons.settings, color: Colors.white),
+                        onPressed: _toggleSettings,
+                        tooltip: '设置',
                       ),
                     ],
                   );

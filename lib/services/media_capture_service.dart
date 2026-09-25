@@ -16,9 +16,9 @@ class MediaCaptureService {
 
   bool get isRecording => _isRecording;
 
-  /// 检查是否为桌面平台
+  /// 检查是否为桌面平台（Web 上 Platform 不可调用，先用 kIsWeb 短路）
   static bool get isDesktop =>
-      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+      !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
   /// 检查 ffmpeg 是否可用
   Future<bool> hasFfmpeg() async {

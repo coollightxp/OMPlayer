@@ -7,13 +7,11 @@ import '../services/player_controller.dart';
 /// 底部隐藏面板 - 显示当前播放节目的名称信息
 class BottomProgramPanel extends StatefulWidget {
   final bool isVisible;
-  final VoidCallback onToggleSettings;
   final VoidCallback onTogglePlayPause;
 
   const BottomProgramPanel({
     super.key,
     required this.isVisible,
-    required this.onToggleSettings,
     required this.onTogglePlayPause,
   });
 
@@ -197,16 +195,6 @@ class _BottomProgramPanelState extends State<BottomProgramPanel> {
             size: 28,
           ),
           onPressed: widget.onTogglePlayPause,
-        ),
-        const SizedBox(width: 4),
-        // 设置按钮
-        IconButton(
-          icon: const Icon(
-            Icons.settings,
-            color: Colors.white,
-            size: 24,
-          ),
-          onPressed: widget.onToggleSettings,
         ),
       ],
     );

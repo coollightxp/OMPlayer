@@ -3,6 +3,7 @@ import 'package:video_player/video_player.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../models/channel.dart';
 import '../models/epg_program.dart';
@@ -11,7 +12,6 @@ import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../models/reservation.dart';
 import 'media_capture_service.dart';
-import 'mock_data_service.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
 
@@ -37,6 +37,7 @@ class PlayerController extends ChangeNotifier {
   bool _isLoadingPlaylist = false;
   bool _isLoadingEpg = false;
   String? _lastError;
+  bool _isFullscreen = false;
 
   PlayerState get state => _state;
   Channel? get currentChannel => _currentChannel;
@@ -49,7 +50,8 @@ class PlayerController extends ChangeNotifier {
   bool get isLoadingEpg => _isLoadingEpg;
   String? get lastError => _lastError;
   bool get isRecording => captureService.isRecording;
-  bool get isDesktop => MediaCaptureService.isDesktop;
+  bool get isDesktop => !kIsWeb && MediaCaptureService.isDesktop;
+  bool get isFullscreen => _isFullscreen;
 
   bool get isPlaying => _state == PlayerState.playing;
   bool get isInitialized =>
@@ -63,12 +65,9 @@ class PlayerController extends ChangeNotifier {
     await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
 
-    // 如果有选中的播放列表，加载频道
+    // 如果有选中的播放列表，加载频道；否则保持空列表，等用户添加
     if (sourceManager.currentPlaylist != null) {
       await refreshChannels();
-    } else {
-      // 否则使用模拟数据
-      _categories = MockDataService.getCategories();
     }
 
     // 如果有选中的 EPG，加载节目单
@@ -236,6 +235,23 @@ class PlayerController extends ChangeNotifier {
     await setBrightness(_brightness + delta * _settings.gestureSensitivity);
   }
 
+  /// 切换全屏（仅桌面端）
+  Future<void> toggleFullscreen() async {
+    if (!isDesktop) return;
+    _isFullscreen = !_isFullscreen;
+    await windowManager.setFullScreen(_isFullscreen);
+    notifyListeners();
+  }
+
+  /// 若当前处于全屏则退出全屏（用于返回键/ESC）
+  Future<bool> exitFullscreenIfNeeded() async {
+    if (!_isFullscreen) return false;
+    _isFullscreen = false;
+    await windowManager.setFullScreen(false);
+    notifyListeners();
+    return true;
+  }
+
   /// 更新设置
   void updateSettings(PlayerSettings settings) {
     _settings = settings;
@@ -244,14 +260,10 @@ class PlayerController extends ChangeNotifier {
 
   // ==================== EPG & 节目信息 ====================
 
-  /// 获取当前频道的 EPG
+  /// 获取当前频道的 EPG（无真实数据时返回空，不使用模拟数据）
   List<EpgProgram> getCurrentEpg() {
     if (_currentChannel == null) return [];
-    // 优先使用加载的真实 EPG 数据
-    final programs = sourceManager.getProgramsForChannel(_currentChannel!);
-    if (programs.isNotEmpty) return programs;
-    // 回退到模拟数据
-    return MockDataService.getEpgForChannel(_currentChannel!.id);
+    return sourceManager.getProgramsForChannel(_currentChannel!);
   }
 
   /// 获取当前播放节目信息
@@ -338,7 +350,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> removePlaylist(String id) async {
     await sourceManager.removePlaylist(id);
     if (sourceManager.currentPlaylistId == null) {
-      _categories = MockDataService.getCategories();
+      _categories = [];
     }
     notifyListeners();
   }
@@ -348,7 +360,7 @@ class PlayerController extends ChangeNotifier {
     if (id != null) {
       await refreshChannels();
     } else {
-      _categories = MockDataService.getCategories();
+      _categories = [];
       notifyListeners();
     }
   }
