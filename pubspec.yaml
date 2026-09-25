@@ -24,8 +24,8 @@ dependencies:
   # 屏幕亮度控制 (iOS/Android/Windows)
   screen_brightness: ^1.0.1
 
-  # 音量控制 (iOS/Android)
-  volume_controller: ^2.0.7
+  # 音量控制（多平台，3.x 使用 VolumeController.instance 单例 API）
+  volume_controller: ^3.7.1
 
   # 保持屏幕常亮
   wakelock_plus: ^1.2.5
@@ -51,8 +51,11 @@ dependencies:
   # 文件选择器（选择本地播放列表文件）
   file_picker: ^8.0.3
 
-  # 截图
-  screenshot: ^2.3.0
+  # 截图（使用 master 分支，已修复新版 Flutter ViewConfiguration 的兼容问题）
+  screenshot:
+    git:
+      url: https://github.com/SachinGanesh/screenshot.git
+      ref: master
 
 dev_dependencies:
   flutter_test:

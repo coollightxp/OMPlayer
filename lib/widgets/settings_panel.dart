@@ -596,7 +596,7 @@ class _PlayerSettingsTab extends StatelessWidget {
       title: Text(title,
           style: const TextStyle(color: Colors.white, fontSize: 15)),
       subtitle: SliderTheme(
-        data: SliderTheme.of(context).copyWith(
+        data: SliderThemeData(
           activeTrackColor: Colors.blueAccent,
           inactiveTrackColor: Colors.white24,
           thumbColor: Colors.blueAccent,

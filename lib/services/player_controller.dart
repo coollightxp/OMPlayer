@@ -27,7 +27,6 @@ class PlayerController extends ChangeNotifier {
   Channel? _currentChannel;
   double _volume = 0.8;
   double _brightness = 0.8;
-  double _systemMaxVolume = 1.0;
   List<ChannelCategory> _categories = [];
 
   // 新增服务
@@ -116,8 +115,7 @@ class PlayerController extends ChangeNotifier {
       _brightness = _settings.defaultBrightness;
     }
     try {
-      _systemMaxVolume = await VolumeController().maxVolume;
-      final vol = await VolumeController().getVolume();
+      final vol = await VolumeController.instance.getVolume();
       _volume = vol;
     } catch (_) {
       _volume = _settings.defaultVolume;
@@ -213,7 +211,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> setVolume(double value) async {
     _volume = value.clamp(0.0, 1.0);
     try {
-      await VolumeController().setVolume(_volume * _systemMaxVolume);
+      await VolumeController.instance.setVolume(_volume);
     } catch (_) {}
     notifyListeners();
   }
