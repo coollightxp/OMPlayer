@@ -96,61 +96,71 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   }
 
   Widget _buildBody() {
-    if (_selectedCategory == null) {
-      return _buildCategoryList();
-    }
-    return _buildChannelList(_selectedCategory!);
-  }
-
-  /// 第一级：分类列表
-  Widget _buildCategoryList() {
+    // 顶层监听控制器：切换节目源（分类列表整体替换）后立即刷新
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
         final cats = controller.categories;
-        if (cats.isEmpty) {
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.playlist_add,
-                      size: 56, color: Colors.white38),
-                  const SizedBox(height: 16),
-                  const Text(
-                    '暂无频道列表',
-                    style: TextStyle(color: Colors.white54, fontSize: 16),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '请在设置中添加 M3U/TXT 播放列表',
-                    style: TextStyle(color: Colors.white38, fontSize: 12),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          );
+        // 当前选中的分类对象已不在新列表中（说明刚切换了节目源），
+        // 自动回到第一级分类列表
+        if (_selectedCategory != null &&
+            !cats.contains(_selectedCategory)) {
+          _selectedCategory = null;
+          // 本帧先按第一级渲染，下一帧刷新标题栏（标题栏在 Consumer 外）
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) setState(() {});
+          });
         }
-        return ListView.builder(
-          controller: _categoryScroll,
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          itemCount: cats.length,
-          itemBuilder: (context, index) {
-            final cat = cats[index];
-            return _CategoryTile(
-              category: cat,
-              onTap: () => setState(() => _selectedCategory = cat),
-            );
-          },
+        if (_selectedCategory == null) {
+          return _buildCategoryList(cats);
+        }
+        return _buildChannelList(_selectedCategory!, controller);
+      },
+    );
+  }
+
+  /// 第一级：分类列表
+  Widget _buildCategoryList(List<ChannelCategory> cats) {
+    if (cats.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.playlist_add, size: 56, color: Colors.white38),
+              const SizedBox(height: 16),
+              const Text(
+                '暂无频道列表',
+                style: TextStyle(color: Colors.white54, fontSize: 16),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '请在设置中添加 M3U/TXT 播放列表',
+                style: TextStyle(color: Colors.white38, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return ListView.builder(
+      controller: _categoryScroll,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: cats.length,
+      itemBuilder: (context, index) {
+        final cat = cats[index];
+        return _CategoryTile(
+          category: cat,
+          onTap: () => setState(() => _selectedCategory = cat),
         );
       },
     );
   }
 
   /// 第二级：频道列表
-  Widget _buildChannelList(ChannelCategory category) {
-    final controller = context.read<PlayerController>();
+  Widget _buildChannelList(
+      ChannelCategory category, PlayerController controller) {
     return ListView.builder(
       controller: _channelScroll,
       padding: const EdgeInsets.symmetric(vertical: 8),
