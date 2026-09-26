@@ -670,6 +670,22 @@ class _SystemSettingsTab extends StatelessWidget {
                   controller.updateSettings(s.copyWith(showClock: v)),
               activeColor: Colors.blueAccent,
             ),
+            // DLNA 投屏接收状态（只读展示，启动即自动开启）
+            ListTile(
+              leading: Icon(Icons.cast,
+                  color: controller.dlnaRunning
+                      ? Colors.greenAccent
+                      : Colors.redAccent),
+              title: const Text('DLNA 投屏接收',
+                  style: TextStyle(color: Colors.white, fontSize: 15)),
+              subtitle: Text(
+                controller.dlnaRunning
+                    ? '已开启：${controller.dlnaName}（同一局域网内手机可投屏）'
+                    : '未开启：端口可能被占用或被防火墙拦截',
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 12),
+              ),
+            ),
             const SizedBox(height: 16),
           ],
         );

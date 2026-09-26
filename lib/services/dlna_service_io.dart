@@ -179,7 +179,9 @@ class DlnaService {
         send(st, '$usnBase::upnp:rootdevice');
       } else if (st == usnBase) {
         send(st, usnBase);
-      } else if (st.contains('MediaRenderer') || st.contains('MediaServer')) {
+      } else if (st.contains('MediaRenderer') ||
+          st.contains('MediaServer') ||
+          st.contains('AVTransport')) {
         send(st, '$usnBase::$st');
       }
     });
