@@ -105,7 +105,7 @@ class ReservationManager {
     });
   }
 
-  void _checkReservations() {
+  Future<void> _checkReservations() async {
     final now = DateTime.now();
     for (final r in _reservations) {
       if (_triggeredIds.contains(r.id)) continue;
