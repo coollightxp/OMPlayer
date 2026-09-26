@@ -693,8 +693,11 @@ class PlayerController extends ChangeNotifier {
   /// 切换节目预约状态
   Future<bool> toggleReservation(EpgProgram program) async {
     // 找到对应频道，记录：时间、节目名、频道名、播放地址（全部备用源）、
-    // 台标、EPG 标识。到点后直接用记录的地址播放，避免按名称反查跳错台
-    final channel = findChannelForProgram(program) ?? _currentChannel;
+    // 台标、EPG 标识。到点后直接用记录的地址播放，避免按名称反查跳错台。
+    // 注意：预约只能用「精确匹配」的频道，匹配不到时以当前频道兜底
+    // （EPG 面板展示的就是当前频道的节目单），绝不能用名称模糊匹配，
+    // 否则像 "CCTV" 这样的短名会错误命中列表里第一个 CCTV 频道。
+    final channel = _findChannelExact(program) ?? _currentChannel;
     final r = ProgramReservation(
       id: 'res_${program.channelId}_${program.startTime.millisecondsSinceEpoch}',
       channelId: channel?.id ?? program.channelId,
@@ -717,16 +720,13 @@ class PlayerController extends ChangeNotifier {
 
   /// 根据 EPG 节目反查对应频道（tvgId 精确匹配，其次名称模糊匹配）
   Channel? findChannelForProgram(EpgProgram program) {
-    for (final cat in _categories) {
-      for (final ch in cat.channels) {
-        if (ch.tvgId.isNotEmpty && ch.tvgId == program.channelId) return ch;
-      }
-    }
+    final exact = _findChannelExact(program);
+    if (exact != null) return exact;
+    // 精确匹配不到时才做名称模糊匹配（供点击节目条目播放等
+    // 容错场景使用；预约存地址不可用这条路径，以免存错台）
     final lowerId = program.channelId.toLowerCase();
     for (final cat in _categories) {
       for (final ch in cat.channels) {
-        if (ch.tvgName.isNotEmpty &&
-            ch.tvgName.toLowerCase() == lowerId) return ch;
         final name = ch.name.toLowerCase();
         if (name.contains(lowerId) || lowerId.contains(name)) return ch;
       }
@@ -734,10 +734,43 @@ class PlayerController extends ChangeNotifier {
     return null;
   }
 
-  /// 检查节目是否已预约
+  /// 仅用精确条件匹配频道：tvgId → tvgName → 规范化后的频道名。
+  /// 用于预约等「不允许匹配错误」的场景。
+  Channel? _findChannelExact(EpgProgram program) {
+    final lowerId = program.channelId.toLowerCase();
+    // 1) tvg-id 精确匹配
+    for (final cat in _categories) {
+      for (final ch in cat.channels) {
+        if (ch.tvgId.isNotEmpty && ch.tvgId == program.channelId) return ch;
+      }
+    }
+    // 2) tvg-name 精确匹配
+    for (final cat in _categories) {
+      for (final ch in cat.channels) {
+        if (ch.tvgName.isNotEmpty &&
+            ch.tvgName.toLowerCase() == lowerId) {
+          return ch;
+        }
+      }
+    }
+    // 3) 频道名规范化后精确匹配（忽略大小写/空格/连字符差异，
+    //    如 CCTV-1 / cctv1 / "CCTV 1"）
+    String norm(String s) =>
+        s.toLowerCase().replaceAll(RegExp(r'[\s\-_]+'), '');
+    final target = norm(program.channelId);
+    if (target.isNotEmpty) {
+      for (final cat in _categories) {
+        for (final ch in cat.channels) {
+          if (norm(ch.name) == target) return ch;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// 检查节目是否已预约（同样只用精确匹配，避免状态显示到别的台）
   bool isProgramReserved(EpgProgram program) {
-    // 同时检查「播放列表频道 ID」（新）与「EPG 频道 ID」（旧）两种存储
-    final channel = findChannelForProgram(program);
+    final channel = _findChannelExact(program);
     final cid = channel?.id ?? program.channelId;
     return reservationManager.isReserved(cid, program.startTime) ||
         reservationManager.isReserved(
