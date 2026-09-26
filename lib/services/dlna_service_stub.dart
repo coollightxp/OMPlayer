@@ -1,0 +1,34 @@
+/// Web 端占位实现（DLNA 仅原生平台可用）
+class DlnaHooks {
+  final void Function(String url, String title) onPlay;
+  final void Function() onPause;
+  final void Function() onResume;
+  final void Function() onStop;
+  final void Function(Duration position) onSeek;
+  final void Function(double volume) onSetVolume;
+  final String Function() transportState;
+  final Duration Function() position;
+  final Duration Function() duration;
+  final double Function() volume;
+
+  const DlnaHooks({
+    required this.onPlay,
+    required this.onPause,
+    required this.onResume,
+    required this.onStop,
+    required this.onSeek,
+    required this.onSetVolume,
+    required this.transportState,
+    required this.position,
+    required this.duration,
+    required this.volume,
+  });
+}
+
+class DlnaService {
+  bool get isRunning => false;
+
+  Future<void> start({required String uuid, required DlnaHooks hooks}) async {}
+
+  void stop() {}
+}

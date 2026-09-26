@@ -159,6 +159,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
         const SingleActivator(LogicalKeyboardKey.escape): () {
           context.read<PlayerController>().exitFullscreenIfNeeded();
         },
+        const SingleActivator(LogicalKeyboardKey.space): () =>
+            _onShortcut('playpause'),
+        const SingleActivator(LogicalKeyboardKey.keyF): () =>
+            _onShortcut('fullscreen'),
+        const SingleActivator(LogicalKeyboardKey.f11): () =>
+            _onShortcut('fullscreen'),
+        const SingleActivator(LogicalKeyboardKey.keyM): () =>
+            _onShortcut('mute'),
+        const SingleActivator(LogicalKeyboardKey.printScreen): () =>
+            _onShortcut('screenshot'),
         const SingleActivator(LogicalKeyboardKey.keyC): () =>
             _onShortcut('channels'),
         const SingleActivator(LogicalKeyboardKey.keyE): () =>
@@ -333,6 +343,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
       } else {
         _rightEpgOpen = true;
         _leftDrawerOpen = false;
+      }
+    });
+    _bumpDrawers();
+  }
+
+  /// 快捷键用：再次按键时关闭对应面板
+  void _toggleDrawer({required bool left}) {
+    setState(() {
+      if (left) {
+        if (_leftDrawerOpen) {
+          _leftDrawerOpen = false;
+        } else {
+          _leftDrawerOpen = true;
+          _rightEpgOpen = false;
+        }
+      } else {
+        if (_rightEpgOpen) {
+          _rightEpgOpen = false;
+        } else {
+          _rightEpgOpen = true;
+          _leftDrawerOpen = false;
+        }
       }
     });
     _bumpDrawers();
@@ -537,18 +569,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
     setState(() => _settingsOpen = !_settingsOpen);
   }
 
-  /// 桌面端快捷键：C 频道 / E 节目单 / S 设置 / R 录制
+  /// 桌面端快捷键：空格 播放/暂停，F/F11 全屏，M 静音，
+  /// PrintScreen 截屏，C 频道列表开/关，E 节目单开/关，S 设置，R 录制
   void _onShortcut(String action) {
     if (_settingsOpen && action != 'settings') return;
+    final controller = context.read<PlayerController>();
     switch (action) {
       case 'channels':
-        _openDrawer(left: true);
+        _toggleDrawer(left: true);
       case 'epg':
-        _openDrawer(left: false);
+        _toggleDrawer(left: false);
       case 'settings':
         _toggleSettings();
       case 'record':
-        _toggleRecording(context.read<PlayerController>());
+        _toggleRecording(controller);
+      case 'playpause':
+        controller.togglePlayPause();
+      case 'fullscreen':
+        controller.toggleFullscreen();
+      case 'mute':
+        controller.toggleMute();
+      case 'screenshot':
+        _takeScreenshot();
     }
   }
 

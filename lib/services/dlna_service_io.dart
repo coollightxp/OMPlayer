@@ -1,0 +1,488 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+/// DLNA/UPnP 回调集合：由播放器注入实际控制能力
+class DlnaHooks {
+  final void Function(String url, String title) onPlay;
+  final void Function() onPause;
+  final void Function() onResume;
+  final void Function() onStop;
+  final void Function(Duration position) onSeek;
+  final void Function(double volume) onSetVolume;
+  final String Function() transportState;
+  final Duration Function() position;
+  final Duration Function() duration;
+  final double Function() volume;
+
+  const DlnaHooks({
+    required this.onPlay,
+    required this.onPause,
+    required this.onResume,
+    required this.onStop,
+    required this.onSeek,
+    required this.onSetVolume,
+    required this.transportState,
+    required this.position,
+    required this.duration,
+    required this.volume,
+  });
+}
+
+/// DLNA/UPnP MediaRenderer 服务（接收手机等设备投屏）
+///
+/// 实现：SSDP 组播发现（1900/UDP）+ HTTP 设备描述/SCPD + SOAP 控制端点。
+/// 支持 AVTransport（SetAVTransportURI/Play/Pause/Stop/Seek）与
+/// RenderingControl（音量），Stop 时由播放器恢复投屏前状态。
+class DlnaService {
+  HttpServer? _http;
+  RawDatagramSocket? _ssdp;
+  Timer? _aliveTimer;
+  String _uuid = '';
+  String _name = '';
+  int _port = 0;
+  String _ip = '127.0.0.1';
+  DlnaHooks? _hooks;
+  String? _currentUri;
+  String _currentTitle = '';
+
+  bool get isRunning => _http != null;
+
+  /// 设备名称（OMPlayer + 机器标识）
+  String get deviceName => _name;
+
+  /// 启动服务；任何失败静默返回，不阻塞播放器
+  Future<void> start({required String uuid, required DlnaHooks hooks}) async {
+    if (_http != null) return;
+    _uuid = uuid;
+    _hooks = hooks;
+    try {
+      _name = _resolveName();
+      final server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
+      _http = server;
+      _port = server.port;
+      server.listen(_handleRequest, onError: (_) {});
+    } catch (_) {
+      _http = null;
+      return;
+    }
+    try {
+      _ip = await _localIp();
+      await _startSsdp();
+    } catch (_) {}
+  }
+
+  void stop() {
+    _aliveTimer?.cancel();
+    _ssdp?.close();
+    _http?.close();
+    _aliveTimer = null;
+    _ssdp = null;
+    _http = null;
+  }
+
+  // ==================== 设备名称 ====================
+
+  String _resolveName() {
+    String host = '';
+    try {
+      host = Platform.localHostname;
+    } catch (_) {}
+    final lower = host.toLowerCase();
+    if (host.isNotEmpty &&
+        lower != 'localhost' &&
+        !lower.startsWith('android-') &&
+        RegExp(r'^[a-zA-Z0-9\-_]+$').hasMatch(host)) {
+      return 'OMPlayer-$host';
+    }
+    // hostname 不可靠（如安卓模拟器）时用 uuid 前缀
+    final suffix = _uuid.length >= 6 ? _uuid.substring(0, 6) : _uuid;
+    return 'OMPlayer-${suffix.toUpperCase()}';
+  }
+
+  Future<String> _localIp() async {
+    try {
+      final ifs = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      for (final i in ifs) {
+        for (final a in i.addresses) {
+          if (!a.isLoopback) return a.address;
+        }
+      }
+    } catch (_) {}
+    return '127.0.0.1';
+  }
+
+  // ==================== SSDP 发现 ====================
+
+  Future<void> _startSsdp() async {
+    final socket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4, 1900,
+        reuseAddress: true);
+    socket.joinMulticast(InternetAddress('239.255.255.250'));
+    _ssdp = socket;
+    socket.listen((event) {
+      if (event != RawSocketEvent.read) return;
+      final dg = socket.receive();
+      if (dg == null) return;
+      final msg = String.fromCharCodes(dg.data);
+      if (!msg.toUpperCase().contains('M-SEARCH')) return;
+      final st = _headerValue(msg, 'ST');
+      if (st == null || st.isEmpty) return;
+      _respondSearch(dg.address, dg.port, st);
+    });
+    // 启动时主动通告存在，提高被投屏端发现的概率
+    for (var i = 0; i < 3; i++) {
+      _notifyAlive();
+      await Future.delayed(const Duration(milliseconds: 400));
+    }
+    _aliveTimer =
+        Timer.periodic(const Duration(seconds: 30), (_) => _notifyAlive());
+  }
+
+  String? _headerValue(String msg, String field) {
+    for (final line in msg.split('\r\n')) {
+      final idx = line.indexOf(':');
+      if (idx <= 0) continue;
+      if (line.substring(0, idx).trim().toUpperCase() ==
+          field.toUpperCase()) {
+        return line.substring(idx + 1).trim();
+      }
+    }
+    return null;
+  }
+
+  void _respondSearch(InternetAddress addr, int port, String st) {
+    final socket = _ssdp;
+    if (socket == null) return;
+    final location = _location;
+    final usnBase = 'uuid:$_uuid';
+    void send(String stVal, String usn) {
+      final resp = 'HTTP/1.1 200 OK\r\n'
+          'CACHE-CONTROL: max-age=1800\r\n'
+          'EXT:\r\n'
+          'LOCATION: $location\r\n'
+          'SERVER: OMPlayer/1.0 UPnP/1.0\r\n'
+          'ST: $stVal\r\n'
+          'USN: $usn\r\n\r\n';
+      socket.send(resp.codeUnits, addr, port);
+    }
+
+    // 略微延迟回复，避免同网络设备风暴
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (_ssdp == null) return;
+      if (st == 'ssdp:all') {
+        send('upnp:rootdevice', '$usnBase::upnp:rootdevice');
+        send(usnBase, usnBase);
+        send('urn:schemas-upnp-org:device:MediaRenderer:1',
+            '$usnBase::urn:schemas-upnp-org:device:MediaRenderer:1');
+      } else if (st == 'upnp:rootdevice') {
+        send(st, '$usnBase::upnp:rootdevice');
+      } else if (st == usnBase) {
+        send(st, usnBase);
+      } else if (st.contains('MediaRenderer') || st.contains('MediaServer')) {
+        send(st, '$usnBase::$st');
+      }
+    });
+  }
+
+  void _notifyAlive() {
+    final socket = _ssdp;
+    if (socket == null) return;
+    final usnBase = 'uuid:$_uuid';
+    final entries = <List<String>>[
+      ['upnp:rootdevice', '$usnBase::upnp:rootdevice'],
+      [usnBase, usnBase],
+      [
+        'urn:schemas-upnp-org:device:MediaRenderer:1',
+        '$usnBase::urn:schemas-upnp-org:device:MediaRenderer:1'
+      ],
+    ];
+    for (final e in entries) {
+      final pkt = 'NOTIFY * HTTP/1.1\r\n'
+          'HOST: 239.255.255.250:1900\r\n'
+          'CACHE-CONTROL: max-age=1800\r\n'
+          'LOCATION: ${_location}\r\n'
+          'NT: ${e[0]}\r\n'
+          'NTS: ssdp:alive\r\n'
+          'SERVER: OMPlayer/1.0 UPnP/1.0\r\n'
+          'USN: ${e[1]}\r\n\r\n';
+      socket.send(pkt.codeUnits, InternetAddress('239.255.255.250'), 1900);
+    }
+  }
+
+  String get _location => 'http://$_ip:$_port/device.xml';
+
+  // ==================== HTTP 服务 ====================
+
+  Future<void> _handleRequest(HttpRequest req) async {
+    try {
+      final path = req.uri.path;
+      if (req.method == 'GET' || req.method == 'HEAD') {
+        if (path == '/device.xml') {
+          await _respondXml(req, _deviceXml());
+        } else if (path.startsWith('/scpd/')) {
+          await _respondXml(req, _scpdXml());
+        } else {
+          req.response.statusCode = 404;
+          await req.response.close();
+        }
+        return;
+      }
+      if (req.method == 'SUBSCRIBE' || req.method == 'UNSUBSCRIBE') {
+        // 不实现 GENA 事件推送，仅返回合法头（多数投屏端靠轮询即可工作）
+        req.response.headers.set('SID', 'uuid:$_uuid-sub');
+        req.response.headers.set('TIMEOUT', 'Second-1800');
+        req.response.statusCode = 200;
+        req.response.contentLength = 0;
+        await req.response.close();
+        return;
+      }
+      if (req.method == 'POST') {
+        final body = await utf8.decoder.bind(req).join();
+        await _handleSoap(req, body);
+        return;
+      }
+      req.response.statusCode = 405;
+      await req.response.close();
+    } catch (_) {
+      try {
+        req.response.statusCode = 500;
+        await req.response.close();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _handleSoap(HttpRequest req, String body) async {
+    final hooks = _hooks;
+    if (hooks == null) {
+      req.response.statusCode = 503;
+      await req.response.close();
+      return;
+    }
+    final soapAction = (req.headers.value('SOAPACTION') ?? '')
+        .replaceAll('"', '')
+        .trim();
+    final hashIdx = soapAction.indexOf('#');
+    final service = hashIdx >= 0 ? soapAction.substring(0, hashIdx) : '';
+    final action =
+        hashIdx >= 0 ? soapAction.substring(hashIdx + 1).trim() : '';
+
+    if (service.contains('AVTransport')) {
+      switch (action) {
+        case 'SetAVTransportURI':
+          _currentUri = _extract(body, 'CurrentURI');
+          _currentTitle = _extractCastTitle(body);
+          if (_currentUri != null && _currentUri!.isNotEmpty) {
+            hooks.onPlay(_currentUri!, _currentTitle);
+          }
+          await _soapResponse(req, service, action, '');
+          return;
+        case 'Play':
+          hooks.onResume();
+          await _soapResponse(req, service, action, '');
+          return;
+        case 'Pause':
+          hooks.onPause();
+          await _soapResponse(req, service, action, '');
+          return;
+        case 'Stop':
+          hooks.onStop();
+          await _soapResponse(req, service, action, '');
+          return;
+        case 'Seek':
+          final target = _extract(body, 'Target');
+          final d = _parseTime(target);
+          if (d != null) hooks.onSeek(d);
+          await _soapResponse(req, service, action, '');
+          return;
+        case 'GetTransportInfo':
+          await _soapResponse(req, service, action,
+              '<CurrentTransportState>${hooks.transportState()}</CurrentTransportState>'
+              '<CurrentTransportStatus>OK</CurrentTransportStatus>'
+              '<CurrentSpeed>1</CurrentSpeed>');
+          return;
+        case 'GetPositionInfo':
+          final pos = _fmtTime(hooks.position());
+          final dur = _fmtTime(hooks.duration());
+          final uri = _xmlEscape(_currentUri ?? '');
+          await _soapResponse(req, service, action,
+              '<Track>1</Track>'
+              '<TrackDuration>$dur</TrackDuration>'
+              '<TrackMetaData></TrackMetaData>'
+              '<TrackURI>$uri</TrackURI>'
+              '<RelTime>$pos</RelTime>'
+              '<AbsTime>$pos</AbsTime>');
+          return;
+        case 'GetMediaInfo':
+          final dur = _fmtTime(hooks.duration());
+          final uri = _xmlEscape(_currentUri ?? '');
+          await _soapResponse(req, service, action,
+              '<NrTracks>1</NrTracks>'
+              '<MediaDuration>$dur</MediaDuration>'
+              '<CurrentURI>$uri</CurrentURI>'
+              '<CurrentURIMetaData></CurrentURIMetaData>'
+              '<PlayMedium>NETWORK</PlayMedium>'
+              '<RecordMedium>NOT_IMPLEMENTED</RecordMedium>'
+              '<WriteStatus>NOT_IMPLEMENTED</WriteStatus>');
+          return;
+        default:
+          await _soapResponse(req, service, action, '');
+          return;
+      }
+    }
+
+    if (service.contains('RenderingControl')) {
+      switch (action) {
+        case 'SetVolume':
+          final v = int.tryParse(_extract(body, 'DesiredVolume')) ?? -1;
+          if (v >= 0 && v <= 100) hooks.onSetVolume(v / 100.0);
+          await _soapResponse(req, service, action, '');
+          return;
+        case 'GetVolume':
+          final vol = (hooks.volume().clamp(0.0, 1.0) * 100).round();
+          await _soapResponse(req, service, action,
+              '<CurrentVolume>$vol</CurrentVolume>');
+          return;
+        case 'GetMute':
+          await _soapResponse(req, service, action, '<CurrentMute>0</CurrentMute>');
+          return;
+        default:
+          await _soapResponse(req, service, action, '');
+          return;
+      }
+    }
+
+    if (service.contains('ConnectionManager')) {
+      await _soapResponse(req, service, action,
+          '<SinkProtocolInfo></SinkProtocolInfo><SourceProtocolInfo></SourceProtocolInfo><CurrentConnectionIDs>0</CurrentConnectionIDs>');
+      return;
+    }
+
+    req.response.statusCode = 404;
+    await req.response.close();
+  }
+
+  // ==================== XML/SOAP 工具 ====================
+
+  String _extract(String body, String tag) {
+    final m = RegExp('<$tag(?:\\s[^>]*)?>([\\s\\S]*?)</$tag>',
+            caseSensitive: false)
+        .firstMatch(body);
+    return m == null ? '' : _xmlUnescape(m.group(1)!.trim());
+  }
+
+  String _extractCastTitle(String body) {
+    final meta = _extract(body, 'CurrentURIMetaData');
+    if (meta.isEmpty) return '';
+    final m =
+        RegExp('<dc:title>([\\s\\S]*?)</dc:title>', caseSensitive: false)
+            .firstMatch(meta);
+    if (m == null) return '';
+    final t = _xmlUnescape(m.group(1)!.trim());
+    // dc:title 内容本身可能仍带 CDATA/转义，去掉 CDATA 包裹
+    return t.replaceAll(RegExp(r'<!\[CDATA\[|\]\]>'), '').trim();
+  }
+
+  Duration? _parseTime(String s) {
+    final str = s.trim();
+    final m = RegExp(r'^(?:(\d+):)?(\d{1,2}):(\d{1,2})$').firstMatch(str);
+    if (m != null) {
+      final h = int.tryParse(m.group(1) ?? '0') ?? 0;
+      final min = int.tryParse(m.group(2) ?? '') ?? 0;
+      final sec = int.tryParse(m.group(3) ?? '') ?? 0;
+      return Duration(hours: h, minutes: min, seconds: sec);
+    }
+    final sec = int.tryParse(str);
+    if (sec != null) return Duration(seconds: sec);
+    return null;
+  }
+
+  String _fmtTime(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
+
+  String _xmlUnescape(String s) {
+    return s
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', "'")
+        .replaceAll('&amp;', '&');
+  }
+
+  String _xmlEscape(String s) {
+    return s
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+  }
+
+  Future<void> _soapResponse(
+      HttpRequest req, String service, String action, String argsXml) async {
+    final body = '<?xml version="1.0" encoding="utf-8"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+        '<s:Body><u:$action xmlns:u="$service">$argsXml</u:$action></s:Body>'
+        '</s:Envelope>';
+    await _respondXml(req, body);
+  }
+
+  Future<void> _respondXml(HttpRequest req, String xml) async {
+    final data = utf8.encode(xml);
+    req.response.headers
+        .set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
+    req.response.contentLength = data.length;
+    req.response.add(data);
+    await req.response.close();
+  }
+
+  // ==================== 描述文件 ====================
+
+  String get _scpdXml => '<?xml version="1.0" encoding="utf-8"?>'
+      '<scpd xmlns="urn:schemas-upnp-org:service-1-0">'
+      '<specVersion><major>1</major><minor>0</minor></specVersion>'
+      '<actionList></actionList>'
+      '<serviceStateTable></serviceStateTable>'
+      '</scpd>';
+
+  String _deviceXml() => '<?xml version="1.0" encoding="utf-8"?>'
+      '<root xmlns="urn:schemas-upnp-org:device-1-0">'
+      '<specVersion><major>1</major><minor>0</minor></specVersion>'
+      '<device>'
+      '<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>'
+      '<friendlyName>${_xmlEscape(_name)}</friendlyName>'
+      '<manufacturer>OMPlayer</manufacturer>'
+      '<modelDescription>OMPlayer DLNA Renderer</modelDescription>'
+      '<modelName>OMPlayer</modelName>'
+      '<modelNumber>1.0</modelNumber>'
+      '<UDN>uuid:$_uuid</UDN>'
+      '<serviceList>'
+      '<service>'
+      '<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>'
+      '<serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>'
+      '<SCPDURL>/scpd/AVTransport.xml</SCPDURL>'
+      '<controlURL>/control/AVTransport</controlURL>'
+      '<eventSubURL>/event/AVTransport</eventSubURL>'
+      '</service>'
+      '<service>'
+      '<serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>'
+      '<serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>'
+      '<SCPDURL>/scpd/RenderingControl.xml</SCPDURL>'
+      '<controlURL>/control/RenderingControl</controlURL>'
+      '<eventSubURL>/event/RenderingControl</eventSubURL>'
+      '</service>'
+      '<service>'
+      '<serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>'
+      '<serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>'
+      '<SCPDURL>/scpd/ConnectionManager.xml</SCPDURL>'
+      '<controlURL>/control/ConnectionManager</controlURL>'
+      '<eventSubURL>/event/ConnectionManager</eventSubURL>'
+      '</service>'
+      '</serviceList>'
+      '</device>'
+      '</root>';
+}

@@ -35,16 +35,20 @@ void main() async {
     // 与系统开机启动项保持同步
     await setAutoLaunchEnabled(launchAtStartup);
 
-    // 关键：必须在窗口首次显示前设置全屏，否则窗口样式切换会导致
-    // 窗口掉到最底层、点击无响应等异常
+    // 关键：不能用 WindowOptions(fullScreen: true) 创建窗口——那样
+    // window_manager 没有保存正常窗口边界，双击退出全屏时无法正确还原，
+    // 表现为不停来回切换/假死。改为在窗口显示前通过 setFullScreen 进入，
+    // 与运行期双击全屏走完全相同的代码路径。
     await windowManager.waitUntilReadyToShow(
       WindowOptions(
-        fullScreen: startFullscreen,
         title: 'OMPlayer',
         center: true,
         titleBarStyle: TitleBarStyle.normal,
       ),
       () async {
+        if (startFullscreen) {
+          await windowManager.setFullScreen(true);
+        }
         await windowManager.show();
         await windowManager.focus();
         // 启动即全屏时保持窗口置顶，避免被其它窗口覆盖

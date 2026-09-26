@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
@@ -15,6 +16,7 @@ import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../models/reservation.dart';
 import 'auto_launch.dart';
+import 'dlna_service.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
 import 'reservation_manager.dart';
@@ -38,6 +40,15 @@ class PlayerController extends ChangeNotifier {
   final SourceManager sourceManager = SourceManager();
   final ReservationManager reservationManager = ReservationManager();
   final MediaCaptureService captureService = MediaCaptureService();
+
+  // DLNA 投屏接收服务（接收其它设备推送的视频）
+  final DlnaService dlnaService = DlnaService();
+  bool _isCasting = false;
+  Channel? _preCastChannel; // 投屏前的频道，用于断开后恢复
+
+  // 静音状态
+  bool _isMuted = false;
+  double _volumeBeforeMute = 0.8;
 
   bool _isLoadingPlaylist = false;
   bool _isLoadingEpg = false;
@@ -64,6 +75,8 @@ class PlayerController extends ChangeNotifier {
   bool get isRecording => _isRecording;
   bool get isDesktop => !kIsWeb && MediaCaptureService.isDesktop;
   bool get isFullscreen => _isFullscreen;
+  bool get isCasting => _isCasting;
+  bool get isMuted => _isMuted;
 
   bool get isPlaying => _state == PlayerState.playing;
   bool get isInitialized =>
@@ -97,7 +110,97 @@ class PlayerController extends ChangeNotifier {
     }
 
     _initSystemValues();
+    // 启动 DLNA 投屏接收服务（失败静默，不影响正常使用）
+    _startDlna();
     notifyListeners();
+  }
+
+  /// 启动 DLNA 接收服务：设备名 = OMPlayer + 机器唯一标识
+  Future<void> _startDlna() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      var uuid = prefs.getString('dlna_uuid') ?? '';
+      if (uuid.isEmpty) {
+        final rnd = Random();
+        uuid = List.generate(
+                8, (_) => '0123456789abcdef'[rnd.nextInt(16)])
+            .join();
+        await prefs.setString('dlna_uuid', uuid);
+      }
+      await dlnaService.start(
+        uuid: uuid,
+        hooks: DlnaHooks(
+          onPlay: (url, title) => playCastUrl(url, title),
+          onPause: () async {
+            if (_videoController != null &&
+                _videoController!.value.isPlaying) {
+              await _videoController!.pause();
+              _state = PlayerState.paused;
+              notifyListeners();
+            }
+          },
+          onResume: () async {
+            if (_videoController == null ||
+                !_videoController!.value.isInitialized) {
+              return;
+            }
+            if (!_videoController!.value.isPlaying) {
+              await _videoController!.play();
+              _state = PlayerState.playing;
+              notifyListeners();
+            }
+          },
+          onStop: () => stopCastAndRestore(),
+          onSeek: (p) => seekTo(p),
+          onSetVolume: (v) => setVolume(v),
+          transportState: () {
+            switch (_state) {
+              case PlayerState.playing:
+                return 'PLAYING';
+              case PlayerState.paused:
+                return 'PAUSED_PLAYBACK';
+              default:
+                return 'STOPPED';
+            }
+          },
+          position: () => position,
+          duration: () => duration,
+          volume: () => _volume,
+        ),
+      );
+    } catch (_) {}
+  }
+
+  /// 播放投屏推送的 URL（记录投屏前频道用于断开恢复）
+  Future<void> playCastUrl(String url, String title) async {
+    _preCastChannel ??=
+        (_currentChannel?.id.startsWith('__dlna_cast__') ?? false)
+            ? null
+            : _currentChannel;
+    _isCasting = true;
+    final cast = Channel(
+      id: '__dlna_cast__',
+      name: title.isEmpty ? 'DLNA 投屏' : title,
+      streamUrls: [url],
+      categoryId: 'dlna',
+    );
+    await playChannel(cast);
+  }
+
+  /// 投屏端断开/停止：自动恢复接收投屏前的状态
+  Future<void> stopCastAndRestore() async {
+    if (!_isCasting) return;
+    _isCasting = false;
+    final restore = _preCastChannel;
+    _preCastChannel = null;
+    if (restore != null) {
+      await playChannel(restore);
+    } else {
+      await _disposeVideoController();
+      WakelockPlus.disable();
+      _state = PlayerState.idle;
+      notifyListeners();
+    }
   }
 
   /// 预约触发回调 - 自动切换/录制
@@ -296,9 +399,26 @@ class PlayerController extends ChangeNotifier {
   /// 设置音量 (0.0 - 1.0)
   Future<void> setVolume(double value) async {
     _volume = value.clamp(0.0, 1.0);
+    // 音量被外部调大时自动解除静音标记
+    if (_volume > 0.01) _isMuted = false;
     try {
       await VolumeController.instance.setVolume(_volume);
     } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 静音/恢复（M 键）
+  Future<void> toggleMute() async {
+    if (_isMuted) {
+      _isMuted = false;
+      // 恢复到静音前的音量；之前音量接近 0 则恢复默认
+      final restore = _volumeBeforeMute <= 0.01 ? 0.8 : _volumeBeforeMute;
+      await setVolume(restore);
+    } else {
+      _volumeBeforeMute = _volume;
+      _isMuted = true;
+      await setVolume(0.0);
+    }
     notifyListeners();
   }
 
@@ -685,6 +805,7 @@ class PlayerController extends ChangeNotifier {
     }
     _disposeVideoController();
     WakelockPlus.disable();
+    dlnaService.stop();
     reservationManager.dispose();
     super.dispose();
   }
