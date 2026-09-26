@@ -221,7 +221,7 @@ class DlnaService {
         if (path == '/device.xml') {
           await _respondXml(req, _deviceXml());
         } else if (path.startsWith('/scpd/')) {
-          await _respondXml(req, _scpdXml());
+          await _respondXml(req, _scpdXml);
         } else {
           req.response.statusCode = 404;
           await req.response.close();
