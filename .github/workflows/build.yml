@@ -188,7 +188,7 @@ jobs:
       - name: Zip Linux build
         run: |
           cd build/linux/x64/release/bundle
-          zip -r ../../../../OMPlayer-linux.zip .
+          zip -r ${{ github.workspace }}/OMPlayer-linux.zip .
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
