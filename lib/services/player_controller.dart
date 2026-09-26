@@ -572,14 +572,26 @@ class PlayerController extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// 启动时由 main() 按「启动全屏」设置进入全屏后，同步内部标记。
-  /// 该设置仅启动时使用一次，运行期间双击全屏/还原与此无关。
+  /// 启动时进入全屏（仅在程序启动时由播放器界面调用一次）。
+  /// 必须等窗口与 Flutter 首帧布局稳定后再延迟执行，否则在窗口显示
+  /// 瞬间切全屏会出现白屏方块+黑边、视频纹理不渲染（只有声音）。
   /// 直接读持久化值，避免与 _loadSettings() 的异步加载竞态。
-  Future<void> syncInitialFullscreen() async {
+  Future<void> applyStartupFullscreen() async {
     if (!isDesktop) return;
     try {
       final p = await SharedPreferences.getInstance();
-      _isFullscreen = p.getBool(_kStartFullscreen) ?? false;
+      final want = p.getBool(_kStartFullscreen) ?? false;
+      if (!want) {
+        _isFullscreen = false;
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      final already = await windowManager.isFullScreen();
+      if (!already) {
+        await windowManager.setFullScreen(true);
+        await windowManager.setAlwaysOnTop(true);
+      }
+      _isFullscreen = true;
       notifyListeners();
     } catch (_) {}
   }

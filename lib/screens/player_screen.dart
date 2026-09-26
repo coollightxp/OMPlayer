@@ -79,8 +79,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_controllerRef != c) {
       _controllerRef?.removeListener(_onControllerChanged);
       _controllerRef = c..addListener(_onControllerChanged);
-      // 同步 main() 启动时按「启动全屏」设置进入的全屏标记
-      c.syncInitialFullscreen();
+      // 首帧布局完成后，按「启动全屏」设置决定是否进入全屏（只执行一次）
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) c.applyStartupFullscreen();
+      });
     }
   }
 

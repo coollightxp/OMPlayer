@@ -8,9 +8,11 @@ import '../models/reservation.dart';
 /// 负责：预约的增删改查、持久化、定时触发（自动切换/录制）
 class ReservationManager {
   static const String _reservationsKey = 'omplayer_reservations';
+  static const String _triggeredKey = 'omplayer_reservations_triggered';
 
   List<ProgramReservation> _reservations = [];
   Timer? _checkTimer;
+  /// 已触发的预约 ID（持久化，避免每次启动都重复触发同一节目）
   final Set<String> _triggeredIds = {};
   void Function(ProgramReservation)? onReservationTriggered;
 
@@ -22,6 +24,7 @@ class ReservationManager {
       void Function(ProgramReservation) onTriggered) async {
     onReservationTriggered = onTriggered;
     await loadFromPrefs();
+    await _loadTriggered();
     _startCheckTimer();
   }
 
@@ -31,6 +34,22 @@ class ReservationManager {
     if (str != null && str.isNotEmpty) {
       _reservations = ProgramReservation.decodeList(str);
     }
+  }
+
+  Future<void> _loadTriggered() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _triggeredIds
+          .addAll(prefs.getStringList(_triggeredKey) ?? const []);
+    } catch (_) {}
+  }
+
+  Future<void> _saveTriggered() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+          _triggeredKey, _triggeredIds.toList(growable: false));
+    } catch (_) {}
   }
 
   Future<void> _save() async {
@@ -50,6 +69,7 @@ class ReservationManager {
     _reservations.removeWhere((r) => r.id == id);
     _triggeredIds.remove(id);
     await _save();
+    await _saveTriggered();
   }
 
   /// 切换某个节目的预约状态（存在则删除，不存在则添加）
@@ -93,6 +113,7 @@ class ReservationManager {
       if (now.isAfter(r.startTime.subtract(const Duration(seconds: 30))) &&
           now.isBefore(r.endTime)) {
         _triggeredIds.add(r.id);
+        await _saveTriggered();
         onReservationTriggered?.call(r);
       }
     }
