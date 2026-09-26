@@ -338,6 +338,14 @@ class PlayerController extends ChangeNotifier {
     return true;
   }
 
+  /// 启动时由 main 已按设置进入全屏，这里只同步内部标记，
+  /// 保证 ESC、双击退出等状态判断正确
+  void syncInitialFullscreen() {
+    if (isDesktop && _settings.startFullscreen && !_isFullscreen) {
+      _isFullscreen = true;
+    }
+  }
+
   // ==================== 设置持久化 ====================
 
   static const _kAutoPlayNext = 'settings_auto_play_next';

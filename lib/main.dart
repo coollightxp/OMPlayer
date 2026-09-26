@@ -17,17 +17,29 @@ void main() async {
   bool launchAtStartup = false;
   if (desktop) {
     await windowManager.ensureInitialized();
-    setupAutoLaunch();
+
     final prefs = await SharedPreferences.getInstance();
     startFullscreen = prefs.getBool('settings_start_fullscreen') ?? false;
     launchAtStartup = prefs.getBool('settings_launch_at_startup') ?? false;
     // 与系统开机启动项保持同步
     await setAutoLaunchEnabled(launchAtStartup);
+
+    // 关键：必须在窗口首次显示前设置全屏，否则窗口样式切换会导致
+    // 窗口掉到最底层、点击无响应等异常
+    await windowManager.waitUntilReadyToShow(
+      WindowOptions(
+        fullScreen: startFullscreen,
+        title: 'OMPlayer',
+        center: true,
+        backgroundColor: Colors.black,
+        titleBarStyle: TitleBarStyle.normal,
+      ),
+      () async {
+        await windowManager.show();
+        await windowManager.focus();
+      },
+    );
   }
 
   runApp(const OMPlayerApp());
-
-  if (desktop && startFullscreen) {
-    await windowManager.setFullScreen(true);
-  }
 }

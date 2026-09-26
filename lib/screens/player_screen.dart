@@ -75,6 +75,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_controllerRef != c) {
       _controllerRef?.removeListener(_onControllerChanged);
       _controllerRef = c..addListener(_onControllerChanged);
+      // main() 已按"启动全屏"设置进入全屏，同步控制器内部标记
+      c.syncInitialFullscreen();
     }
   }
 
@@ -462,7 +464,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 onDoubleTap: controller.isDesktop
                     ? controller.toggleFullscreen
                     : controller.togglePlayPause,
-                onPanStart: controller.isDesktop
+                // 全屏状态下绝不能拖动窗口，否则窗口会掉到最底层、点击穿透
+                onPanStart: (controller.isDesktop && !controller.isFullscreen)
                     ? (_) => startWindowDrag()
                     : null,
               ),

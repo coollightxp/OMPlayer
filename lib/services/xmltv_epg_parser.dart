@@ -81,16 +81,21 @@ class XmltvEpgParser {
 
   /// 归一化名称：忽略大小写、空格、标点、括号差异
   static String norm(String s) =>
-      s.toLowerCase().replaceAll(RegExp(r'[\s\-_（）()\[\].·、,，]'), '');
+      s.toLowerCase().replaceAll(RegExp(r'[\s\-_（）()\[\].·、,，+]'), '');
 
-  /// 只保留 ASCII 字母数字（去掉汉字等），用于 "CCTV4中文国际"→"cctv4"
-  static String asciiCore(String s) {
-    final core = s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
-    return core;
+  static final _cctvRe = RegExp(r'cctv[-\s]*(\d+)\s*(\+?)');
+
+  /// 仅当名称里包含 "CCTV+数字"（如 CCTV4中文国际、CCTV-1综合、CCTV5+体育赛事）
+  /// 时，提取英文核心 "cctv4"/"cctv1"/"cctv5+"；其他频道一律返回 null，
+  /// 仍按完整原名匹配（湖南卫视、北京卫视等不去汉字）
+  static String? cctvCore(String s) {
+    final m = _cctvRe.firstMatch(s.toLowerCase());
+    if (m == null) return null;
+    return 'cctv${m.group(1)}${m.group(2) ?? ''}';
   }
 
   /// 找到频道对应的 EPG 频道 id
-  /// 顺序：tvgId 精确 → 全名归一化相等 → 英文核心相等 → 包含匹配
+  /// 顺序：tvgId 精确 → 完整原名归一化相等 → CCTV编号核心相等 → 原名包含匹配
   static String? matchChannelId(
     Channel channel,
     Map<String, List<EpgProgram>> epgData,
@@ -105,29 +110,41 @@ class XmltvEpgParser {
       norm(channel.name),
       if (channel.tvgName.isNotEmpty) norm(channel.tvgName),
     }..removeWhere((e) => e.isEmpty);
-    final wantCore = <String>{
-      asciiCore(channel.name),
-      if (channel.tvgName.isNotEmpty) asciiCore(channel.tvgName),
-    }..removeWhere((e) => e.length < 3);
+
+    // 只有 CCTV+数字 频道才计算英文核心
+    final wantCctvCores = <String>{};
+    final c1 = cctvCore(channel.name);
+    if (c1 != null) wantCctvCores.add(c1);
+    if (channel.tvgName.isNotEmpty) {
+      final c2 = cctvCore(channel.tvgName);
+      if (c2 != null) wantCctvCores.add(c2);
+    }
 
     String? fallback;
     for (final entry in epgData.entries) {
       final id = entry.key;
       final names = channelNames[id] ?? [id];
       final fulls = names.map(norm).toList();
-      final cores = names.map(asciiCore).where((e) => e.length >= 3).toList();
 
-      // 2. 全名精确
+      // 2. 完整原名精确（非 CCTV 频道主要走这里）
       if (fulls.any(wantFull.contains)) return id;
 
-      // 3. 去掉汉字后的英文核心精确（CCTV4中文国际 == CCTV4）
-      if (cores.any(wantCore.contains)) return id;
+      // 3. CCTV 编号核心精确：CCTV4中文国际 == CCTV4
+      if (wantCctvCores.isNotEmpty) {
+        for (final n in names) {
+          final core = cctvCore(n);
+          if (core != null && wantCctvCores.contains(core)) return id;
+        }
+        // CCTV 频道必须精确到编号（防止 CCTV5+ 误撞 CCTV5、CCTV1 撞 CCTV13），
+        // 不参与第 4 步模糊匹配
+        continue;
+      }
 
-      // 4. 包含模糊匹配（长度 ≥5，避免 CCTV1 撞上 CCTV13）
+      // 4. 其他频道：按完整原名包含模糊匹配（长度 ≥4，避免单字误撞）
       if (fallback == null) {
-        for (final c in wantCore) {
-          if (c.length < 5) continue;
-          if (cores.any((cn) => cn.contains(c) || c.contains(cn))) {
+        for (final want in wantFull) {
+          if (want.length < 4) continue;
+          if (fulls.any((fn) => fn.contains(want) || want.contains(fn))) {
             fallback = id;
           }
         }
