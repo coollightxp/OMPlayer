@@ -220,19 +220,49 @@ class PlayerController extends ChangeNotifier {
   /// 预约触发回调 - 自动切换/录制
   void _onReservationTriggered(ProgramReservation r) {
     if (r.autoSwitch) {
-      // 找到对应频道并播放
-      final channel = _findChannelById(r.channelId);
+      final channel = _resolveReservationChannel(r);
       if (channel != null) {
         playChannel(channel);
       }
     }
     if (r.autoRecord && isDesktop) {
-      final channel = _findChannelById(r.channelId);
+      final channel = _resolveReservationChannel(r);
       if (channel != null) {
         startRecording();
       }
     }
     notifyListeners();
+  }
+
+  /// 解析预约对应的频道：先按播放列表频道 ID 精确查找，
+  /// 失败则兼容旧数据（存的是 EPG 频道 ID）按 tvgId/名称匹配
+  Channel? _resolveReservationChannel(ProgramReservation r) {
+    final byId = _findChannelById(r.channelId);
+    if (byId != null) return byId;
+    // tvgId 精确匹配
+    for (final cat in _categories) {
+      for (final ch in cat.channels) {
+        if (ch.tvgId.isNotEmpty && ch.tvgId == r.channelId) return ch;
+      }
+    }
+    // 名称模糊匹配（EPG 频道 ID 或预约记录的频道名）
+    for (final key in [r.channelId, r.channelName]) {
+      final lower = key.toLowerCase();
+      if (lower.isEmpty) continue;
+      for (final cat in _categories) {
+        for (final ch in cat.channels) {
+          if (ch.tvgName.isNotEmpty &&
+              ch.tvgName.toLowerCase() == lower) {
+            return ch;
+          }
+          final name = ch.name.toLowerCase();
+          if (name.contains(lower) || lower.contains(name)) {
+            return ch;
+          }
+        }
+      }
+    }
+    return null;
   }
 
   Channel? _findChannelById(String channelId) {
@@ -619,10 +649,13 @@ class PlayerController extends ChangeNotifier {
 
   /// 切换节目预约状态
   Future<bool> toggleReservation(EpgProgram program) async {
+    // 关键：预约里存「播放列表频道 ID」（而非 EPG 频道 ID），
+    // 触发时才能直接找到要切换的频道
+    final channel = findChannelForProgram(program);
     final r = ProgramReservation(
       id: 'res_${program.channelId}_${program.startTime.millisecondsSinceEpoch}',
-      channelId: program.channelId,
-      channelName: _currentChannel?.name ?? '',
+      channelId: channel?.id ?? program.channelId,
+      channelName: channel?.name ?? _currentChannel?.name ?? '',
       programTitle: program.title,
       startTime: program.startTime,
       endTime: program.endTime,
@@ -656,7 +689,12 @@ class PlayerController extends ChangeNotifier {
 
   /// 检查节目是否已预约
   bool isProgramReserved(EpgProgram program) {
-    return reservationManager.isReserved(program.channelId, program.startTime);
+    // 同时检查「播放列表频道 ID」（新）与「EPG 频道 ID」（旧）两种存储
+    final channel = findChannelForProgram(program);
+    final cid = channel?.id ?? program.channelId;
+    return reservationManager.isReserved(cid, program.startTime) ||
+        reservationManager.isReserved(
+            program.channelId, program.startTime);
   }
 
   // ==================== 录制与截图（fvp/MDK 原生，桌面端） ====================

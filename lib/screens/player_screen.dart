@@ -240,17 +240,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   // 左右边缘点击区：单击打开对应侧边栏
                   _buildEdgeTapZones(),
 
-                  // 顶部悬停标题栏（桌面端：鼠标移到顶部出现，可关闭程序）
-                  if (controller.isDesktop)
-                    TopTitleBar(
-                      visible: _topBarVisible,
-                      onHide: () {
-                        if (_topBarVisible) {
-                          setState(() => _topBarVisible = false);
-                        }
-                      },
-                    ),
-
                   // 底部信息/控制面板
                   BottomProgramPanel(
                     isVisible: panelVisible,
@@ -309,6 +298,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     value: controller.volume,
                     label: '音量 ${(controller.volume * 100).round()}%',
                   ),
+
+                  // 顶部悬停标题栏（桌面端，置于最顶层，
+                  // 避免被右上角时钟/切台 OSD 遮挡导致点不到）
+                  if (controller.isDesktop)
+                    TopTitleBar(
+                      visible: _topBarVisible,
+                      onHide: () {
+                        if (_topBarVisible) {
+                          setState(() => _topBarVisible = false);
+                        }
+                      },
+                    ),
                 ],
               );
             },
