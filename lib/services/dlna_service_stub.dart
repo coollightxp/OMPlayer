@@ -28,6 +28,10 @@ class DlnaHooks {
 class DlnaService {
   bool get isRunning => false;
 
+  String get deviceName => '';
+
+  String get deviceEndpoint => '';
+
   Future<void> start({required String uuid, required DlnaHooks hooks}) async {}
 
   void stop() {}

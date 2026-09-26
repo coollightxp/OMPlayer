@@ -680,7 +680,7 @@ class _SystemSettingsTab extends StatelessWidget {
                   style: TextStyle(color: Colors.white, fontSize: 15)),
               subtitle: Text(
                 controller.dlnaRunning
-                    ? '已开启：${controller.dlnaName}（同一局域网内手机可投屏）'
+                    ? '已开启：${controller.dlnaName}\n${controller.dlnaEndpoint}\n手机需与本机同一局域网，防火墙需放行本程序'
                     : '未开启：端口可能被占用或被防火墙拦截',
                 style: const TextStyle(
                     color: Colors.white54, fontSize: 12),

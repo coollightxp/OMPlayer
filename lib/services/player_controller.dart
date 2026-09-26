@@ -118,8 +118,10 @@ class PlayerController extends ChangeNotifier {
   /// DLNA 服务状态（设置面板展示，方便确认是否开启）
   String _dlnaName = '';
   bool _dlnaRunning = false;
+  String _dlnaEndpoint = '';
   String get dlnaName => _dlnaName;
   bool get dlnaRunning => _dlnaRunning;
+  String get dlnaEndpoint => _dlnaEndpoint;
 
   /// 启动 DLNA 接收服务：设备名 = OMPlayer + 机器唯一标识
   Future<void> _startDlna() async {
@@ -176,6 +178,7 @@ class PlayerController extends ChangeNotifier {
       );
       _dlnaName = dlnaService.deviceName;
       _dlnaRunning = dlnaService.isRunning;
+      _dlnaEndpoint = dlnaService.deviceEndpoint;
     } catch (_) {
       _dlnaRunning = false;
     }
@@ -464,8 +467,6 @@ class PlayerController extends ChangeNotifier {
       // 退出全屏后强制恢复标准标题栏，修复最小化/最大化按钮丢失
       await windowManager.setTitleBarStyle(TitleBarStyle.normal);
     }
-    // fvp/MDK 纹理在窗口尺寸变化后可能不刷新（有声无画面）
-    await _refreshVideoTexture();
     notifyListeners();
   }
 
@@ -477,59 +478,8 @@ class PlayerController extends ChangeNotifier {
     await windowManager.setAlwaysOnTop(false);
     // 退出全屏后强制恢复标准标题栏，修复最小化/最大化按钮丢失
     await windowManager.setTitleBarStyle(TitleBarStyle.normal);
-    await _refreshVideoTexture();
     notifyListeners();
     return true;
-  }
-
-  /// 全屏切换后重建播放控制器，彻底解决 fvp/MDK 纹理在窗口尺寸
-  /// 变化后不刷新导致的黑屏假死（有声音无画面）。
-  /// 直播流重新缓冲（约 1-2 秒），点播恢复到原进度。
-  bool _rebuildingTexture = false;
-  Future<void> _refreshVideoTexture() async {
-    if (_rebuildingTexture) return;
-    final channel = _currentChannel;
-    final vc = _videoController;
-    if (channel == null || vc == null || !vc.value.isInitialized) return;
-    _rebuildingTexture = true;
-    try {
-      final urls = channel.streamUrls;
-      final url = urls[_sourceIndex < urls.length ? _sourceIndex : 0];
-      final wasPlaying = vc.value.isPlaying;
-      final pos = vc.value.position;
-      _state = PlayerState.loading;
-      notifyListeners();
-      await _disposeVideoController();
-      try {
-        _videoController = VideoPlayerController.networkUrl(
-          Uri.parse(url),
-          videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-        );
-        _videoController!.addListener(_onVideoListener);
-        await _videoController!
-            .initialize()
-            .timeout(const Duration(seconds: 15));
-        await _videoController!.setLooping(false);
-        // 点播恢复进度；直播流 seek 一般被忽略，从头播
-        if (pos > const Duration(seconds: 2)) {
-          try {
-            await _videoController!.seekTo(pos);
-          } catch (_) {}
-        }
-        if (wasPlaying) {
-          await _videoController!.play();
-        }
-        await WakelockPlus.enable();
-        _state =
-            wasPlaying ? PlayerState.playing : PlayerState.paused;
-      } catch (e) {
-        debugPrint('全屏切换重建播放失败: $e');
-        _state = PlayerState.error;
-      }
-      notifyListeners();
-    } finally {
-      _rebuildingTexture = false;
-    }
   }
 
   /// 启动时由 main 已按设置进入全屏，这里只同步内部标记，

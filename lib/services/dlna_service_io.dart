@@ -46,10 +46,13 @@ class DlnaService {
   String? _currentUri;
   String _currentTitle = '';
 
-  bool get isRunning => _http != null;
+  bool get isRunning => _http != null && _ssdp != null;
 
   /// 设备名称（OMPlayer + 机器标识）
   String get deviceName => _name;
+
+  /// HTTP 服务地址（http://ip:port），用于排查连通性
+  String get deviceEndpoint => 'http://$_ip:$_port';
 
   /// 启动服务；任何失败静默返回，不阻塞播放器
   Future<void> start({required String uuid, required DlnaHooks hooks}) async {
@@ -100,14 +103,52 @@ class DlnaService {
     return 'OMPlayer-${suffix.toUpperCase()}';
   }
 
+  /// 选择最可能被手机访问到的本机 IP：
+  /// 优先 192.168.* 真实网卡，其次 10.* / 172.16-31.*，
+  /// 跳过链路本地地址并降低虚拟网卡（VMware/Hyper-V/WSL 等）优先级
   Future<String> _localIp() async {
     try {
-      final ifs = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      final ifs = await NetworkInterface.list(
+          type: InternetAddressType.IPv4, includeLoopback: false);
+      String best = '';
+      var bestScore = -1;
       for (final i in ifs) {
+        final name = i.name.toLowerCase();
+        final isVirtual = name.contains('virtual') ||
+            name.contains('vmware') ||
+            name.contains('hyper-v') ||
+            name.contains('vethernet') ||
+            name.contains('wsl') ||
+            name.contains('docker') ||
+            name.contains('vbox') ||
+            name.contains('loopback');
         for (final a in i.addresses) {
-          if (!a.isLoopback) return a.address;
+          if (a.isLoopback) continue;
+          final addr = a.address;
+          int score;
+          if (addr.startsWith('169.254.')) {
+            continue; // 链路本地不可用
+          } else if (addr.startsWith('192.168.')) {
+            score = isVirtual ? 40 : 100;
+          } else if (addr.startsWith('10.')) {
+            score = isVirtual ? 30 : 80;
+          } else if (addr.startsWith('172.')) {
+            final second = int.tryParse(addr.split('.')[1]) ?? 0;
+            if (second >= 16 && second <= 31) {
+              score = isVirtual ? 20 : 60;
+            } else {
+              continue;
+            }
+          } else {
+            score = 5; // 其它地址保底
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            best = addr;
+          }
         }
       }
+      if (best.isNotEmpty) return best;
     } catch (_) {}
     return '127.0.0.1';
   }
@@ -118,7 +159,21 @@ class DlnaService {
     final socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4, 1900,
         reuseAddress: true);
-    socket.joinMulticast(InternetAddress('239.255.255.250'));
+    // 在所有非回环网卡上加入组播组（虚拟网卡多的机器上，
+    // 只加默认网卡会导致手机扫描不到）
+    try {
+      final ifs = await NetworkInterface.list(
+          type: InternetAddressType.IPv4, includeLoopback: false);
+      for (final i in ifs) {
+        try {
+          socket.joinMulticast(InternetAddress('239.255.255.250'), i);
+        } catch (_) {}
+      }
+    } catch (_) {
+      try {
+        socket.joinMulticast(InternetAddress('239.255.255.250'));
+      } catch (_) {}
+    }
     _ssdp = socket;
     socket.listen((event) {
       if (event != RawSocketEvent.read) return;
