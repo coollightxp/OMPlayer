@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -112,7 +113,77 @@ class PlayerController extends ChangeNotifier {
     // 先启动 DLNA 投屏接收服务（不等系统值初始化，避免被阻塞）
     _startDlna();
     _initSystemValues();
+
+    // 频道加载完毕后，恢复上次退出时播放的频道
+    await restoreLastChannel();
+
     notifyListeners();
+  }
+
+  // ==================== 上次播放记忆 ====================
+
+  static const _kLastChannel = 'last_channel_v1';
+
+  /// 播放成功后记录当前频道，供下次启动恢复
+  Future<void> _saveLastChannel() async {
+    final ch = _currentChannel;
+    if (ch == null) return;
+    try {
+      final p = await SharedPreferences.getInstance();
+      final data = {
+        'id': ch.id,
+        'name': ch.name,
+        'logoUrl': ch.logoUrl,
+        'tvgId': ch.tvgId,
+        'tvgName': ch.tvgName,
+        'groupTitle': ch.groupTitle,
+        'categoryId': ch.categoryId,
+        'streamUrls': ch.streamUrls,
+        'sourceIndex': _sourceIndex,
+      };
+      await p.setString(_kLastChannel, jsonEncode(data));
+    } catch (_) {}
+  }
+
+  /// 启动时恢复上次播放的频道：优先在当前播放列表中精确匹配，
+  /// 匹配不到则用记录的播放地址构造临时频道播放
+  Future<void> restoreLastChannel() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final str = p.getString(_kLastChannel);
+      if (str == null || str.isEmpty) return;
+      final Map<String, dynamic> data =
+          jsonDecode(str) as Map<String, dynamic>;
+      final urls = (data['streamUrls'] as List<dynamic>?)
+              ?.map((e) => e.toString())
+              .where((e) => e.isNotEmpty)
+              .toList() ??
+          const <String>[];
+      if (urls.isEmpty) return;
+      final id = data['id'] as String? ?? '';
+      final name = data['name'] as String? ?? '';
+      final srcIdx = (data['sourceIndex'] as int?) ?? 0;
+
+      // 1) 在已加载分类中按频道 ID 精确查找
+      Channel? target;
+      if (id.isNotEmpty) {
+        target = _findChannelById(id);
+      }
+      // 2) 没找到则用记录的地址列表 + 元数据构造临时频道
+      target ??= Channel(
+        id: id.isNotEmpty ? id : '__last_played__',
+        name: name,
+        logoUrl: data['logoUrl'] as String? ?? '',
+        streamUrls: urls,
+        categoryId: data['categoryId'] as String? ?? '',
+        tvgId: data['tvgId'] as String? ?? '',
+        tvgName: data['tvgName'] as String? ?? '',
+        groupTitle: data['groupTitle'] as String? ?? '',
+      );
+      _sourceIndex =
+          srcIdx < target.streamUrls.length ? srcIdx : 0;
+      await playChannel(target);
+    } catch (_) {}
   }
 
   /// DLNA 服务状态（设置面板展示，方便确认是否开启）
@@ -415,6 +486,8 @@ class PlayerController extends ChangeNotifier {
       await WakelockPlus.enable();
 
       _state = PlayerState.playing;
+      // 记录当前频道，下次启动时恢复
+      await _saveLastChannel();
     } catch (e) {
       debugPrint('源 ${_sourceIndex + 1}/$sourceCount 播放失败: $e');
       // 自动尝试下一个源

@@ -22,11 +22,22 @@ class RightEpgPanel extends StatefulWidget {
 
 class _RightEpgPanelState extends State<RightEpgPanel> {
   final ScrollController _scrollController = ScrollController();
+  // 记录已定位过的节目单首项，避免每次 tick 都重复滚动
+  String? _lastScrolledKey;
 
   @override
   void dispose() {
     _scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant RightEpgPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 面板由开变关时重置定位标记，下次打开重新滚动到当前节目
+    if (oldWidget.isOpen && !widget.isOpen) {
+      _lastScrolledKey = null;
+    }
   }
 
   @override
@@ -117,9 +128,32 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
           itemBuilder: (context, index) {
             return _EpgProgramTile(program: epg[index]);
           },
-        );
+        ).._maybeScrollToNow(epg);
       },
     );
+  }
+
+  /// 打开节目单时，自动滚动定位到当前正在播放的节目
+  void _maybeScrollToNow(List<EpgProgram> epg) {
+    final key = epg.isEmpty ? '' : epg.first.channelId;
+    if (_lastScrolledKey == key) return;
+    _lastScrolledKey = key;
+    if (epg.isEmpty) return;
+    final idx = epg.indexWhere((p) => p.isNowPlaying);
+    if (idx < 0) return;
+    // 单条节目卡片估算高度：外边距 8 + 内边距 24 + 三行文字 ~64 ≈ 96
+    const itemHeight = 96.0;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      final viewport = _scrollController.position.viewportDimension;
+      final target = (idx * itemHeight - viewport / 2 + itemHeight / 2)
+          .clamp(0.0, _scrollController.position.maxScrollExtent);
+      _scrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+      );
+    });
   }
 }
 
