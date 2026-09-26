@@ -104,11 +104,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  /// 切台提示：大字台名 + 小字当前节目，3 秒后消失
+  /// 切台提示：大字台名 + 小字当前节目，8 秒后消失
   void _showChannelOsd() {
     _osdTimer?.cancel();
     setState(() => _osdVisible = true);
-    _osdTimer = Timer(const Duration(seconds: 3), () {
+    _osdTimer = Timer(const Duration(seconds: 8), () {
       if (mounted) setState(() => _osdVisible = false);
     });
   }
@@ -599,7 +599,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(ok
-                ? '开始录制，视频保存到 视频/OMPlayer/recordings'
+                ? '开始录制，视频保存到程序所在文件夹的 recordings 子文件夹'
                 : '录制失败'),
             duration: const Duration(seconds: 2),
           ),

@@ -11,9 +11,17 @@ class MediaCaptureService {
   static bool get isDesktop =>
       !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
 
-  /// 获取保存目录（截图/录制固定保存到 用户视频目录/OMPlayer/）
+  /// 获取保存目录（截图/录制优先保存到 程序所在目录/screenshots、recordings）
   Future<String> getSaveDir(String subDir) async {
-    late String base;
+    // 优先：exe 所在文件夹下的子文件夹
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final target = Directory('$exeDir/$subDir');
+      await target.create(recursive: true);
+      return target.path;
+    } catch (_) {}
+    // 回退：程序目录不可写（如安装在受保护目录）时保存到用户视频目录
+    final String base;
     if (Platform.isWindows) {
       base = '${Platform.environment['USERPROFILE']}\\Videos\\OMPlayer';
     } else if (Platform.isMacOS) {

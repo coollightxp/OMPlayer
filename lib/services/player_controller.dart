@@ -327,6 +327,14 @@ class PlayerController extends ChangeNotifier {
     if (!isDesktop) return;
     _isFullscreen = !_isFullscreen;
     await windowManager.setFullScreen(_isFullscreen);
+    // 全屏时窗口置顶，避免被其它窗口覆盖
+    await windowManager.setAlwaysOnTop(_isFullscreen);
+    if (!_isFullscreen) {
+      // 退出全屏后强制恢复标准标题栏，修复最小化/最大化按钮丢失
+      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    }
+    // fvp/MDK 纹理在窗口尺寸变化后可能不刷新（有声无画面）
+    await _refreshVideoTexture();
     notifyListeners();
   }
 
@@ -335,8 +343,26 @@ class PlayerController extends ChangeNotifier {
     if (!_isFullscreen) return false;
     _isFullscreen = false;
     await windowManager.setFullScreen(false);
+    await windowManager.setAlwaysOnTop(false);
+    // 退出全屏后强制恢复标准标题栏，修复最小化/最大化按钮丢失
+    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    await _refreshVideoTexture();
     notifyListeners();
     return true;
+  }
+
+  /// 强制视频纹理重绘：窗口尺寸变化后 fvp/MDK 可能黑屏（声音正常），
+  /// 通过 暂停→原位置 seek→继续 播放触发解码器重新送帧
+  Future<void> _refreshVideoTexture() async {
+    final vc = _videoController;
+    if (vc == null || !vc.value.isInitialized) return;
+    try {
+      final wasPlaying = vc.value.isPlaying;
+      final pos = vc.value.position;
+      if (wasPlaying) await vc.pause();
+      await vc.seekTo(pos);
+      if (wasPlaying) await vc.play();
+    } catch (_) {}
   }
 
   /// 启动时由 main 已按设置进入全屏，这里只同步内部标记，
@@ -391,13 +417,19 @@ class PlayerController extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// 更新设置并持久化（开机启动项会同步到系统）
+  /// 更新设置并持久化（开机启动项会同步到系统；启动全屏立即生效）
   void updateSettings(PlayerSettings settings) {
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
+    final fullscreenChanged =
+        settings.startFullscreen != _settings.startFullscreen;
     _settings = settings;
     _saveSettings();
     if (launchChanged && isDesktop) {
       setAutoLaunchEnabled(settings.launchAtStartup);
+    }
+    // 切换"启动全屏"开关时立即进入/退出全屏，而不是等下次启动
+    if (fullscreenChanged && isDesktop && _isFullscreen != settings.startFullscreen) {
+      toggleFullscreen();
     }
     notifyListeners();
   }

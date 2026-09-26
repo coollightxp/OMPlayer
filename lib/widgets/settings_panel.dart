@@ -56,9 +56,12 @@ class _SettingsPanelState extends State<SettingsPanel>
           borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
           child: SafeArea(
             top: false,
-            child: SizedBox(
-              height: MediaQuery.of(context).size.height * 0.7,
-              child: Column(
+            child: Builder(builder: (context) {
+              // 横屏手机等矮屏（高度<500）时面板几乎占满全高，避免太短无法操作
+              final screenH = MediaQuery.of(context).size.height;
+              return SizedBox(
+                height: screenH * (screenH < 500 ? 0.95 : 0.7),
+                child: Column(
                 children: [
                   // 顶部拖拽条 + 标题
                   Container(
@@ -124,7 +127,8 @@ class _SettingsPanelState extends State<SettingsPanel>
                   ),
                 ],
               ),
-            ),
+              );
+            }),
           ),
         ),
       ),
@@ -197,7 +201,10 @@ class _PlaylistTabState extends State<_PlaylistTab> {
   Widget build(BuildContext context) {
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
-        return Column(
+        final playlists = controller.sourceManager.playlists;
+        // 整页 ListView：表单+列表一起滚动，横屏矮屏也不会溢出
+        return ListView(
+          padding: const EdgeInsets.only(bottom: 12),
           children: [
             // 添加表单
             Padding(
@@ -264,79 +271,76 @@ class _PlaylistTabState extends State<_PlaylistTab> {
               ),
             ),
             const Divider(color: Colors.white12),
-            // 播放列表列表
-            Expanded(
-              child: controller.sourceManager.playlists.isEmpty
-                  ? const Center(
-                      child: Text('暂无播放列表，请添加',
-                          style: TextStyle(color: Colors.white54)),
-                    )
-                  : ListView.builder(
-                      itemCount:
-                          controller.sourceManager.playlists.length,
-                      itemBuilder: (context, index) {
-                        final p = controller.sourceManager.playlists[index];
-                        final isCurrent =
-                            controller.sourceManager.currentPlaylistId ==
-                                p.id;
-                        return ListTile(
-                          // 点击整行即切换为当前播放列表
-                          onTap: isCurrent
-                              ? null
-                              : () => controller.selectPlaylist(p.id),
-                          leading: Icon(
-                            p.type == PlaylistSourceType.url
-                                ? Icons.cloud
-                                : Icons.folder,
-                            color: isCurrent
-                                ? Colors.blueAccent
-                                : Colors.white54,
-                          ),
-                          title: Text(
-                            p.name,
-                            style: TextStyle(
-                              color: isCurrent
-                                  ? Colors.blueAccent
-                                  : Colors.white,
-                              fontWeight: isCurrent
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                            ),
-                          ),
-                          subtitle: Text(
-                            p.url,
-                            style: const TextStyle(
-                                color: Colors.white38, fontSize: 11),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // 当前正在使用：蓝色对号（仅状态标识）
-                              if (isCurrent)
-                                const Icon(Icons.check_circle,
-                                    color: Colors.blueAccent, size: 22),
-                              IconButton(
-                                icon: const Icon(Icons.refresh,
-                                    color: Colors.amber),
-                                onPressed: () =>
-                                    controller.refreshChannels(),
-                                tooltip: '刷新',
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete,
-                                    color: Colors.redAccent),
-                                onPressed: () =>
-                                    controller.removePlaylist(p.id),
-                                tooltip: '删除',
-                              ),
-                            ],
-                          ),
-                        );
-                      },
+            // 播放列表
+            if (playlists.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 40),
+                child: Center(
+                  child: Text('暂无播放列表，请添加',
+                      style: TextStyle(color: Colors.white54)),
+                ),
+              )
+            else
+              ...List.generate(playlists.length, (index) {
+                final p = playlists[index];
+                final isCurrent =
+                    controller.sourceManager.currentPlaylistId == p.id;
+                return ListTile(
+                  // 点击整行即切换为当前播放列表
+                  onTap: isCurrent
+                      ? null
+                      : () => controller.selectPlaylist(p.id),
+                  leading: Icon(
+                    p.type == PlaylistSourceType.url
+                        ? Icons.cloud
+                        : Icons.folder,
+                    color: isCurrent
+                        ? Colors.blueAccent
+                        : Colors.white54,
+                  ),
+                  title: Text(
+                    p.name,
+                    style: TextStyle(
+                      color: isCurrent
+                          ? Colors.blueAccent
+                          : Colors.white,
+                      fontWeight: isCurrent
+                          ? FontWeight.bold
+                          : FontWeight.normal,
                     ),
-            ),
+                  ),
+                  subtitle: Text(
+                    p.url,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 当前正在使用：蓝色对号（仅状态标识）
+                      if (isCurrent)
+                        const Icon(Icons.check_circle,
+                            color: Colors.blueAccent, size: 22),
+                      IconButton(
+                        icon: const Icon(Icons.refresh,
+                            color: Colors.amber),
+                        onPressed: () =>
+                            controller.refreshChannels(),
+                        tooltip: '刷新',
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete,
+                            color: Colors.redAccent),
+                        onPressed: () =>
+                            controller.removePlaylist(p.id),
+                        tooltip: '删除',
+                      ),
+                    ],
+                  ),
+                );
+              }),
           ],
         );
       },
@@ -389,7 +393,10 @@ class _EpgTabState extends State<_EpgTab> {
   Widget build(BuildContext context) {
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
-        return Column(
+        final epgs = controller.sourceManager.epgs;
+        // 整页 ListView：表单+列表一起滚动，横屏矮屏也不会溢出
+        return ListView(
+          padding: const EdgeInsets.only(bottom: 12),
           children: [
             Padding(
               padding: const EdgeInsets.all(12),
@@ -420,70 +427,69 @@ class _EpgTabState extends State<_EpgTab> {
               ),
             ),
             const Divider(color: Colors.white12),
-            Expanded(
-              child: controller.sourceManager.epgs.isEmpty
-                  ? const Center(
-                      child: Text('暂无 EPG 源，请添加',
-                          style: TextStyle(color: Colors.white54)),
-                    )
-                  : ListView.builder(
-                      itemCount: controller.sourceManager.epgs.length,
-                      itemBuilder: (context, index) {
-                        final e = controller.sourceManager.epgs[index];
-                        final isCurrent =
-                            controller.sourceManager.currentEpgId == e.id;
-                        return ListTile(
-                          // 点击整行即切换为当前 EPG
-                          onTap: isCurrent
-                              ? null
-                              : () => controller.selectEpg(e.id),
-                          leading: Icon(Icons.menu_book,
-                              color: isCurrent
-                                  ? Colors.blueAccent
-                                  : Colors.white54),
-                          title: Text(
-                            e.name,
-                            style: TextStyle(
-                              color: isCurrent
-                                  ? Colors.blueAccent
-                                  : Colors.white,
-                              fontWeight: isCurrent
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                            ),
-                          ),
-                          subtitle: Text(
-                            e.url,
-                            style: const TextStyle(
-                                color: Colors.white38, fontSize: 11),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // 当前正在使用：蓝色对号（仅状态标识）
-                              if (isCurrent)
-                                const Icon(Icons.check_circle,
-                                    color: Colors.blueAccent, size: 22),
-                              IconButton(
-                                icon: const Icon(Icons.refresh,
-                                    color: Colors.amber),
-                                onPressed: () => controller.refreshEpg(),
-                                tooltip: '刷新',
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete,
-                                    color: Colors.redAccent),
-                                onPressed: () => controller.removeEpg(e.id),
-                                tooltip: '删除',
-                              ),
-                            ],
-                          ),
-                        );
-                      },
+            if (epgs.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 40),
+                child: Center(
+                  child: Text('暂无 EPG 源，请添加',
+                      style: TextStyle(color: Colors.white54)),
+                ),
+              )
+            else
+              ...List.generate(epgs.length, (index) {
+                final e = epgs[index];
+                final isCurrent =
+                    controller.sourceManager.currentEpgId == e.id;
+                return ListTile(
+                  // 点击整行即切换为当前 EPG
+                  onTap: isCurrent
+                      ? null
+                      : () => controller.selectEpg(e.id),
+                  leading: Icon(Icons.menu_book,
+                      color: isCurrent
+                          ? Colors.blueAccent
+                          : Colors.white54),
+                  title: Text(
+                    e.name,
+                    style: TextStyle(
+                      color: isCurrent
+                          ? Colors.blueAccent
+                          : Colors.white,
+                      fontWeight: isCurrent
+                          ? FontWeight.bold
+                          : FontWeight.normal,
                     ),
-            ),
+                  ),
+                  subtitle: Text(
+                    e.url,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 当前正在使用：蓝色对号（仅状态标识）
+                      if (isCurrent)
+                        const Icon(Icons.check_circle,
+                            color: Colors.blueAccent, size: 22),
+                      IconButton(
+                        icon: const Icon(Icons.refresh,
+                            color: Colors.amber),
+                        onPressed: () => controller.refreshEpg(),
+                        tooltip: '刷新',
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete,
+                            color: Colors.redAccent),
+                        onPressed: () => controller.removeEpg(e.id),
+                        tooltip: '删除',
+                      ),
+                    ],
+                  ),
+                );
+              }),
           ],
         );
       },

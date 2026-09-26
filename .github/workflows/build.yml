@@ -35,6 +35,29 @@ jobs:
       - name: Create Android project files
         run: flutter create . --platforms=android --project-name omplayer
 
+      - name: Patch Android config (cleartext HTTP / cutout fullscreen)
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          # IPTV 源多为 http:// 明文地址，必须允许明文流量
+          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' $MANIFEST
+          # 显式声明网络权限（video_player 会合并，但显式更稳）
+          grep -q "android.permission.INTERNET" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <application|' $MANIFEST
+          # 挖孔/刘海屏全屏不留黑边
+          mkdir -p android/app/src/main/res/values-v28
+          cat > android/app/src/main/res/values-v28/styles.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+                  <item name="android:windowBackground">@drawable/launch_background</item>
+                  <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+              </style>
+              <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+                  <item name="android:windowBackground">?android:colorBackground</item>
+                  <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+              </style>
+          </resources>
+          XML
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -133,10 +156,10 @@ jobs:
         with:
           files: OMPlayer-windows.zip
 
-  # ==================== macOS Desktop ====================
-  build-macos:
-    name: Build macOS
-    runs-on: macos-latest
+  # ==================== Linux Desktop ====================
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -148,26 +171,33 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Create macOS project files
-        run: flutter create . --platforms=macos --project-name omplayer
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev pkg-config
+
+      - name: Create Linux project files
+        run: flutter create . --platforms=linux --project-name omplayer
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build macOS
-        run: flutter build macos --release
+      - name: Build Linux
+        run: flutter build linux --release
 
-      - name: Zip macOS build
-        run: cd build/macos/Build/Products/Release && zip -r OMPlayer-macos.zip OMPlayer.app
+      - name: Zip Linux build
+        run: |
+          cd build/linux/x64/bundle
+          zip -r ../../../../OMPlayer-linux.zip .
 
-      - name: Upload macOS artifact
+      - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-build
-          path: build/macos/Build/Products/Release/OMPlayer-macos.zip
+          name: linux-build
+          path: OMPlayer-linux.zip
 
       - name: Upload to Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: build/macos/Build/Products/Release/OMPlayer-macos.zip
+          files: OMPlayer-linux.zip

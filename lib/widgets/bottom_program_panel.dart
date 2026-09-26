@@ -99,7 +99,7 @@ class BottomProgramPanel extends StatelessWidget {
   // ==================== 台标 ====================
 
   Widget _buildLogo(PlayerController c) {
-    const double size = 80;
+    const double size = 104;
     final logo = c.currentLogo;
     Widget placeholder() => Container(
           width: size,
@@ -108,7 +108,7 @@ class BottomProgramPanel extends StatelessWidget {
             color: Colors.white12,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: const Icon(Icons.live_tv, color: Colors.white54, size: 42),
+          child: const Icon(Icons.live_tv, color: Colors.white54, size: 54),
         );
     if (logo.isEmpty) return placeholder();
     return ClipRRect(

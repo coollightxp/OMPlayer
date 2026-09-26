@@ -1,4 +1,7 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -11,6 +14,14 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Windows/Linux 注册 MDK 视频播放后端（video_player 官方不支持桌面端）
   registerFvp();
+
+  // 安卓手机：强制横屏（直播/电视场景，竖屏会留黑边）
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  }
 
   final desktop = MediaCaptureService.isDesktop;
   bool startFullscreen = false;
@@ -31,12 +42,15 @@ void main() async {
         fullScreen: startFullscreen,
         title: 'OMPlayer',
         center: true,
-        backgroundColor: Colors.black,
         titleBarStyle: TitleBarStyle.normal,
       ),
       () async {
         await windowManager.show();
         await windowManager.focus();
+        // 启动即全屏时保持窗口置顶，避免被其它窗口覆盖
+        if (startFullscreen) {
+          await windowManager.setAlwaysOnTop(true);
+        }
       },
     );
   }
