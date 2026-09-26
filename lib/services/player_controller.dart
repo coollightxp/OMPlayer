@@ -218,18 +218,34 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// 预约触发回调 - 自动切换/录制
-  void _onReservationTriggered(ProgramReservation r) {
-    if (r.autoSwitch) {
-      final channel = _resolveReservationChannel(r);
-      if (channel != null) {
-        playChannel(channel);
+  Future<void> _onReservationTriggered(ProgramReservation r) async {
+    Channel? channel;
+    if (r.autoSwitch || (r.autoRecord && isDesktop)) {
+      // 优先使用预约时记录的播放地址直接播放（不依赖当前播放列表）
+      if (r.streamUrls.isNotEmpty) {
+        channel = Channel(
+          id: r.channelId,
+          name: r.channelName.isNotEmpty ? r.channelName : r.programTitle,
+          logoUrl: r.logoUrl,
+          streamUrls: r.streamUrls,
+          categoryId: '',
+          tvgId: r.tvgId,
+          tvgName: r.tvgName,
+        );
+      } else {
+        // 兼容旧预约记录：按 ID/tvgId/名称从当前播放列表反查
+        channel = _resolveReservationChannel(r);
       }
     }
-    if (r.autoRecord && isDesktop) {
-      final channel = _resolveReservationChannel(r);
-      if (channel != null) {
-        startRecording();
+    if (r.autoSwitch && channel != null) {
+      await playChannel(channel);
+    }
+    if (r.autoRecord && isDesktop && channel != null) {
+      // 保证录制针对的是预约频道
+      if (_currentChannel?.id != channel.id) {
+        await playChannel(channel);
       }
+      startRecording();
     }
     notifyListeners();
   }
@@ -519,6 +535,7 @@ class PlayerController extends ChangeNotifier {
   static const _kSensitivity = 'settings_sensitivity';
   static const _kAutoHide = 'settings_auto_hide';
   static const _kLaunchAtStartup = 'settings_launch_at_startup';
+  static const _kStartFullscreen = 'settings_start_fullscreen';
   static const _kShowClock = 'settings_show_clock';
   static const _kDefaultVolume = 'settings_default_volume';
   static const _kDefaultBrightness = 'settings_default_brightness';
@@ -532,6 +549,7 @@ class PlayerController extends ChangeNotifier {
         gestureSensitivity: p.getDouble(_kSensitivity) ?? 1.0,
         autoHideDelay: p.getInt(_kAutoHide) ?? 3000,
         launchAtStartup: p.getBool(_kLaunchAtStartup) ?? false,
+        startFullscreen: p.getBool(_kStartFullscreen) ?? false,
         showClock: p.getBool(_kShowClock) ?? false,
         defaultVolume: p.getDouble(_kDefaultVolume) ?? 0.8,
         defaultBrightness: p.getDouble(_kDefaultBrightness) ?? 0.8,
@@ -547,9 +565,22 @@ class PlayerController extends ChangeNotifier {
       await p.setDouble(_kSensitivity, _settings.gestureSensitivity);
       await p.setInt(_kAutoHide, _settings.autoHideDelay);
       await p.setBool(_kLaunchAtStartup, _settings.launchAtStartup);
+      await p.setBool(_kStartFullscreen, _settings.startFullscreen);
       await p.setBool(_kShowClock, _settings.showClock);
       await p.setDouble(_kDefaultVolume, _settings.defaultVolume);
       await p.setDouble(_kDefaultBrightness, _settings.defaultBrightness);
+    } catch (_) {}
+  }
+
+  /// 启动时由 main() 按「启动全屏」设置进入全屏后，同步内部标记。
+  /// 该设置仅启动时使用一次，运行期间双击全屏/还原与此无关。
+  /// 直接读持久化值，避免与 _loadSettings() 的异步加载竞态。
+  Future<void> syncInitialFullscreen() async {
+    if (!isDesktop) return;
+    try {
+      final p = await SharedPreferences.getInstance();
+      _isFullscreen = p.getBool(_kStartFullscreen) ?? false;
+      notifyListeners();
     } catch (_) {}
   }
 
@@ -649,19 +680,23 @@ class PlayerController extends ChangeNotifier {
 
   /// 切换节目预约状态
   Future<bool> toggleReservation(EpgProgram program) async {
-    // 关键：预约里存「播放列表频道 ID」（而非 EPG 频道 ID），
-    // 触发时才能直接找到要切换的频道
-    final channel = findChannelForProgram(program);
+    // 找到对应频道，记录：时间、节目名、频道名、播放地址（全部备用源）、
+    // 台标、EPG 标识。到点后直接用记录的地址播放，避免按名称反查跳错台
+    final channel = findChannelForProgram(program) ?? _currentChannel;
     final r = ProgramReservation(
       id: 'res_${program.channelId}_${program.startTime.millisecondsSinceEpoch}',
       channelId: channel?.id ?? program.channelId,
-      channelName: channel?.name ?? _currentChannel?.name ?? '',
+      channelName: channel?.name ?? '',
       programTitle: program.title,
       startTime: program.startTime,
       endTime: program.endTime,
       autoSwitch: true,
       autoRecord: false,
       createdAt: DateTime.now(),
+      streamUrls: channel?.streamUrls ?? const [],
+      logoUrl: channel?.logoUrl ?? '',
+      tvgId: channel?.tvgId ?? '',
+      tvgName: channel?.tvgName ?? program.channelId,
     );
     final result = await reservationManager.toggleReservation(r);
     notifyListeners();

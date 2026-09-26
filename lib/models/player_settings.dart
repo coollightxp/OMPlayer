@@ -24,6 +24,9 @@ class PlayerSettings {
   /// 开机自启动
   final bool launchAtStartup;
 
+  /// 启动即进入全屏（仅在程序启动时检测一次）
+  final bool startFullscreen;
+
   /// 右上角常驻显示系统时间
   final bool showClock;
 
@@ -36,6 +39,7 @@ class PlayerSettings {
     this.gestureSensitivity = 1.0,
     this.autoHideDelay = 3000,
     this.launchAtStartup = false,
+    this.startFullscreen = false,
     this.showClock = false,
   });
 
@@ -48,6 +52,7 @@ class PlayerSettings {
     double? gestureSensitivity,
     int? autoHideDelay,
     bool? launchAtStartup,
+    bool? startFullscreen,
     bool? showClock,
   }) {
     return PlayerSettings(
@@ -59,6 +64,7 @@ class PlayerSettings {
       gestureSensitivity: gestureSensitivity ?? this.gestureSensitivity,
       autoHideDelay: autoHideDelay ?? this.autoHideDelay,
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
+      startFullscreen: startFullscreen ?? this.startFullscreen,
       showClock: showClock ?? this.showClock,
     );
   }

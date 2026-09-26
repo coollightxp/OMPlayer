@@ -79,6 +79,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_controllerRef != c) {
       _controllerRef?.removeListener(_onControllerChanged);
       _controllerRef = c..addListener(_onControllerChanged);
+      // 同步 main() 启动时按「启动全屏」设置进入的全屏标记
+      c.syncInitialFullscreen();
     }
   }
 
@@ -301,7 +303,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   // 顶部悬停标题栏（桌面端，置于最顶层，
                   // 避免被右上角时钟/切台 OSD 遮挡导致点不到）
-                  if (controller.isDesktop)
+                  // 频道抽屉 / EPG / 设置打开时不显示，以免挡住它们
+                  // 顶部的关闭、返回按钮
+                  if (controller.isDesktop &&
+                      !_leftDrawerOpen &&
+                      !_rightEpgOpen &&
+                      !_settingsOpen)
                     TopTitleBar(
                       visible: _topBarVisible,
                       onHide: () {
@@ -356,6 +363,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _openDrawer({required bool left}) {
     setState(() {
+      // 打开面板时隐藏悬停标题栏，避免遮挡面板顶部按钮
+      _topBarVisible = false;
       if (left) {
         _leftDrawerOpen = true;
         _rightEpgOpen = false;
@@ -370,6 +379,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 快捷键用：再次按键时关闭对应面板
   void _toggleDrawer({required bool left}) {
     setState(() {
+      _topBarVisible = false;
       if (left) {
         if (_leftDrawerOpen) {
           _leftDrawerOpen = false;
@@ -585,7 +595,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _toggleSettings() {
-    setState(() => _settingsOpen = !_settingsOpen);
+    setState(() {
+      _settingsOpen = !_settingsOpen;
+      // 打开设置时隐藏悬停标题栏
+      if (_settingsOpen) _topBarVisible = false;
+    });
   }
 
   /// 桌面端快捷键：空格 播放/暂停，F/F11 全屏，M 静音，
