@@ -417,19 +417,15 @@ class PlayerController extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// 更新设置并持久化（开机启动项会同步到系统；启动全屏立即生效）
+  /// 更新设置并持久化（开机启动项会同步到系统）
+  /// 注意：「启动全屏」仅在程序启动时检测一次，运行期间
+  /// 双击切换全屏与该参数完全无关，这里不做任何联动
   void updateSettings(PlayerSettings settings) {
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
-    final fullscreenChanged =
-        settings.startFullscreen != _settings.startFullscreen;
     _settings = settings;
     _saveSettings();
     if (launchChanged && isDesktop) {
       setAutoLaunchEnabled(settings.launchAtStartup);
-    }
-    // 切换"启动全屏"开关时立即进入/退出全屏，而不是等下次启动
-    if (fullscreenChanged && isDesktop && _isFullscreen != settings.startFullscreen) {
-      toggleFullscreen();
     }
     notifyListeners();
   }
