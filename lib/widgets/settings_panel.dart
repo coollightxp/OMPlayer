@@ -647,17 +647,6 @@ class _SystemSettingsTab extends StatelessWidget {
                     .updateSettings(s.copyWith(launchAtStartup: v)),
                 activeColor: Colors.blueAccent,
               ),
-              SwitchListTile(
-                secondary: const Icon(Icons.fullscreen, color: Colors.white70),
-                title: const Text('启动全屏',
-                    style: TextStyle(color: Colors.white, fontSize: 15)),
-                subtitle: const Text('启动程序后直接进入全屏模式',
-                    style: TextStyle(color: Colors.white54, fontSize: 12)),
-                value: s.startFullscreen,
-                onChanged: (v) => controller
-                    .updateSettings(s.copyWith(startFullscreen: v)),
-                activeColor: Colors.blueAccent,
-              ),
             ],
             SwitchListTile(
               secondary: const Icon(Icons.access_time, color: Colors.white70),

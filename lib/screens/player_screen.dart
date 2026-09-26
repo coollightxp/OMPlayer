@@ -12,6 +12,7 @@ import '../widgets/gesture_indicator_overlay.dart';
 import '../widgets/left_channel_drawer.dart';
 import '../widgets/right_epg_panel.dart';
 import '../widgets/settings_panel.dart';
+import '../widgets/top_title_bar.dart';
 import '../widgets/video_player_widget.dart';
 
 /// 主播放器界面
@@ -62,6 +63,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Timer? _osdTimer;
   bool _osdVisible = false;
 
+  // 顶部悬停标题栏
+  bool _topBarVisible = false;
+
   @override
   void initState() {
     super.initState();
@@ -75,8 +79,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_controllerRef != c) {
       _controllerRef?.removeListener(_onControllerChanged);
       _controllerRef = c..addListener(_onControllerChanged);
-      // main() 已按"启动全屏"设置进入全屏，同步控制器内部标记
-      c.syncInitialFullscreen();
     }
   }
 
@@ -192,9 +194,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
       backgroundColor: Colors.black,
       body: MouseRegion(
         cursor: _cursorHidden ? SystemMouseCursors.none : MouseCursor.defer,
-        onHover: (_) {
+        onHover: (event) {
           _pokeCursor();
           _bumpDrawers();
+          // 鼠标靠近屏幕顶部时呼出悬停标题栏
+          final nearTop = event.position.dy < 40;
+          if (nearTop != _topBarVisible) {
+            setState(() => _topBarVisible = nearTop);
+          }
         },
         child: Listener(
           // 任何鼠标/触摸活动都重置抽屉隐藏计时并显示鼠标
@@ -232,6 +239,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   // 左右边缘点击区：单击打开对应侧边栏
                   _buildEdgeTapZones(),
+
+                  // 顶部悬停标题栏（桌面端：鼠标移到顶部出现，可关闭程序）
+                  if (controller.isDesktop)
+                    TopTitleBar(
+                      visible: _topBarVisible,
+                      onHide: () {
+                        if (_topBarVisible) {
+                          setState(() => _topBarVisible = false);
+                        }
+                      },
+                    ),
 
                   // 底部信息/控制面板
                   BottomProgramPanel(

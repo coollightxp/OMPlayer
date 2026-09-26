@@ -464,8 +464,8 @@ class PlayerController extends ChangeNotifier {
     // 全屏时窗口置顶，避免被其它窗口覆盖
     await windowManager.setAlwaysOnTop(_isFullscreen);
     if (!_isFullscreen) {
-      // 退出全屏后强制恢复标准标题栏，修复最小化/最大化按钮丢失
-      await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+      // 退出全屏后恢复隐藏式标题栏（与启动默认一致）
+      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
     }
     notifyListeners();
   }
@@ -476,18 +476,10 @@ class PlayerController extends ChangeNotifier {
     _isFullscreen = false;
     await windowManager.setFullScreen(false);
     await windowManager.setAlwaysOnTop(false);
-    // 退出全屏后强制恢复标准标题栏，修复最小化/最大化按钮丢失
-    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    // 退出全屏后恢复隐藏式标题栏（与启动默认一致）
+    await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
     notifyListeners();
     return true;
-  }
-
-  /// 启动时由 main 已按设置进入全屏，这里只同步内部标记，
-  /// 保证 ESC、双击退出等状态判断正确
-  void syncInitialFullscreen() {
-    if (isDesktop && _settings.startFullscreen && !_isFullscreen) {
-      _isFullscreen = true;
-    }
   }
 
   // ==================== 设置持久化 ====================
@@ -497,7 +489,6 @@ class PlayerController extends ChangeNotifier {
   static const _kSensitivity = 'settings_sensitivity';
   static const _kAutoHide = 'settings_auto_hide';
   static const _kLaunchAtStartup = 'settings_launch_at_startup';
-  static const _kStartFullscreen = 'settings_start_fullscreen';
   static const _kShowClock = 'settings_show_clock';
   static const _kDefaultVolume = 'settings_default_volume';
   static const _kDefaultBrightness = 'settings_default_brightness';
@@ -511,7 +502,6 @@ class PlayerController extends ChangeNotifier {
         gestureSensitivity: p.getDouble(_kSensitivity) ?? 1.0,
         autoHideDelay: p.getInt(_kAutoHide) ?? 3000,
         launchAtStartup: p.getBool(_kLaunchAtStartup) ?? false,
-        startFullscreen: p.getBool(_kStartFullscreen) ?? false,
         showClock: p.getBool(_kShowClock) ?? false,
         defaultVolume: p.getDouble(_kDefaultVolume) ?? 0.8,
         defaultBrightness: p.getDouble(_kDefaultBrightness) ?? 0.8,
@@ -527,7 +517,6 @@ class PlayerController extends ChangeNotifier {
       await p.setDouble(_kSensitivity, _settings.gestureSensitivity);
       await p.setInt(_kAutoHide, _settings.autoHideDelay);
       await p.setBool(_kLaunchAtStartup, _settings.launchAtStartup);
-      await p.setBool(_kStartFullscreen, _settings.startFullscreen);
       await p.setBool(_kShowClock, _settings.showClock);
       await p.setDouble(_kDefaultVolume, _settings.defaultVolume);
       await p.setDouble(_kDefaultBrightness, _settings.defaultBrightness);
@@ -535,8 +524,6 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// 更新设置并持久化（开机启动项会同步到系统）
-  /// 注意：「启动全屏」仅在程序启动时检测一次，运行期间
-  /// 双击切换全屏与该参数完全无关，这里不做任何联动
   void updateSettings(PlayerSettings settings) {
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
     _settings = settings;
