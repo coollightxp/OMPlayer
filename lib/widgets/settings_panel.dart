@@ -280,6 +280,10 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                             controller.sourceManager.currentPlaylistId ==
                                 p.id;
                         return ListTile(
+                          // 点击整行即切换为当前播放列表
+                          onTap: isCurrent
+                              ? null
+                              : () => controller.selectPlaylist(p.id),
                           leading: Icon(
                             p.type == PlaylistSourceType.url
                                 ? Icons.cloud
@@ -309,14 +313,10 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              if (!isCurrent)
-                                IconButton(
-                                  icon: const Icon(Icons.check_circle,
-                                      color: Colors.green),
-                                  onPressed: () =>
-                                      controller.selectPlaylist(p.id),
-                                  tooltip: '设为当前',
-                                ),
+                              // 当前正在使用：蓝色对号（仅状态标识）
+                              if (isCurrent)
+                                const Icon(Icons.check_circle,
+                                    color: Colors.blueAccent, size: 22),
                               IconButton(
                                 icon: const Icon(Icons.refresh,
                                     color: Colors.amber),
@@ -433,6 +433,10 @@ class _EpgTabState extends State<_EpgTab> {
                         final isCurrent =
                             controller.sourceManager.currentEpgId == e.id;
                         return ListTile(
+                          // 点击整行即切换为当前 EPG
+                          onTap: isCurrent
+                              ? null
+                              : () => controller.selectEpg(e.id),
                           leading: Icon(Icons.menu_book,
                               color: isCurrent
                                   ? Colors.blueAccent
@@ -458,13 +462,10 @@ class _EpgTabState extends State<_EpgTab> {
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              if (!isCurrent)
-                                IconButton(
-                                  icon: const Icon(Icons.check_circle,
-                                      color: Colors.green),
-                                  onPressed: () => controller.selectEpg(e.id),
-                                  tooltip: '设为当前',
-                                ),
+                              // 当前正在使用：蓝色对号（仅状态标识）
+                              if (isCurrent)
+                                const Icon(Icons.check_circle,
+                                    color: Colors.blueAccent, size: 22),
                               IconButton(
                                 icon: const Icon(Icons.refresh,
                                     color: Colors.amber),

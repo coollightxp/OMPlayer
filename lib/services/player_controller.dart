@@ -48,6 +48,10 @@ class PlayerController extends ChangeNotifier {
   bool _isRecording = false;
   String? _recordPath;
 
+  // 源切换锁：初始化/切换进行中忽略一切新的错误回调，
+  // 防止 fvp 连续报错时多个 initialize/dispose 交叉导致窗口假死
+  bool _isSwitching = false;
+
   // 播放进度定时刷新（进度条/倒计时）
   Timer? _tickTimer;
 
@@ -187,6 +191,8 @@ class PlayerController extends ChangeNotifier {
   Future<void> playChannel(Channel channel) async {
     _currentChannel = channel;
     _sourceIndex = 0;
+    // 用户主动切台/重试，强制清掉可能残留的切换锁
+    _isSwitching = false;
     await _playCurrentSource();
   }
 
@@ -194,6 +200,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> prevSource() async {
     if (!hasPrevSource) return;
     _sourceIndex--;
+    _isSwitching = false;
     await _playCurrentSource();
   }
 
@@ -201,6 +208,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> nextSource() async {
     if (!hasNextSource) return;
     _sourceIndex++;
+    _isSwitching = false;
     await _playCurrentSource();
   }
 
@@ -231,6 +239,9 @@ class PlayerController extends ChangeNotifier {
   Future<void> _playCurrentSource() async {
     final channel = _currentChannel;
     if (channel == null) return;
+    // 串行化所有切换：上一个源还没处理完时直接忽略
+    if (_isSwitching) return;
+    _isSwitching = true;
     _state = PlayerState.loading;
     notifyListeners();
 
@@ -251,23 +262,30 @@ class PlayerController extends ChangeNotifier {
       await WakelockPlus.enable();
 
       _state = PlayerState.playing;
+      _isSwitching = false;
     } catch (e) {
       debugPrint('源 ${_sourceIndex + 1}/$sourceCount 播放失败: $e');
-      // 自动尝试下一个源
+      // 自动尝试下一个源（递归开头会 dispose 当前失败的 controller）
       if (hasNextSource) {
         _sourceIndex++;
+        _isSwitching = false;
         await _playCurrentSource();
         return;
       }
+      // 所有源都失败：释放失败的控制器，避免 fvp 残留画面卡住窗口
+      await _disposeVideoController();
       _state = PlayerState.error;
+      _isSwitching = false;
     }
     notifyListeners();
   }
 
   void _onVideoListener() {
     if (_videoController == null) return;
+    // 切换进行中的错误一律忽略，由 _playCurrentSource 统一处理
+    if (_isSwitching) return;
     if (_videoController!.value.hasError) {
-      // 播放中途出错且有备用源时自动切换
+      // 播放中途出错且有备用源时自动切换（只触发一次，锁会挡住后续回调）
       if (hasNextSource) {
         nextSource();
         return;

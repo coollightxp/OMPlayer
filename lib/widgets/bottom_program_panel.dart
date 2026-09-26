@@ -99,23 +99,24 @@ class BottomProgramPanel extends StatelessWidget {
   // ==================== 台标 ====================
 
   Widget _buildLogo(PlayerController c) {
+    const double size = 80;
     final logo = c.currentLogo;
     Widget placeholder() => Container(
-          width: 56,
-          height: 56,
+          width: size,
+          height: size,
           decoration: BoxDecoration(
             color: Colors.white12,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(16),
           ),
-          child: const Icon(Icons.live_tv, color: Colors.white54, size: 30),
+          child: const Icon(Icons.live_tv, color: Colors.white54, size: 42),
         );
     if (logo.isEmpty) return placeholder();
     return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(16),
       child: Image.network(
         logo,
-        width: 56,
-        height: 56,
+        width: size,
+        height: size,
         fit: BoxFit.contain,
         errorBuilder: (_, __, ___) => placeholder(),
       ),
