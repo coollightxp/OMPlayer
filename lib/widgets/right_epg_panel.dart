@@ -121,14 +121,16 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
             ),
           );
         }
-        return ListView.builder(
+        final list = ListView.builder(
           controller: _scrollController,
           padding: const EdgeInsets.symmetric(vertical: 8),
           itemCount: epg.length,
           itemBuilder: (context, index) {
             return _EpgProgramTile(program: epg[index]);
           },
-        ).._maybeScrollToNow(epg);
+        );
+        _maybeScrollToNow(epg);
+        return list;
       },
     );
   }
