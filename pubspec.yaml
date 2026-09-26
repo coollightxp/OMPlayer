@@ -57,9 +57,6 @@ dependencies:
   # 文件选择器（选择本地播放列表文件）
   file_picker: ^13.1.0
 
-  # 开机启动（Windows/macOS/Linux，移动端自动 noop）
-  launch_at_startup: ^0.5.1
-
   # 集合工具（firstOrNull 等）
   collection: ^1.18.0
 
