@@ -1,34 +1,46 @@
+import 'package:collection/collection.dart';
 import 'package:xml/xml.dart';
 
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 
-/// XMLTV 解析结果：节目表 + 频道 id 到显示名的映射
+/// XMLTV 解析结果
 typedef XmltvResult = ({
   Map<String, List<EpgProgram>> programs,
-  Map<String, String> channelNames,
+  Map<String, List<String>> channelNames,
+  Map<String, String> channelIcons,
 });
 
 /// XMLTV 格式 EPG 解析器
-/// XMLTV 是 EPG 数据的标准格式，XML 结构
 class XmltvEpgParser {
-  /// 解析 XMLTV 内容，返回频道ID -> 节目列表的映射 + 频道ID -> 显示名
+  /// 解析 XMLTV 内容
   static XmltvResult parse(String xmlContent) {
     final result = <String, List<EpgProgram>>{};
-    final channelNames = <String, String>{};
+    final channelNames = <String, List<String>>{};
+    final channelIcons = <String, String>{};
     try {
       final document = XmlDocument.parse(xmlContent);
       final tvElement = document.findElements('tv').firstOrNull;
       if (tvElement == null) {
-        return (programs: result, channelNames: channelNames);
+        return (
+          programs: result,
+          channelNames: channelNames,
+          channelIcons: channelIcons,
+        );
       }
 
-      // 先建立频道 id -> 显示名 的映射
+      // 频道 id -> 所有显示名 + 台标
       for (final ch in tvElement.findElements('channel')) {
         final id = ch.getAttribute('id') ?? '';
-        final displayName =
-            ch.findElements('display-name').firstOrNull?.innerText ?? id;
-        channelNames[id] = displayName;
+        final names = ch
+            .findElements('display-name')
+            .map((e) => e.innerText.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
+        if (names.isEmpty && id.isNotEmpty) names.add(id);
+        channelNames[id] = names;
+        final icon = ch.findElements('icon').firstOrNull?.getAttribute('src');
+        if (icon != null && icon.isNotEmpty) channelIcons[id] = icon;
       }
 
       // 解析节目
@@ -36,111 +48,131 @@ class XmltvEpgParser {
         final channelId = prog.getAttribute('channel') ?? '';
         if (channelId.isEmpty) continue;
 
-        final startStr = prog.getAttribute('start') ?? '';
-        final stopStr = prog.getAttribute('stop') ?? '';
-        final startTime = _parseXmltvDate(startStr);
-        final endTime = _parseXmltvDate(stopStr);
+        final startTime = _parseXmltvDate(prog.getAttribute('start') ?? '');
+        final endTime = _parseXmltvDate(prog.getAttribute('stop') ?? '');
         if (startTime == null || endTime == null) continue;
 
-        final title = prog.findElements('title').firstOrNull?.innerText ?? '未知节目';
+        final title =
+            prog.findElements('title').firstOrNull?.innerText ?? '未知节目';
         final desc = prog.findElements('desc').firstOrNull?.innerText ?? '';
 
-        final epgProgram = EpgProgram(
-          id: '${channelId}_${startTime.millisecondsSinceEpoch}',
-          channelId: channelId,
-          title: title,
-          description: desc,
-          startTime: startTime,
-          endTime: endTime,
-        );
-
-        result.putIfAbsent(channelId, () => []).add(epgProgram);
+        result.putIfAbsent(channelId, () => []).add(EpgProgram(
+              id: '${channelId}_${startTime.millisecondsSinceEpoch}',
+              channelId: channelId,
+              title: title,
+              description: desc,
+              startTime: startTime,
+              endTime: endTime,
+            ));
       }
 
-      // 对每个频道的节目按开始时间排序
       for (final list in result.values) {
         list.sort((a, b) => a.startTime.compareTo(b.startTime));
       }
     } catch (e) {
       debugPrintEpg('解析 XMLTV 失败: $e');
     }
-    return (programs: result, channelNames: channelNames);
+    return (
+      programs: result,
+      channelNames: channelNames,
+      channelIcons: channelIcons,
+    );
   }
 
-  /// 根据频道信息查找匹配的 EPG 节目列表
-  /// 优先按 tvgId 匹配，其次按频道名称匹配 EPG 的 display-name
+  /// 归一化名称：忽略大小写、空格、标点、括号差异
+  static String norm(String s) =>
+      s.toLowerCase().replaceAll(RegExp(r'[\s\-_（）()\[\].·、,，]'), '');
+
+  /// 只保留 ASCII 字母数字（去掉汉字等），用于 "CCTV4中文国际"→"cctv4"
+  static String asciiCore(String s) {
+    final core = s.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+    return core;
+  }
+
+  /// 找到频道对应的 EPG 频道 id
+  /// 顺序：tvgId 精确 → 全名归一化相等 → 英文核心相等 → 包含匹配
+  static String? matchChannelId(
+    Channel channel,
+    Map<String, List<EpgProgram>> epgData,
+    Map<String, List<String>> channelNames,
+  ) {
+    // 1. tvg-id 精确匹配
+    if (channel.tvgId.isNotEmpty && epgData.containsKey(channel.tvgId)) {
+      return channel.tvgId;
+    }
+
+    final wantFull = <String>{
+      norm(channel.name),
+      if (channel.tvgName.isNotEmpty) norm(channel.tvgName),
+    }..removeWhere((e) => e.isEmpty);
+    final wantCore = <String>{
+      asciiCore(channel.name),
+      if (channel.tvgName.isNotEmpty) asciiCore(channel.tvgName),
+    }..removeWhere((e) => e.length < 3);
+
+    String? fallback;
+    for (final entry in epgData.entries) {
+      final id = entry.key;
+      final names = channelNames[id] ?? [id];
+      final fulls = names.map(norm).toList();
+      final cores = names.map(asciiCore).where((e) => e.length >= 3).toList();
+
+      // 2. 全名精确
+      if (fulls.any(wantFull.contains)) return id;
+
+      // 3. 去掉汉字后的英文核心精确（CCTV4中文国际 == CCTV4）
+      if (cores.any(wantCore.contains)) return id;
+
+      // 4. 包含模糊匹配（长度 ≥5，避免 CCTV1 撞上 CCTV13）
+      if (fallback == null) {
+        for (final c in wantCore) {
+          if (c.length < 5) continue;
+          if (cores.any((cn) => cn.contains(c) || c.contains(cn))) {
+            fallback = id;
+          }
+        }
+      }
+    }
+    return fallback;
+  }
+
+  /// 根据频道查找 EPG 节目列表
   static List<EpgProgram> findProgramsForChannel(
     Channel channel,
     Map<String, List<EpgProgram>> epgData,
-    Map<String, String> channelNames,
+    Map<String, List<String>> channelNames,
   ) {
-    // 1. 按 tvg-id 精确匹配
-    if (channel.tvgId.isNotEmpty && epgData.containsKey(channel.tvgId)) {
-      return epgData[channel.tvgId]!;
-    }
-
-    // 归一化：忽略大小写、空格、横线、括号差异
-    String norm(String s) =>
-        s.toLowerCase().replaceAll(RegExp(r'[\s\-_（）()\[\].]'), '');
-
-    // 候选名称：tvg-name + 频道显示名
-    final candidates = <String>[
-      if (channel.tvgName.isNotEmpty) norm(channel.tvgName),
-      norm(channel.name),
-    ]..removeWhere((e) => e.isEmpty);
-
-    // 2. 按名称精确匹配（EPG display-name 或 channel id）
-    for (final entry in epgData.entries) {
-      final dn = norm(channelNames[entry.key] ?? '');
-      final id = norm(entry.key);
-      for (final c in candidates) {
-        if (dn == c || id == c) return entry.value;
-      }
-    }
-
-    // 3. 名称包含模糊匹配（只对 display-name，且双方长度 ≥3，
-    //    避免 "cctv1" 错误命中 "cctv13"）
-    for (final entry in epgData.entries) {
-      final dn = norm(channelNames[entry.key] ?? '');
-      if (dn.length < 3) continue;
-      for (final c in candidates) {
-        if (c.length < 3) continue;
-        if (dn.contains(c) || c.contains(dn)) return entry.value;
-      }
-    }
-
-    return [];
+    final id = matchChannelId(channel, epgData, channelNames);
+    return id == null ? [] : (epgData[id] ?? const []);
   }
 
-  /// 解析 XMLTV 日期格式 "20240101190000 +0800"
+  /// 解析 XMLTV 日期 "20240101190000 +0800"
   static DateTime? _parseXmltvDate(String str) {
     if (str.isEmpty) return null;
     try {
-      // 格式: YYYYMMDDHHMMSS +ZZZZ
-      final parts = str.trim().split(' ');
+      final parts = str.trim().split(RegExp(r'\s+'));
       final datePart = parts[0].padRight(14, '0');
       if (datePart.length < 14) return null;
 
-      final year = int.parse(datePart.substring(0, 4));
-      final month = int.parse(datePart.substring(4, 6));
-      final day = int.parse(datePart.substring(6, 8));
-      final hour = int.parse(datePart.substring(8, 10));
-      final minute = int.parse(datePart.substring(10, 12));
-      final second = int.parse(datePart.substring(12, 14));
+      final dt = DateTime(
+        int.parse(datePart.substring(0, 4)),
+        int.parse(datePart.substring(4, 6)),
+        int.parse(datePart.substring(6, 8)),
+        int.parse(datePart.substring(8, 10)),
+        int.parse(datePart.substring(10, 12)),
+        int.parse(datePart.substring(12, 14)),
+      );
 
-      DateTime dt = DateTime(year, month, day, hour, minute, second);
-
-      // 处理时区偏移
-      if (parts.length > 1) {
+      if (parts.length > 1 && parts[1].length >= 5) {
         final tz = parts[1];
         final sign = tz.startsWith('-') ? -1 : 1;
-        final tzHours = int.tryParse(tz.substring(1, 3)) ?? 0;
-        final tzMinutes = int.tryParse(tz.substring(3, 5)) ?? 0;
-        final offset = Duration(hours: sign * tzHours, minutes: sign * tzMinutes);
+        final offset = Duration(
+          hours: sign * (int.tryParse(tz.substring(1, 3)) ?? 0),
+          minutes: sign * (int.tryParse(tz.substring(3, 5)) ?? 0),
+        );
         // 转为本地时间
-        dt = dt.subtract(offset).add(dt.timeZoneOffset);
+        return dt.subtract(offset).add(DateTime.now().timeZoneOffset);
       }
-
       return dt;
     } catch (_) {
       return null;

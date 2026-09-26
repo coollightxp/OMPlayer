@@ -21,6 +21,15 @@ class PlayerSettings {
   /// 面板自动隐藏延迟（毫秒）
   final int autoHideDelay;
 
+  /// 开机自启动
+  final bool launchAtStartup;
+
+  /// 启动即进入全屏
+  final bool startFullscreen;
+
+  /// 右上角常驻显示系统时间
+  final bool showClock;
+
   const PlayerSettings({
     this.autoPlayNext = true,
     this.defaultVolume = 0.8,
@@ -29,6 +38,9 @@ class PlayerSettings {
     this.preferredQuality = VideoQuality.auto,
     this.gestureSensitivity = 1.0,
     this.autoHideDelay = 3000,
+    this.launchAtStartup = false,
+    this.startFullscreen = false,
+    this.showClock = false,
   });
 
   PlayerSettings copyWith({
@@ -39,6 +51,9 @@ class PlayerSettings {
     VideoQuality? preferredQuality,
     double? gestureSensitivity,
     int? autoHideDelay,
+    bool? launchAtStartup,
+    bool? startFullscreen,
+    bool? showClock,
   }) {
     return PlayerSettings(
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -48,6 +63,9 @@ class PlayerSettings {
       preferredQuality: preferredQuality ?? this.preferredQuality,
       gestureSensitivity: gestureSensitivity ?? this.gestureSensitivity,
       autoHideDelay: autoHideDelay ?? this.autoHideDelay,
+      launchAtStartup: launchAtStartup ?? this.launchAtStartup,
+      startFullscreen: startFullscreen ?? this.startFullscreen,
+      showClock: showClock ?? this.showClock,
     );
   }
 }

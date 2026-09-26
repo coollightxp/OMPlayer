@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/channel.dart';
 import '../models/epg_program.dart';
@@ -11,7 +14,9 @@ import '../models/epg_source.dart';
 import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../models/reservation.dart';
+import 'auto_launch.dart';
 import 'media_capture_service.dart';
+import 'native_capture.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
 
@@ -39,6 +44,13 @@ class PlayerController extends ChangeNotifier {
   String? _lastError;
   bool _isFullscreen = false;
 
+  // 录制状态（fvp 原生录制）
+  bool _isRecording = false;
+  String? _recordPath;
+
+  // 播放进度定时刷新（进度条/倒计时）
+  Timer? _tickTimer;
+
   PlayerState get state => _state;
   Channel? get currentChannel => _currentChannel;
   double get volume => _volume;
@@ -49,7 +61,7 @@ class PlayerController extends ChangeNotifier {
   bool get isLoadingPlaylist => _isLoadingPlaylist;
   bool get isLoadingEpg => _isLoadingEpg;
   String? get lastError => _lastError;
-  bool get isRecording => captureService.isRecording;
+  bool get isRecording => _isRecording;
   bool get isDesktop => !kIsWeb && MediaCaptureService.isDesktop;
   bool get isFullscreen => _isFullscreen;
 
@@ -62,8 +74,17 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> _init() async {
+    await _loadSettings();
     await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
+
+    // 播放中每 500ms 刷新一次（进度条、倒计时等）
+    _tickTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (_videoController != null &&
+          _videoController!.value.isInitialized) {
+        notifyListeners();
+      }
+    });
 
     // 如果有选中的播放列表，加载频道；否则保持空列表，等用户添加
     if (sourceManager.currentPlaylist != null) {
@@ -91,7 +112,7 @@ class PlayerController extends ChangeNotifier {
     if (r.autoRecord && isDesktop) {
       final channel = _findChannelById(r.channelId);
       if (channel != null) {
-        captureService.startRecording(channel.streamUrl, channel.name);
+        startRecording();
       }
     }
     notifyListeners();
@@ -317,9 +338,58 @@ class PlayerController extends ChangeNotifier {
     return true;
   }
 
-  /// 更新设置
+  // ==================== 设置持久化 ====================
+
+  static const _kAutoPlayNext = 'settings_auto_play_next';
+  static const _kPip = 'settings_pip';
+  static const _kSensitivity = 'settings_sensitivity';
+  static const _kAutoHide = 'settings_auto_hide';
+  static const _kLaunchAtStartup = 'settings_launch_at_startup';
+  static const _kStartFullscreen = 'settings_start_fullscreen';
+  static const _kShowClock = 'settings_show_clock';
+  static const _kDefaultVolume = 'settings_default_volume';
+  static const _kDefaultBrightness = 'settings_default_brightness';
+
+  Future<void> _loadSettings() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      _settings = PlayerSettings(
+        autoPlayNext: p.getBool(_kAutoPlayNext) ?? true,
+        pipEnabled: p.getBool(_kPip) ?? false,
+        gestureSensitivity: p.getDouble(_kSensitivity) ?? 1.0,
+        autoHideDelay: p.getInt(_kAutoHide) ?? 3000,
+        launchAtStartup: p.getBool(_kLaunchAtStartup) ?? false,
+        startFullscreen: p.getBool(_kStartFullscreen) ?? false,
+        showClock: p.getBool(_kShowClock) ?? false,
+        defaultVolume: p.getDouble(_kDefaultVolume) ?? 0.8,
+        defaultBrightness: p.getDouble(_kDefaultBrightness) ?? 0.8,
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _saveSettings() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setBool(_kAutoPlayNext, _settings.autoPlayNext);
+      await p.setBool(_kPip, _settings.pipEnabled);
+      await p.setDouble(_kSensitivity, _settings.gestureSensitivity);
+      await p.setInt(_kAutoHide, _settings.autoHideDelay);
+      await p.setBool(_kLaunchAtStartup, _settings.launchAtStartup);
+      await p.setBool(_kStartFullscreen, _settings.startFullscreen);
+      await p.setBool(_kShowClock, _settings.showClock);
+      await p.setDouble(_kDefaultVolume, _settings.defaultVolume);
+      await p.setDouble(_kDefaultBrightness, _settings.defaultBrightness);
+    } catch (_) {}
+  }
+
+  /// 更新设置并持久化（开机启动项会同步到系统）
   void updateSettings(PlayerSettings settings) {
+    final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
     _settings = settings;
+    _saveSettings();
+    if (launchChanged && isDesktop) {
+      setAutoLaunchEnabled(settings.launchAtStartup);
+    }
     notifyListeners();
   }
 
@@ -331,23 +401,76 @@ class PlayerController extends ChangeNotifier {
     return sourceManager.getProgramsForChannel(_currentChannel!);
   }
 
+  /// 当前正在播放的节目
+  EpgProgram? get currentProgram {
+    final now = DateTime.now();
+    for (final p in getCurrentEpg()) {
+      if (now.isAfter(p.startTime) && now.isBefore(p.endTime)) return p;
+    }
+    return null;
+  }
+
+  /// 即将播放的下一个节目
+  EpgProgram? get nextProgram {
+    final now = DateTime.now();
+    for (final p in getCurrentEpg()) {
+      if (p.startTime.isAfter(now)) return p;
+    }
+    return null;
+  }
+
+  /// 当前频道台标（M3U tvg-logo 或 EPG icon），无则空串
+  String get currentLogo =>
+      _currentChannel == null ? '' : sourceManager.getLogoForChannel(_currentChannel!);
+
+  /// 视频分辨率文字，如 "1280 × 720"
+  String get resolutionText {
+    final vc = _videoController;
+    if (vc == null || !vc.value.isInitialized) return '';
+    final w = vc.value.size.width.round();
+    final h = vc.value.size.height.round();
+    if (w <= 0 || h <= 0) return '';
+    return '$w × $h';
+  }
+
+  /// 是否为可拖动进度的点播（非直播流）
+  bool get isSeekable {
+    final vc = _videoController;
+    if (vc == null || !vc.value.isInitialized) return false;
+    final raw = _currentChannel?.streamUrls[_sourceIndex] ?? '';
+    final path = raw.toLowerCase().split('?').first;
+    if (path.startsWith('rtmp') || path.startsWith('rtsp')) return false;
+    if (RegExp(r'\.(mp4|mkv|avi|mov|m4v|webm|flv)$').hasMatch(path)) {
+      return true;
+    }
+    // HLS/TS 通常是直播；时长超过 10 分钟的视为点播
+    if (path.endsWith('.m3u8') ||
+        path.endsWith('.m3u') ||
+        path.endsWith('.ts')) {
+      return vc.value.duration.inSeconds > 600;
+    }
+    return vc.value.duration.inSeconds > 600;
+  }
+
+  Duration get position => _videoController?.value.position ?? Duration.zero;
+  Duration get duration => _videoController?.value.duration ?? Duration.zero;
+
+  Future<void> seekTo(Duration position) async {
+    await _videoController?.seekTo(position);
+    notifyListeners();
+  }
+
   /// 获取当前播放节目信息
   NowPlayingInfo getNowPlayingInfo() {
     if (_currentChannel == null) return NowPlayingInfo.empty;
-    final epg = getCurrentEpg();
-    EpgProgram? current;
-    EpgProgram? next;
-    final now = DateTime.now();
-    for (final p in epg) {
-      if (p.isNowPlaying) current = p;
-      if (p.startTime.isAfter(now) && next == null) next = p;
-    }
+    final cur = currentProgram;
+    final next = nextProgram;
     return NowPlayingInfo(
       channelName: _currentChannel!.name,
-      programTitle: current?.title ?? '未知节目',
+      programTitle: cur?.title ?? '',
       nextProgramTitle: next?.title,
-      programStartTime: current?.startTime,
-      programEndTime: current?.endTime,
+      programStartTime: cur?.startTime,
+      programEndTime: cur?.endTime,
     );
   }
 
@@ -395,33 +518,64 @@ class PlayerController extends ChangeNotifier {
     return reservationManager.isReserved(program.channelId, program.startTime);
   }
 
-  // ==================== 录制与截图（桌面端） ====================
+  // ==================== 录制与截图（fvp/MDK 原生，桌面端） ====================
 
+  /// 开始录制当前画面到固定文件夹，返回是否成功
   Future<bool> startRecording() async {
-    if (_currentChannel == null || !isDesktop) return false;
+    final vc = _videoController;
+    if (_currentChannel == null || vc == null || !vc.value.isInitialized ||
+        !isDesktop || _isRecording) {
+      return false;
+    }
     try {
-      final ok = await captureService.startRecording(
-        _currentChannel!.streamUrls[_sourceIndex],
-        _currentChannel!.name,
-      );
+      _recordPath =
+          await captureService.buildFilePath('recordings', _currentChannel!.name, 'mp4');
+      fvpRecord(vc, to: _recordPath);
+      _isRecording = true;
       notifyListeners();
-      return ok;
+      return true;
     } catch (e) {
-      _lastError = e.toString();
+      _lastError = '录制启动失败: $e';
+      _isRecording = false;
       notifyListeners();
       return false;
     }
   }
 
+  /// 停止录制，返回文件路径
   Future<String?> stopRecording() async {
-    final path = await captureService.stopRecording();
+    if (!_isRecording) return null;
+    final vc = _videoController;
+    try {
+      if (vc != null) fvpRecord(vc, to: null);
+      // 给编码器一点时间刷新文件尾
+      await Future.delayed(const Duration(milliseconds: 800));
+    } catch (_) {}
+    final path = _recordPath;
+    _isRecording = false;
+    _recordPath = null;
     notifyListeners();
     return path;
   }
 
+  /// 截取当前视频帧保存为 PNG（固定文件夹）
   Future<String?> takeScreenshot() async {
-    if (_currentChannel == null) return null;
-    return captureService.takeScreenshot(_currentChannel!.name);
+    final vc = _videoController;
+    if (vc == null || !vc.value.isInitialized) return null;
+    try {
+      final w = vc.value.size.width.round();
+      final h = vc.value.size.height.round();
+      final rgba = await fvpSnapshot(vc, width: w, height: h);
+      if (rgba == null || w == 0 || h == 0) return null;
+      final png = await captureService.rgbaToPng(rgba, w, h);
+      final name = _currentChannel?.name ?? 'screenshot';
+      final path = await captureService.buildFilePath('screenshots', name, 'png');
+      await captureService.saveBytes(path, png);
+      return path;
+    } catch (e) {
+      _lastError = '截图失败: $e';
+      return null;
+    }
   }
 
   // ==================== 播放列表/EPG 源管理（代理方法） ====================
@@ -488,12 +642,13 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _tickTimer?.cancel();
+    if (_isRecording && _videoController != null) {
+      fvpRecord(_videoController!, to: null);
+    }
     _disposeVideoController();
     WakelockPlus.disable();
     reservationManager.dispose();
-    if (captureService.isRecording) {
-      captureService.stopRecording();
-    }
     super.dispose();
   }
 }

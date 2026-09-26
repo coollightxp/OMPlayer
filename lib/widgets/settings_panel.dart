@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -32,7 +30,7 @@ class _SettingsPanelState extends State<SettingsPanel>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -108,6 +106,7 @@ class _SettingsPanelState extends State<SettingsPanel>
                       Tab(text: '播放列表'),
                       Tab(text: 'EPG'),
                       Tab(text: '播放器'),
+                      Tab(text: '系统'),
                     ],
                   ),
                   const Divider(color: Colors.white12, height: 1),
@@ -119,6 +118,7 @@ class _SettingsPanelState extends State<SettingsPanel>
                         _PlaylistTab(),
                         _EpgTab(),
                         _PlayerSettingsTab(),
+                        _SystemSettingsTab(),
                       ],
                     ),
                   ),
@@ -612,6 +612,61 @@ class _PlayerSettingsTab extends StatelessWidget {
           onChanged: onChanged,
         ),
       ),
+    );
+  }
+}
+
+// ==================== 系统设置标签页 ====================
+
+class _SystemSettingsTab extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<PlayerController>(
+      builder: (context, controller, _) {
+        final s = controller.settings;
+        return ListView(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          children: [
+            if (controller.isDesktop) ...[
+              SwitchListTile(
+                secondary: const Icon(Icons.power_settings_new,
+                    color: Colors.white70),
+                title: const Text('开机启动',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+                subtitle: const Text('开机后自动启动 OMPlayer',
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                value: s.launchAtStartup,
+                onChanged: (v) => controller
+                    .updateSettings(s.copyWith(launchAtStartup: v)),
+                activeColor: Colors.blueAccent,
+              ),
+              SwitchListTile(
+                secondary: const Icon(Icons.fullscreen, color: Colors.white70),
+                title: const Text('启动全屏',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+                subtitle: const Text('启动程序后直接进入全屏模式',
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                value: s.startFullscreen,
+                onChanged: (v) => controller
+                    .updateSettings(s.copyWith(startFullscreen: v)),
+                activeColor: Colors.blueAccent,
+              ),
+            ],
+            SwitchListTile(
+              secondary: const Icon(Icons.access_time, color: Colors.white70),
+              title: const Text('显示时间',
+                  style: TextStyle(color: Colors.white, fontSize: 15)),
+              subtitle: const Text('右上角一直显示实时系统时间',
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              value: s.showClock,
+              onChanged: (v) =>
+                  controller.updateSettings(s.copyWith(showClock: v)),
+              activeColor: Colors.blueAccent,
+            ),
+            const SizedBox(height: 16),
+          ],
+        );
+      },
     );
   }
 }

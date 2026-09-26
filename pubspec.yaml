@@ -1,7 +1,7 @@
 name: omplayer
 description: A cross-platform Flutter live streaming media player.
 publish_to: 'none'
-version: 1.0.6+7
+version: 1.0.7+8
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -57,11 +57,11 @@ dependencies:
   # 文件选择器（选择本地播放列表文件）
   file_picker: ^13.1.0
 
-  # 截图（使用 master 分支，已修复新版 Flutter ViewConfiguration 的兼容问题）
-  screenshot:
-    git:
-      url: https://github.com/SachinGanesh/screenshot.git
-      ref: master
+  # 开机启动（Windows/macOS/Linux，移动端自动 noop）
+  launch_at_startup: ^0.5.1
+
+  # 集合工具（firstOrNull 等）
+  collection: ^1.18.0
 
 dev_dependencies:
   flutter_test:

@@ -28,8 +28,10 @@ class SourceManager {
   // 缓存解析后的数据
   List<ChannelCategory> _cachedChannels = [];
   Map<String, List<EpgProgram>> _cachedEpg = {};
-  /// EPG 频道 id -> 显示名映射（用于按名称匹配节目单）
-  Map<String, String> _cachedEpgChannelNames = {};
+  /// EPG 频道 id -> 显示名列表
+  Map<String, List<String>> _cachedEpgChannelNames = {};
+  /// EPG 频道 id -> 台标地址
+  Map<String, String> _cachedEpgChannelIcons = {};
   bool _channelsLoaded = false;
   bool _epgLoaded = false;
 
@@ -214,6 +216,7 @@ class SourceManager {
       final parsed = XmltvEpgParser.parse(body);
       _cachedEpg = parsed.programs;
       _cachedEpgChannelNames = parsed.channelNames;
+      _cachedEpgChannelIcons = parsed.channelIcons;
       _epgLoaded = true;
 
       final idx = _epgs.indexWhere((e) => e.id == source.id);
@@ -233,5 +236,13 @@ class SourceManager {
   List<EpgProgram> getProgramsForChannel(Channel channel) {
     return XmltvEpgParser.findProgramsForChannel(
         channel, _cachedEpg, _cachedEpgChannelNames);
+  }
+
+  /// 获取频道台标：优先 M3U tvg-logo，其次 EPG icon
+  String getLogoForChannel(Channel channel) {
+    if (channel.logoUrl.isNotEmpty) return channel.logoUrl;
+    final id = XmltvEpgParser.matchChannelId(
+        channel, _cachedEpg, _cachedEpgChannelNames);
+    return id == null ? '' : (_cachedEpgChannelIcons[id] ?? '');
   }
 }

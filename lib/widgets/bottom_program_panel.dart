@@ -1,25 +1,43 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/epg_program.dart';
 import '../services/player_controller.dart';
 
-/// 底部隐藏面板 - 显示当前播放节目的名称信息
-class BottomProgramPanel extends StatefulWidget {
+/// 底部信息/控制面板
+/// 布局（参考电视播放器）：台标 | 当前节目(大字)+时段/频道/分辨率/线路 | 控制按钮
+/// 点播文件时顶部显示可拖动进度条，直播流不显示
+class BottomProgramPanel extends StatelessWidget {
   final bool isVisible;
   final VoidCallback onTogglePlayPause;
+  final VoidCallback onOpenChannels;
+  final VoidCallback onOpenEpg;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onScreenshot;
+  final VoidCallback onToggleRecord;
 
   const BottomProgramPanel({
     super.key,
     required this.isVisible,
     required this.onTogglePlayPause,
+    required this.onOpenChannels,
+    required this.onOpenEpg,
+    required this.onOpenSettings,
+    required this.onScreenshot,
+    required this.onToggleRecord,
   });
 
-  @override
-  State<BottomProgramPanel> createState() => _BottomProgramPanelState();
-}
+  static final _hm = DateFormat('HH:mm');
 
-class _BottomProgramPanelState extends State<BottomProgramPanel> {
+  String _range(EpgProgram p) => '${_hm.format(p.startTime)} - ${_hm.format(p.endTime)}';
+  String _clock(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedPositioned(
@@ -27,10 +45,10 @@ class _BottomProgramPanelState extends State<BottomProgramPanel> {
       curve: Curves.easeOutCubic,
       left: 0,
       right: 0,
-      bottom: widget.isVisible ? 0 : -120,
+      bottom: isVisible ? 0 : -240,
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 200),
-        opacity: widget.isVisible ? 1.0 : 0.0,
+        opacity: isVisible ? 1.0 : 0.0,
         child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -38,187 +56,228 @@ class _BottomProgramPanelState extends State<BottomProgramPanel> {
               end: Alignment.bottomCenter,
               colors: [
                 Colors.transparent,
-                Colors.black.withOpacity(0.7),
-                Colors.black.withOpacity(0.9),
+                Colors.black.withOpacity(0.72),
+                Colors.black.withOpacity(0.92),
               ],
             ),
           ),
           child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 30, 20, 16),
-              child: _buildContent(),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildContent() {
-    return Consumer<PlayerController>(
-      builder: (context, controller, _) {
-        final info = controller.getNowPlayingInfo();
-        if (info.isEmpty) {
-          return const SizedBox.shrink();
-        }
-        return Row(
-          children: [
-            // 节目信息
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // 频道名
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.redAccent,
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        child: const Text(
-                          'LIVE',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 1,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text(
-                          info.channelName,
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  // 当前节目名 + 时间段
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Flexible(
-                        child: Text(
-                          info.programTitle,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      if (info.timeRange != null) ...[
-                        const SizedBox(width: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            info.timeRange!,
-                            style: const TextStyle(
-                              color: Colors.amber,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
+              padding: const EdgeInsets.fromLTRB(20, 18, 14, 10),
+              child: Consumer<PlayerController>(
+                builder: (context, c, _) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (c.isSeekable) _buildSeekBar(c),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        _buildLogo(c),
+                        const SizedBox(width: 14),
+                        Expanded(child: _buildInfo(c)),
+                        Flexible(
+                          flex: 0,
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerRight,
+                            child: _buildButtons(c),
                           ),
                         ),
                       ],
-                    ],
-                  ),
-                  // 下一节目
-                  if (info.nextProgramTitle != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      '接下来：${info.nextProgramTitle}',
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 12,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
-                  // 节目结束时间倒计时
-                  if (info.programEndTime != null)
-                    _buildCountdown(info.programEndTime!),
-                ],
+                ),
               ),
             ),
-            // 控制按钮
-            const SizedBox(width: 16),
-            _buildControlButtons(controller),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildCountdown(DateTime endTime) {
-    final diff = endTime.difference(DateTime.now());
-    if (diff.isNegative) return const SizedBox.shrink();
-    final minutes = diff.inMinutes;
-    final seconds = diff.inSeconds.remainder(60);
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Text(
-        '距结束 ${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
-        style: const TextStyle(color: Colors.amber, fontSize: 11),
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildControlButtons(PlayerController controller) {
+  // ==================== 台标 ====================
+
+  Widget _buildLogo(PlayerController c) {
+    final logo = c.currentLogo;
+    Widget placeholder() => Container(
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            color: Colors.white12,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(Icons.live_tv, color: Colors.white54, size: 30),
+        );
+    if (logo.isEmpty) return placeholder();
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Image.network(
+        logo,
+        width: 56,
+        height: 56,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => placeholder(),
+      ),
+    );
+  }
+
+  // ==================== 节目信息 ====================
+
+  Widget _buildInfo(PlayerController c) {
+    final info = c.getNowPlayingInfo();
+    final current = c.currentProgram;
+    final next = c.nextProgram;
+    final hasChannel = c.currentChannel != null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // 大字：当前节目名（无 EPG 时显示频道名）
+        Text(
+          current?.title ?? (hasChannel ? info.channelName : '未选择频道'),
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 22,
+            fontWeight: FontWeight.bold,
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 5),
+        // 时段 / 频道 / 分辨率 / 线路
+        Wrap(
+          spacing: 10,
+          runSpacing: 4,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            if (current != null)
+              _metaText(_range(current), Colors.amber),
+            if (hasChannel) _metaText(info.channelName, Colors.white70),
+            if (c.resolutionText.isNotEmpty)
+              _badge(c.resolutionText),
+            _badge('线路 ${c.sourceIndex + 1}/${c.sourceCount}'),
+          ],
+        ),
+        const SizedBox(height: 3),
+        // 即将播放（保留结束时间）
+        if (next != null)
+          Text(
+            '${_range(next)}  ${next.title}',
+            style: const TextStyle(color: Colors.white54, fontSize: 12.5),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          )
+        else if (!hasChannel)
+          const Text(
+            '点击左侧边缘或 ≡ 按钮打开频道列表',
+            style: TextStyle(color: Colors.white38, fontSize: 12),
+          ),
+      ],
+    );
+  }
+
+  Widget _metaText(String text, Color color) {
+    return Text(text,
+        style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500));
+  }
+
+  Widget _badge(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.white30),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(text,
+          style: const TextStyle(color: Colors.white70, fontSize: 11.5)),
+    );
+  }
+
+  // ==================== 点播进度条 ====================
+
+  Widget _buildSeekBar(PlayerController c) {
+    final total = c.duration;
+    final pos = c.position;
+    final max = total.inMilliseconds.toDouble();
+    final value = pos.inMilliseconds.clamp(0, max <= 0 ? 1 : max).toDouble();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          Text(_clock(pos),
+              style: const TextStyle(color: Colors.white70, fontSize: 11)),
+          Expanded(
+            child: SliderTheme(
+              data: SliderThemeData(
+                trackHeight: 3,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                activeTrackColor: Colors.blueAccent,
+                inactiveTrackColor: Colors.white24,
+                thumbColor: Colors.blueAccent,
+              ),
+              child: Slider(
+                value: value,
+                max: max <= 0 ? 1 : max,
+                onChanged: (v) =>
+                    c.seekTo(Duration(milliseconds: v.round())),
+              ),
+            ),
+          ),
+          Text(_clock(total),
+              style: const TextStyle(color: Colors.white70, fontSize: 11)),
+        ],
+      ),
+    );
+  }
+
+  // ==================== 控制按钮 ====================
+
+  Widget _buildButtons(PlayerController c) {
+    final hasVideo = c.currentChannel != null;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // 上一个播放源（无更多源时禁用）
+        _btn(Icons.skip_previous, '上一个源',
+            c.hasPrevSource ? c.prevSource : null),
+        Text('源${c.sourceIndex + 1}/${c.sourceCount}',
+            style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        _btn(Icons.skip_next, '下一个源',
+            c.hasNextSource ? c.nextSource : null),
         IconButton(
-          icon: const Icon(Icons.skip_previous, size: 24),
-          color: Colors.white,
-          disabledColor: Colors.white24,
-          onPressed: controller.hasPrevSource ? controller.prevSource : null,
-          tooltip: '上一个源',
-        ),
-        // 源序号
-        Text(
-          '源${controller.sourceIndex + 1}/${controller.sourceCount}',
-          style: const TextStyle(color: Colors.white54, fontSize: 11),
-        ),
-        // 下一个播放源（无更多源时禁用）
-        IconButton(
-          icon: const Icon(Icons.skip_next, size: 24),
-          color: Colors.white,
-          disabledColor: Colors.white24,
-          onPressed: controller.hasNextSource ? controller.nextSource : null,
-          tooltip: '下一个源',
+          icon: Icon(c.isPlaying ? Icons.pause : Icons.play_arrow,
+              color: Colors.white, size: 30),
+          onPressed: hasVideo ? onTogglePlayPause : null,
         ),
         const SizedBox(width: 4),
-        // 播放/暂停
-        IconButton(
-          icon: Icon(
-            controller.isPlaying ? Icons.pause : Icons.play_arrow,
-            color: Colors.white,
-            size: 28,
+        if (c.isDesktop) ...[
+          _btn(Icons.camera_alt, '截图', hasVideo ? onScreenshot : null),
+          // 录制：开始=红色圆点，录制中=红色方块（带呼吸感）
+          IconButton(
+            icon: Icon(
+              c.isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
+              color: c.isRecording ? Colors.redAccent : Colors.white,
+              size: c.isRecording ? 30 : 26,
+            ),
+            onPressed: hasVideo ? onToggleRecord : null,
+            tooltip: c.isRecording ? '停止录制' : '开始录制',
           ),
-          onPressed: widget.onTogglePlayPause,
-        ),
+          const SizedBox(width: 4),
+        ],
+        _btn(Icons.list, '频道列表', onOpenChannels),
+        _btn(Icons.menu_book, '节目单', onOpenEpg),
+        _btn(Icons.settings, '设置', onOpenSettings),
       ],
+    );
+  }
+
+  Widget _btn(IconData icon, String tooltip, VoidCallback? onPressed) {
+    return IconButton(
+      icon: Icon(icon, color: Colors.white, size: 24),
+      onPressed: onPressed,
+      tooltip: tooltip,
     );
   }
 }
