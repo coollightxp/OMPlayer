@@ -83,6 +83,9 @@ class PlayerController extends ChangeNotifier {
   // 几十毫秒），立即恢复上次频道会与马上到达的新投屏并发拉流。延迟 800ms，
   // 期间收到新投屏则取消恢复
   Timer? _castRestoreTimer;
+  // 投屏点播播完（ended）兜底：上报 STOPPED 后等 5 秒，发送端若没主动
+  // Stop/换片，就自动切回投屏前频道，避免停在最后一帧
+  Timer? _castEndedTimer;
 
   // 静音状态
   bool _isMuted = false;
@@ -338,9 +341,11 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放投屏推送的 URL（记录投屏前频道用于断开恢复）
   Future<void> playCastUrl(String url, String title) async {
-    // 紧接 Stop 到达的新投屏：取消挂起的"恢复上次频道"，避免双路并发拉流
+    // 紧接 Stop 到达的新投屏：取消挂起的"恢复上次频道"和"播完兜底"
     _castRestoreTimer?.cancel();
     _castRestoreTimer = null;
+    _castEndedTimer?.cancel();
+    _castEndedTimer = null;
     _preCastChannel ??=
         (_currentChannel?.id.startsWith('__dlna_cast__') ?? false)
             ? null
@@ -375,6 +380,8 @@ class PlayerController extends ChangeNotifier {
   /// 初始化会覆盖点播（进度条消失、假重试、有声无画的根因）。
   Future<void> stopCastAndRestore() async {
     if (!_isCasting) return;
+    _castEndedTimer?.cancel();
+    _castEndedTimer = null;
     _castRestoreTimer?.cancel();
     _castRestoreTimer = Timer(const Duration(milliseconds: 800), () {
       _castRestoreTimer = null;
@@ -703,6 +710,10 @@ class PlayerController extends ChangeNotifier {
     if (v.hasError) {
       if (_isCasting) {
         CastLog.write('cast playback error: ${v.errorDescription}');
+        // 投屏只有一个源，出错基本意味着流真的断了（直播间关播/CDN 掐流）。
+        // 直接切回投屏前频道，比停在 error 等用户手动操作体验好。
+        stopCastAndRestore();
+        return;
       }
       // 播放中途出错且有备用源时自动切换
       if (hasNextSource) {
@@ -714,13 +725,22 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     // 投屏点播内容正常播完：状态切到 ended（DLNA 上报 STOPPED），
-    // 发送端据此知道视频结束（否则最后一帧永驻、手机端一直转圈/卡住）
+    // 发送端据此知道视频结束。上报后等 5 秒，发送端若没主动 Stop/换片，
+    // 就自动切回投屏前频道，避免停在最后一帧等用户手动断开。
     if (_isCasting &&
         v.isCompleted &&
         _state == PlayerState.playing) {
       CastLog.write('cast stream completed (end of media)');
       _state = PlayerState.ended;
       notifyListeners();
+      _castEndedTimer?.cancel();
+      _castEndedTimer = Timer(const Duration(seconds: 5), () {
+        _castEndedTimer = null;
+        if (_isCasting && _state == PlayerState.ended) {
+          CastLog.write('cast ended 5s without sender Stop, auto-restore');
+          stopCastAndRestore();
+        }
+      });
     }
   }
 
@@ -960,23 +980,22 @@ class PlayerController extends ChangeNotifier {
     return '$w × $h';
   }
 
-  /// fvp 对直播流上报的时长 = double.maxFinite 微秒（9223372036854775807）
-  static const int _kLiveDurationUs = 9223372036854000000;
-
-  static bool _isLiveDuration(Duration d) =>
-      d.inMicroseconds >= _kLiveDurationUs;
+  /// fvp 对直播流上报的时长极大（double.maxFinite 微秒 ≈ 9.2e18 秒），
+  /// 远超任何真实点播。用"超过 1 天"判定，避免在 web 下使用无法被 JS
+  /// 精确表示的大整数字面量导致编译失败。
+  static bool _isLiveDuration(Duration d) => d.inSeconds > 86400;
 
   /// 是否为可拖动进度的点播（非直播流）
   bool get isSeekable {
     final vc = _videoController;
     if (vc == null || !vc.value.isInitialized) return false;
     final d = vc.value.duration;
-    // fvp 直播标记（maxFinite）一律不可拖动
-    if (_isLiveDuration(d)) return false;
-    // DLNA 投屏推送的是独立媒体文件：只要时长已知（>0 且有限）就显示进度条。
+    // 直播（时长极大）或未知（时长<=0）一律不可拖动
+    if (d <= Duration.zero || _isLiveDuration(d)) return false;
+    // DLNA 投屏推送的是独立媒体文件：只要时长已知且有限就显示进度条。
     // 视频号/腾讯视频的 stodownload 链接没有文件后缀，旧逻辑用">10 分钟"兜底，
     // 导致几分钟的短视频不显示进度条
-    if (_isCasting) return d > Duration.zero;
+    if (_isCasting) return true;
     final raw = _currentChannel?.streamUrls[_sourceIndex] ?? '';
     final path = raw.toLowerCase().split('?').first;
     if (path.startsWith('rtmp') || path.startsWith('rtsp')) return false;
@@ -995,8 +1014,8 @@ class PlayerController extends ChangeNotifier {
   Duration get position => _videoController?.value.position ?? Duration.zero;
   Duration get duration {
     final d = _videoController?.value.duration ?? Duration.zero;
-    // 对 UI 隐藏 fvp 直播标记，避免 Slider 拿到天文数字时长
-    return _isLiveDuration(d) ? Duration.zero : d;
+    // 对 UI 隐藏 fvp 直播标记/未知时长，避免 Slider 拿到天文数字时长
+    return (d <= Duration.zero || _isLiveDuration(d)) ? Duration.zero : d;
   }
 
   Future<void> seekTo(Duration position) async {
@@ -1113,6 +1132,10 @@ class PlayerController extends ChangeNotifier {
         stalledMs >= 25000) {
       _stallReinitTried = true;
       _recoverCastPlayback();
+    } else if (_stallReinitTried && stalledMs >= 40000) {
+      // 重建后位置仍不推进（流真断了，如直播间关播），切回投屏前频道
+      CastLog.write('cast stall persisted after recovery, auto-restore');
+      stopCastAndRestore();
     }
   }
 
@@ -1374,6 +1397,7 @@ class PlayerController extends ChangeNotifier {
   void dispose() {
     _tickTimer?.cancel();
     _castRestoreTimer?.cancel();
+    _castEndedTimer?.cancel();
     if (_isRecording && _videoController != null) {
       fvpRecord(_videoController!, to: null);
     }
