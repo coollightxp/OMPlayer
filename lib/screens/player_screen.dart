@@ -82,6 +82,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void initState() {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    // 全局硬件键盘监听：不依赖 Flutter 焦点，任何控件持有焦点、面板
+    // 关闭后都能收到按键；中文输入法状态下硬件 KeyDown 照样送达。
+    HardwareKeyboard.instance.addHandler(_onGlobalKeyEvent);
   }
 
   @override
@@ -177,6 +180,34 @@ class _PlayerScreenState extends State<PlayerScreen> {
     LogicalKeyboardKey.numpad9,
   ];
 
+  // 物理键（USB HID 码）：与输入法/布局无关，主键盘数字行
+  static const List<PhysicalKeyboardKey> _physDigitKeys = [
+    PhysicalKeyboardKey.digit0,
+    PhysicalKeyboardKey.digit1,
+    PhysicalKeyboardKey.digit2,
+    PhysicalKeyboardKey.digit3,
+    PhysicalKeyboardKey.digit4,
+    PhysicalKeyboardKey.digit5,
+    PhysicalKeyboardKey.digit6,
+    PhysicalKeyboardKey.digit7,
+    PhysicalKeyboardKey.digit8,
+    PhysicalKeyboardKey.digit9,
+  ];
+
+  // 小键盘数字（含安卓遥控器数字键常见映射）
+  static const List<PhysicalKeyboardKey> _physNumpadKeys = [
+    PhysicalKeyboardKey.numpad0,
+    PhysicalKeyboardKey.numpad1,
+    PhysicalKeyboardKey.numpad2,
+    PhysicalKeyboardKey.numpad3,
+    PhysicalKeyboardKey.numpad4,
+    PhysicalKeyboardKey.numpad5,
+    PhysicalKeyboardKey.numpad6,
+    PhysicalKeyboardKey.numpad7,
+    PhysicalKeyboardKey.numpad8,
+    PhysicalKeyboardKey.numpad9,
+  ];
+
   /// 鼠标活动：恢复显示并重置 3 秒隐藏计时（仅播放中计时）
   void _pokeCursor() {
     if (!mounted) return;
@@ -209,6 +240,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onGlobalKeyEvent);
     _cursorHideTimer?.cancel();
     _drawerHideTimer?.cancel();
     _osdTimer?.cancel();
@@ -232,11 +264,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return Focus(
         focusNode: _rootFocusNode,
         autofocus: true,
-        // 用硬件按键事件处理快捷键：直接来自 WM_KEYDOWN，
-        // 中文输入法处于中文状态时按键事件仍会送达本窗口
-        // （只有文本输入框的拼音组词阶段才会被输入法消费），
-        // 因此无需切换系统输入法。
-        onKeyEvent: _handleKeyEvent,
         child: Scaffold(
       backgroundColor: Colors.black,
       body: MouseRegion(
@@ -453,25 +480,34 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   // ==================== 硬件按键快捷键 ====================
 
-  /// 硬件按键事件：中文输入法下依然有效（不经过字符翻译）
-  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+  /// 全局硬件按键处理（注册在 HardwareKeyboard 上，不依赖焦点）。
+  /// 返回 true 表示事件已消费，不再向焦点链传递。
+  bool _onGlobalKeyEvent(KeyEvent event) {
     // 只处理首次按下；长按重复事件是 KeyRepeatEvent，天然被排除
-    if (event is! KeyDownEvent) {
-      return KeyEventResult.ignored;
-    }
-    final k = event.logicalKey;
+    if (event is! KeyDownEvent) return false;
+    // 设置面板里有输入框（URL、数字等）：所有按键放行
+    if (_settingsOpen) return false;
 
-    // 数字键（主键盘 / 小键盘）选台
+    final k = event.logicalKey;
+    final p = event.physicalKey;
+
+    // 数字键（主键盘 / 小键盘）选台。
+    // 同时按逻辑键与物理键（USB HID 码）匹配：
+    // 物理键不受输入法/键盘布局影响，避免中文输入法下逻辑键
+    // 映射异常导致数字选台失灵；安卓遥控器数字键也走小键盘码。
     for (var i = 0; i < 10; i++) {
-      if (k == _digitKeys[i] || k == _numpadKeys[i]) {
+      if (k == _digitKeys[i] ||
+          k == _numpadKeys[i] ||
+          p == _physDigitKeys[i] ||
+          p == _physNumpadKeys[i]) {
         _onNumberKey(i);
-        return KeyEventResult.handled;
+        return true;
       }
     }
 
     if (k == LogicalKeyboardKey.escape) {
       context.read<PlayerController>().exitFullscreenIfNeeded();
-      return KeyEventResult.handled;
+      return true;
     }
 
     String? action;
@@ -495,27 +531,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
     if (action != null) {
       _onShortcut(action);
-      return KeyEventResult.handled;
+      return true;
     }
 
     if (k == LogicalKeyboardKey.arrowLeft) {
       _onArrow('prevSource');
-      return KeyEventResult.handled;
+      return true;
     }
     if (k == LogicalKeyboardKey.arrowRight) {
       _onArrow('nextSource');
-      return KeyEventResult.handled;
+      return true;
     }
     if (k == LogicalKeyboardKey.arrowUp) {
       _onArrow('prevChannel');
-      return KeyEventResult.handled;
+      return true;
     }
     if (k == LogicalKeyboardKey.arrowDown) {
       _onArrow('nextChannel');
-      return KeyEventResult.handled;
+      return true;
     }
 
-    return KeyEventResult.ignored;
+    return false;
   }
 
   // ==================== 边缘点击区 ====================
