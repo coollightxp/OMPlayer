@@ -679,7 +679,16 @@ class PlayerController extends ChangeNotifier {
 
   /// 退出画中画（桌面迷你窗恢复；Android 由系统控制退出）
   Future<void> exitPip() async {
-    await pipService.exitMiniWindow();
+    final restored = await pipService.exitMiniWindow();
+    if (restored &&
+        _currentChannel != null &&
+        _videoController != null) {
+      // Windows 下进出迷你窗的程序化缩放会让 fvp/MDK 的视频输出表面进入
+      // 错误状态：画面残留一层灰白半透明伪影，微调窗口尺寸也无法自愈。
+      // 重建播放内核（全新渲染器/纹理）是唯一可靠的恢复手段；
+      // 直播流重新拉起通常 1 秒内完成，当前频道与线路保持不变。
+      await _playCurrentSource();
+    }
     notifyListeners();
   }
 
@@ -799,8 +808,8 @@ class PlayerController extends ChangeNotifier {
     }
     if (pipChanged) {
       if (!settings.pipEnabled) {
-        // 关闭：桌面端若在迷你窗则恢复
-        pipService.exitMiniWindow();
+        // 关闭：桌面端若在迷你窗则恢复（含播放内核重建）
+        exitPip();
         _lastAutoPipSent = false;
         _syncAutoPip();
       } else if (!_pipSupported) {

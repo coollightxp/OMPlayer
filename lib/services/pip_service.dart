@@ -88,9 +88,10 @@ class PipService {
     } catch (_) {}
   }
 
-  /// 桌面端：退出迷你窗口，恢复原窗口尺寸/位置/置顶/全屏状态
-  Future<void> exitMiniWindow() async {
-    if (!_miniWindow) return;
+  /// 桌面端：退出迷你窗口，恢复原窗口尺寸/位置/置顶/全屏状态。
+  /// 返回 true 表示此前处于迷你窗并已完成恢复。
+  Future<bool> exitMiniWindow() async {
+    if (!_miniWindow) return false;
     _miniWindow = false;
     _pipMode = false;
     _pipModeCtrl.add(false);
@@ -106,10 +107,11 @@ class PipService {
         await windowManager.maximize();
       } else {
         // 普通窗口：恢复尺寸后强制重建一次视频输出表面，
-        // 否则 Windows 下快速缩放会残留灰白半透明伪影
+        // 降低 Windows 下快速缩放残留灰白伪影的概率
         await _refreshSurface();
       }
     } catch (_) {}
+    return true;
   }
 
   /// Windows 下程序化快速缩放窗口（进出迷你窗）后，fvp/MDK 的视频输出
