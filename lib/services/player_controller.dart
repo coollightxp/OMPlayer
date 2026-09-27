@@ -48,6 +48,7 @@ class PlayerController extends ChangeNotifier {
   bool _pipSupported = false;
   bool _lastAutoPipSent = false;
   bool get pipSupported => _pipSupported;
+  bool get pipEnabled => _settings.pipEnabled;
   bool get pipMode => pipService.pipMode;
 
   // DLNA 投屏接收服务（接收其它设备推送的视频）
