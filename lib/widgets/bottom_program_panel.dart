@@ -20,6 +20,7 @@ class BottomProgramPanel extends StatelessWidget {
   /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
   final VoidCallback? onHoverEnter;
   final VoidCallback? onHoverExit;
+  final VoidCallback? onHoverMove;
 
   const BottomProgramPanel({
     super.key,
@@ -32,6 +33,7 @@ class BottomProgramPanel extends StatelessWidget {
     required this.onToggleRecord,
     this.onHoverEnter,
     this.onHoverExit,
+    this.onHoverMove,
   });
 
   static final _hm = DateFormat('HH:mm');
@@ -55,6 +57,7 @@ class BottomProgramPanel extends StatelessWidget {
       child: MouseRegion(
         onEnter: (_) => onHoverEnter?.call(),
         onExit: (_) => onHoverExit?.call(),
+        onHover: (_) => onHoverMove?.call(),
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
           opacity: isVisible ? 1.0 : 0.0,

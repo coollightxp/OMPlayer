@@ -13,6 +13,7 @@ class RightEpgPanel extends StatefulWidget {
   /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
   final VoidCallback? onHoverEnter;
   final VoidCallback? onHoverExit;
+  final VoidCallback? onHoverMove;
 
   const RightEpgPanel({
     super.key,
@@ -20,6 +21,7 @@ class RightEpgPanel extends StatefulWidget {
     required this.onClose,
     this.onHoverEnter,
     this.onHoverExit,
+    this.onHoverMove,
   });
 
   @override
@@ -58,6 +60,7 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
       child: MouseRegion(
         onEnter: (_) => widget.onHoverEnter?.call(),
         onExit: (_) => widget.onHoverExit?.call(),
+        onHover: (_) => widget.onHoverMove?.call(),
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
           opacity: widget.isOpen ? 1.0 : 0.0,
@@ -189,27 +192,9 @@ class _EpgProgramTile extends StatelessWidget {
     final isPast = program.isPast;
     final canReserve = !isPast;
 
-    // 单击节目条目：找到对应频道并播放，底部信息面板随之同步
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: () => _playProgramChannel(context),
-        child: _buildCard(context, isNow, isPast, canReserve),
-      ),
-    );
-  }
-
-  void _playProgramChannel(BuildContext context) {
-    final controller = context.read<PlayerController>();
-    final channel = controller.findChannelForProgram(program);
-    if (channel != null) {
-      controller.playChannel(channel);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('未找到该节目对应的频道')),
-      );
-    }
+    // 节目条目本身不可点击（避免误触切台）；
+    // 只有右侧的“预约”按钮可操作
+    return _buildCard(context, isNow, isPast, canReserve);
   }
 
   Widget _buildCard(

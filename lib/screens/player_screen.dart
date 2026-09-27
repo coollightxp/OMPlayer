@@ -57,7 +57,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   // 侧边抽屉自动隐藏
   Timer? _drawerHideTimer;
-  static const _drawerAutoHide = Duration(seconds: 4);
+  static const _drawerAutoHide = Duration(seconds: 3);
 
   // 切台 OSD
   Timer? _osdTimer;
@@ -190,16 +190,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
   }
 
-  /// 抽屉打开后 4 秒无操作自动隐藏
-  void _bumpDrawers() {
-    if (!_leftDrawerOpen && !_rightEpgOpen) return;
+  /// 鼠标在抽屉内：始终保持显示
+  void _cancelDrawerHide() {
     _drawerHideTimer?.cancel();
-    _drawerHideTimer = Timer(_drawerAutoHide, () {
-      if (mounted) setState(() {
-        _leftDrawerOpen = false;
-        _rightEpgOpen = false;
-      });
-    });
+  }
+
+  /// 抽屉打开（桌面端 3 秒后无悬停自动隐藏；移动端需手动关闭）
+  void _armDrawerAutoHide() {
+    final desktop = context.read<PlayerController>().isDesktop;
+    if (!desktop) return;
+    _startDrawerHideTimer();
   }
 
   @override
@@ -215,50 +215,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return CallbackShortcuts(bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): () {
-          context.read<PlayerController>().exitFullscreenIfNeeded();
-        },
-        const SingleActivator(LogicalKeyboardKey.space): () =>
-            _onShortcut('playpause'),
-        const SingleActivator(LogicalKeyboardKey.keyF): () =>
-            _onShortcut('fullscreen'),
-        const SingleActivator(LogicalKeyboardKey.f11): () =>
-            _onShortcut('fullscreen'),
-        const SingleActivator(LogicalKeyboardKey.keyM): () =>
-            _onShortcut('mute'),
-        const SingleActivator(LogicalKeyboardKey.printScreen): () =>
-            _onShortcut('screenshot'),
-        const SingleActivator(LogicalKeyboardKey.keyC): () =>
-            _onShortcut('channels'),
-        const SingleActivator(LogicalKeyboardKey.keyE): () =>
-            _onShortcut('epg'),
-        const SingleActivator(LogicalKeyboardKey.keyS): () =>
-            _onShortcut('settings'),
-        const SingleActivator(LogicalKeyboardKey.keyR): () =>
-            _onShortcut('record'),
-        const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
-            _onArrow('prevSource'),
-        const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
-            _onArrow('nextSource'),
-        const SingleActivator(LogicalKeyboardKey.arrowUp): () =>
-            _onArrow('prevChannel'),
-        const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
-            _onArrow('nextChannel'),
-        for (var i = 0; i < 10; i++)
-          SingleActivator(_digitKeys[i]): () => _onNumberKey(i),
-        for (var i = 0; i < 10; i++)
-          SingleActivator(_numpadKeys[i]): () => _onNumberKey(i),
-      },
-      child: Focus(
+      return Focus(
         autofocus: true,
+        // 用硬件按键事件处理快捷键：直接来自 WM_KEYDOWN，
+        // 中文输入法处于中文状态时按键事件仍会送达本窗口
+        // （只有文本输入框的拼音组词阶段才会被输入法消费），
+        // 因此无需切换系统输入法。
+        onKeyEvent: _handleKeyEvent,
         child: Scaffold(
       backgroundColor: Colors.black,
       body: MouseRegion(
         cursor: _cursorHidden ? SystemMouseCursors.none : MouseCursor.defer,
         onHover: (event) {
           _pokeCursor();
-          _bumpDrawers();
           // 鼠标靠近屏幕顶部时呼出悬停标题栏
           final nearTop = event.position.dy < 40;
           if (nearTop != _topBarVisible) {
@@ -266,14 +235,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
           }
         },
         child: Listener(
-          // 任何鼠标/触摸活动都重置抽屉隐藏计时并显示鼠标
+          // 任何鼠标/触摸活动都恢复显示鼠标
           onPointerDown: (_) {
             _pokeCursor();
-            _bumpDrawers();
           },
           onPointerMove: (_) {
             _pokeCursor();
-            _bumpDrawers();
           },
           child: Consumer<PlayerController>(
             builder: (context, controller, _) {
@@ -347,6 +314,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     isVisible: panelVisible,
                     onHoverEnter: _cancelBottomHide,
                     onHoverExit: _scheduleBottomHide,
+                    onHoverMove: _cancelBottomHide,
                     onTogglePlayPause: controller.togglePlayPause,
                     onOpenChannels: () => _openDrawer(left: true),
                     onOpenEpg: () => _openDrawer(left: false),
@@ -359,16 +327,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   LeftChannelDrawer(
                     isOpen: _leftDrawerOpen,
                     onClose: () => setState(() => _leftDrawerOpen = false),
-                    onHoverEnter: () => _drawerHideTimer?.cancel(),
+                    onHoverEnter: _cancelDrawerHide,
                     onHoverExit: _startDrawerHideTimer,
+                    onHoverMove: _cancelDrawerHide,
                   ),
 
                   // 右侧 EPG 面板
                   RightEpgPanel(
                     isOpen: _rightEpgOpen,
                     onClose: () => setState(() => _rightEpgOpen = false),
-                    onHoverEnter: () => _drawerHideTimer?.cancel(),
+                    onHoverEnter: _cancelDrawerHide,
                     onHoverExit: _startDrawerHideTimer,
+                    onHoverMove: _cancelDrawerHide,
                   ),
 
                   // 切台 OSD（左上角大字台名 + 小字节目名）
@@ -428,8 +398,73 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ),
       ),
         ),
-      ),
-    );
+      );
+  }
+
+  // ==================== 硬件按键快捷键 ====================
+
+  /// 硬件按键事件：中文输入法下依然有效（不经过字符翻译）
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent || event.repeat) {
+      return KeyEventResult.ignored;
+    }
+    final k = event.logicalKey;
+
+    // 数字键（主键盘 / 小键盘）选台
+    for (var i = 0; i < 10; i++) {
+      if (k == _digitKeys[i] || k == _numpadKeys[i]) {
+        _onNumberKey(i);
+        return KeyEventResult.handled;
+      }
+    }
+
+    if (k == LogicalKeyboardKey.escape) {
+      context.read<PlayerController>().exitFullscreenIfNeeded();
+      return KeyEventResult.handled;
+    }
+
+    String? action;
+    if (k == LogicalKeyboardKey.space) {
+      action = 'playpause';
+    } else if (k == LogicalKeyboardKey.keyF ||
+        k == LogicalKeyboardKey.f11) {
+      action = 'fullscreen';
+    } else if (k == LogicalKeyboardKey.keyM) {
+      action = 'mute';
+    } else if (k == LogicalKeyboardKey.printScreen) {
+      action = 'screenshot';
+    } else if (k == LogicalKeyboardKey.keyC) {
+      action = 'channels';
+    } else if (k == LogicalKeyboardKey.keyE) {
+      action = 'epg';
+    } else if (k == LogicalKeyboardKey.keyS) {
+      action = 'settings';
+    } else if (k == LogicalKeyboardKey.keyR) {
+      action = 'record';
+    }
+    if (action != null) {
+      _onShortcut(action);
+      return KeyEventResult.handled;
+    }
+
+    if (k == LogicalKeyboardKey.arrowLeft) {
+      _onArrow('prevSource');
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowRight) {
+      _onArrow('nextSource');
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowUp) {
+      _onArrow('prevChannel');
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.arrowDown) {
+      _onArrow('nextChannel');
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
   }
 
   // ==================== 边缘点击区 ====================
@@ -477,7 +512,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _leftDrawerOpen = false;
       }
     });
-    _bumpDrawers();
+    _armDrawerAutoHide();
   }
 
   /// 快捷键用：再次按键时关闭对应面板
@@ -500,7 +535,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         }
       }
     });
-    _bumpDrawers();
+    _armDrawerAutoHide();
   }
 
   // ==================== 切台 OSD / 时钟 ====================
@@ -821,7 +856,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   /// 底部面板 hover 取消隐藏
   void _cancelBottomHide() {
-    setState(() => _bottomHovering = true);
+    _bottomHideTimer?.cancel();
+    // 避免鼠标每次移动都触发重建
+    if (!_bottomHovering && mounted) {
+      setState(() => _bottomHovering = true);
+    }
   }
 
   /// 底部面板 hover 离开后启动隐藏计时
@@ -843,7 +882,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _bottomHideTimer?.cancel();
   }
 
-  /// 抽屉 hover 移出后 4 秒自动隐藏
+  /// 鼠标在抽屉内：始终保持显示
+  void _cancelDrawerHide() {
+    _drawerHideTimer?.cancel();
+  }
+
+  /// 抽屉 hover 移出后 3 秒自动隐藏
   void _startDrawerHideTimer() {
     _drawerHideTimer?.cancel();
     _drawerHideTimer = Timer(_drawerAutoHide, () {

@@ -8,7 +8,6 @@ import 'package:window_manager/window_manager.dart';
 import 'app.dart';
 import 'services/auto_launch.dart';
 import 'services/fvp_register.dart';
-import 'services/keyboard_layout.dart';
 import 'services/media_capture_service.dart';
 
 void main() async {
@@ -52,8 +51,11 @@ void main() async {
         if (alwaysOnTop) {
           await windowManager.setAlwaysOnTop(true);
         }
-        // 启动后把输入法切到英文，避免快捷键被中文输入法拦截
-        forceEnglishKeyboard();
+        // 注意：不要在这里切换系统/窗口输入法——
+        // Windows 默认未开启“每个应用窗口使用不同输入法”，
+        // 任何键盘布局切换都会全局生效。快捷键改用硬件按键事件
+        // （KeyDownEvent / WM_KEYDOWN）处理，中文输入法下同样有效，
+        // 无需改变用户的输入法状态。
       },
     );
   }

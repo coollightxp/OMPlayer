@@ -14,6 +14,7 @@ class LeftChannelDrawer extends StatefulWidget {
   /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
   final VoidCallback? onHoverEnter;
   final VoidCallback? onHoverExit;
+  final VoidCallback? onHoverMove;
 
   const LeftChannelDrawer({
     super.key,
@@ -21,6 +22,7 @@ class LeftChannelDrawer extends StatefulWidget {
     required this.onClose,
     this.onHoverEnter,
     this.onHoverExit,
+    this.onHoverMove,
   });
 
   @override
@@ -105,6 +107,7 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
       child: MouseRegion(
         onEnter: (_) => widget.onHoverEnter?.call(),
         onExit: (_) => widget.onHoverExit?.call(),
+        onHover: (_) => widget.onHoverMove?.call(),
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
           opacity: widget.isOpen ? 1.0 : 0.0,
