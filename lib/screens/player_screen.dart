@@ -73,6 +73,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // 顶部悬停标题栏
   bool _topBarVisible = false;
 
+  // 根焦点：硬件快捷键（含数字选台）都挂在这个节点上。
+  // 点击抽屉/面板内按钮后焦点会跑到子节点甚至随面板销毁而丢失，
+  // 导致数字键/快捷键失灵，需要在交互后把焦点抢回来。
+  final FocusNode _rootFocusNode = FocusNode();
+
   @override
   void initState() {
     super.initState();
@@ -208,14 +213,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _drawerHideTimer?.cancel();
     _osdTimer?.cancel();
     _numTimer?.cancel();
+    _rootFocusNode.dispose();
     _controllerRef?.removeListener(_onControllerChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
+  /// 把焦点收回根节点，保证硬件快捷键/数字选台随时可响应。
+  /// 设置面板打开时不抢焦点（里面有输入框）。
+  void _ensureShortcutFocus() {
+    if (_settingsOpen) return;
+    if (_rootFocusNode.hasPrimaryFocus) return;
+    _rootFocusNode.requestFocus();
+  }
+
   @override
   Widget build(BuildContext context) {
       return Focus(
+        focusNode: _rootFocusNode,
         autofocus: true,
         // 用硬件按键事件处理快捷键：直接来自 WM_KEYDOWN，
         // 中文输入法处于中文状态时按键事件仍会送达本窗口
@@ -235,9 +250,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
           }
         },
         child: Listener(
-          // 任何鼠标/触摸活动都恢复显示鼠标
+          // 任何鼠标/触摸活动都恢复显示鼠标，并把快捷键焦点收回根节点
           onPointerDown: (_) {
             _pokeCursor();
+            // 面板可能在静止光标下滑出（无 hover 事件），
+            // 用户开始点击时保持面板不自动隐藏
+            if (_leftDrawerOpen || _rightEpgOpen) {
+              _cancelDrawerHide();
+            }
+            _ensureShortcutFocus();
           },
           onPointerMove: (_) {
             _pokeCursor();
@@ -262,6 +283,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ),
                       ),
                     ),
+
+                  // 切台 OSD（左上角序号/台名/节目名）
+                  // 放在手势层与各面板【之下】：面板滑出时盖住它，
+                  // 避免 OSD 卡片挡住频道面板顶部的返回按钮
+                  _buildChannelOsd(controller),
+
+                  // 右上角系统时间：在视频画面之上、所有弹出面板之下
+                  if (controller.settings.showClock) _buildClock(),
 
                   // 手势检测层
                   _buildGestureLayer(controller),
@@ -326,7 +355,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   // 左侧频道抽屉
                   LeftChannelDrawer(
                     isOpen: _leftDrawerOpen,
-                    onClose: () => setState(() => _leftDrawerOpen = false),
+                    onClose: () {
+                      setState(() => _leftDrawerOpen = false);
+                      WidgetsBinding.instance.addPostFrameCallback(
+                          (_) => _ensureShortcutFocus());
+                    },
                     onHoverEnter: _cancelDrawerHide,
                     onHoverExit: _startDrawerHideTimer,
                     onHoverMove: _cancelDrawerHide,
@@ -335,22 +368,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   // 右侧 EPG 面板
                   RightEpgPanel(
                     isOpen: _rightEpgOpen,
-                    onClose: () => setState(() => _rightEpgOpen = false),
+                    onClose: () {
+                      setState(() => _rightEpgOpen = false);
+                      WidgetsBinding.instance.addPostFrameCallback(
+                          (_) => _ensureShortcutFocus());
+                    },
                     onHoverEnter: _cancelDrawerHide,
                     onHoverExit: _startDrawerHideTimer,
                     onHoverMove: _cancelDrawerHide,
                   ),
 
-                  // 切台 OSD（左上角大字台名 + 小字节目名）
-                  _buildChannelOsd(controller),
-
-                  // 右上角常驻系统时间
-                  if (controller.settings.showClock) _buildClock(),
-
                   // 设置面板
                   SettingsPanel(
                     isOpen: _settingsOpen,
-                    onClose: () => setState(() => _settingsOpen = false),
+                    onClose: () {
+                      setState(() => _settingsOpen = false);
+                      WidgetsBinding.instance.addPostFrameCallback(
+                          (_) => _ensureShortcutFocus());
+                    },
                   ),
 
                   // 亮度调节指示
@@ -892,6 +927,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           _leftDrawerOpen = false;
           _rightEpgOpen = false;
         });
+        _ensureShortcutFocus();
       }
     });
   }

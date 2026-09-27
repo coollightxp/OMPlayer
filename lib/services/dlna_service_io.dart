@@ -46,6 +46,10 @@ class DlnaService {
   String? _currentUri;
   String _currentTitle = '';
 
+  /// GENA 事件订阅：key = 事件路径（/event/AVTransport 等）
+  final Map<String, _EventSubscription> _subs = {};
+  static const _subLifetime = Duration(seconds: 300);
+
   bool get isRunning => _http != null && _ssdp != null;
 
   /// 设备名称（OMPlayer + 机器标识）
@@ -77,6 +81,10 @@ class DlnaService {
 
   void stop() {
     _aliveTimer?.cancel();
+    for (final s in _subs.values) {
+      s.expireTimer.cancel();
+    }
+    _subs.clear();
     _ssdp?.close();
     _http?.close();
     _aliveTimer = null;
@@ -294,12 +302,7 @@ class DlnaService {
         return;
       }
       if (req.method == 'SUBSCRIBE' || req.method == 'UNSUBSCRIBE') {
-        // 不实现 GENA 事件推送，仅返回合法头（多数投屏端靠轮询即可工作）
-        req.response.headers.set('SID', 'uuid:$_uuid-sub');
-        req.response.headers.set('TIMEOUT', 'Second-1800');
-        req.response.statusCode = 200;
-        req.response.contentLength = 0;
-        await req.response.close();
+        await _handleGenSub(req, path);
         return;
       }
       if (req.method == 'POST') {
@@ -316,6 +319,187 @@ class DlnaService {
       } catch (_) {}
     }
   }
+
+  // ==================== GENA 事件订阅 ====================
+
+  String _sidFor(String path) {
+    if (path.contains('AVTransport')) return 'uuid:$_uuid-avt';
+    if (path.contains('RenderingControl')) return 'uuid:$_uuid-rc';
+    return 'uuid:$_uuid-cm';
+  }
+
+  Future<void> _handleGenSub(HttpRequest req, String path) async {
+    final h = req.headers;
+    final sidHdr = h.value('SID');
+    if (req.method == 'UNSUBSCRIBE') {
+      final sub = _findSubBySid(sidHdr ?? '');
+      if (sub != null) {
+        sub.expireTimer.cancel();
+        _subs.removeWhere((_, s) => s.sid == sub.sid);
+      }
+      req.response.statusCode = 200;
+      req.response.contentLength = 0;
+      await req.response.close();
+      return;
+    }
+
+    // 续订：带 SID，无 CALLBACK
+    if (sidHdr != null && sidHdr.isNotEmpty) {
+      final sub = _findSubBySid(sidHdr);
+      if (sub == null) {
+        req.response.statusCode = 412;
+        await req.response.close();
+        return;
+      }
+      _armExpiry(sub, path);
+      req.response.headers.set('SID', sub.sid);
+      req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
+      req.response.statusCode = 200;
+      req.response.contentLength = 0;
+      await req.response.close();
+      return;
+    }
+
+    // 新订阅：CALLBACK: <url>；NT: upnp:event
+    final cbRaw = h.value('CALLBACK') ?? '';
+    final m = RegExp(r'<([^>]+)>').firstMatch(cbRaw);
+    if (m == null) {
+      req.response.statusCode = 412;
+      await req.response.close();
+      return;
+    }
+    final callback = m.group(1)!;
+    final sid = _sidFor(path);
+    _subs[path]?.expireTimer.cancel();
+    final sub = _EventSubscription(sid: sid, callback: callback);
+    _subs[path] = sub;
+    _armExpiry(sub, path);
+
+    req.response.headers.set('SID', sid);
+    req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
+    req.response.headers.set('SERVER', 'OMPlayer/1.0 UPnP/1.0');
+    req.response.statusCode = 200;
+    req.response.contentLength = 0;
+    await req.response.close();
+
+    // UPnP 要求订阅成功后立即推送一次「全量事件」。
+    // 抖音等 App 等待该通知确认连接，收不到会在约 10 秒后提示重试。
+    Timer(const Duration(milliseconds: 200), () {
+      _sendInitialEvent(path);
+    });
+  }
+
+  void _armExpiry(_EventSubscription sub, String path) {
+    sub.expireTimer.cancel();
+    sub.expireTimer = Timer(_subLifetime, () {
+      if (_subs[path]?.sid == sub.sid) _subs.remove(path);
+    });
+  }
+
+  _EventSubscription? _findSubBySid(String sid) {
+    for (final s in _subs.values) {
+      if (s.sid == sid) return s;
+    }
+    return null;
+  }
+
+  /// 订阅后首条全量事件
+  void _sendInitialEvent(String path) {
+    final sub = _subs[path];
+    if (sub == null) return;
+    if (path.contains('AVTransport')) {
+      _notify(sub, _avtEventBody());
+    } else if (path.contains('RenderingControl')) {
+      _notify(sub, _rcEventBody());
+    } else {
+      const sink = 'http-get:*:video/mp4:*,http-get:*:video/x-matroska:*,'
+          'http-get:*:video/avi:*,http-get:*:video/mpeg:*,'
+          'http-get:*:video/mp2t:*,http-get:*:application/vnd.apple.mpegurl:*,'
+          'http-get:*:application/x-mpegURL:*,http-get:*:video/*:*,'
+          'http-get:*:audio/*:*,http-get:*:image/*:*';
+      _notify(
+          sub,
+          '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
+          '<e:property><SourceProtocolInfo></SourceProtocolInfo></e:property>'
+          '<e:property><SinkProtocolInfo>$sink</SinkProtocolInfo></e:property>'
+          '<e:property><CurrentConnectionIDs></CurrentConnectionIDs>'
+          '</e:property></e:propertyset>');
+    }
+  }
+
+  /// AVTransport 状态变化事件（播放/暂停/停止/切地址后调用）
+  void _fireAvtChange() {
+    final sub = _subs['/event/AVTransport'];
+    if (sub != null) _notify(sub, _avtEventBody());
+  }
+
+  String _avtEventBody() {
+    final hooks = _hooks;
+    final state = hooks == null ? 'STOPPED' : hooks.transportState();
+    final pos = hooks == null ? '0:00:00' : _fmtTime(hooks.position());
+    final dur = hooks == null ? '0:00:00' : _fmtTime(hooks.duration());
+    final uri = _xmlEscape(_currentUri ?? '');
+    final inner = '<InstanceID val="0">'
+        '<TransportState val="$state"/>'
+        '<TransportStatus val="OK"/>'
+        '<CurrentTrack val="1"/>'
+        '<AVTransportURI val="$uri"/>'
+        '<AVTransportURIMetaData val=""/>'
+        '<CurrentTrackURI val="$uri"/>'
+        '<CurrentTrackMetaData val=""/>'
+        '<CurrentTrackDuration val="$dur"/>'
+        '<RelativeTimePosition val="$pos"/>'
+        '<AbsoluteTimePosition val="$pos"/>'
+        '</InstanceID>';
+    final lastChange = _xmlEscape(
+        '<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">$inner</Event>');
+    return '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
+        '<e:property><LastChange>$lastChange</LastChange></e:property>'
+        '</e:propertyset>';
+  }
+
+  String _rcEventBody() {
+    final hooks = _hooks;
+    final vol = ((hooks?.volume() ?? 0.8) * 100).round().clamp(0, 100);
+    final inner = '<InstanceID val="0">'
+        '<Volume channel="Master" val="$vol"/>'
+        '<Mute channel="Master" val="0"/>'
+        '</InstanceID>';
+    final lastChange = _xmlEscape(
+        '<Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/">$inner</Event>');
+    return '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
+        '<e:property><LastChange>$lastChange</LastChange></e:property>'
+        '</e:propertyset>';
+  }
+
+  /// 向控制点回调地址发送 GENA NOTIFY（失败静默，不影响播放）
+  Future<void> _notify(_EventSubscription sub, String body) async {
+    HttpClient? client;
+    try {
+      final uri = Uri.parse(sub.callback);
+      client = HttpClient();
+      final data = utf8.encode(body);
+      final req = await client.openUrl('NOTIFY', uri);
+      req.headers.set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
+      req.headers.set('NT', 'upnp:event');
+      req.headers.set('NTS', 'upnp:propchange');
+      req.headers.set('SID', sub.sid);
+      req.headers.set('SEQ', '${sub.seq++}');
+      req.contentLength = data.length;
+      req.add(data);
+      final resp = await req.close().timeout(const Duration(seconds: 3));
+      // 412 Precondition Failed：SID 无效，控制点要求重新订阅
+      if (resp.statusCode == 412) {
+        _subs.removeWhere((_, s) => s.sid == sub.sid);
+      }
+      resp.drain<void>();
+    } catch (_) {
+      // 手机息屏/回调端口关闭等，忽略
+      client?.close(force: true);
+    }
+  }
+
+  // ==================== SOAP 控制 ====================
 
   Future<void> _handleSoap(HttpRequest req, String body) async {
     final hooks = _hooks;
@@ -341,24 +525,30 @@ class DlnaService {
             hooks.onPlay(_currentUri!, _currentTitle);
           }
           await _soapResponse(req, service, action, '');
+          // 播放初始化完成后再推一次 PLAYING（初始化需 1 秒左右）
+          Timer(const Duration(milliseconds: 1500), _fireAvtChange);
           return;
         case 'Play':
           hooks.onResume();
           await _soapResponse(req, service, action, '');
+          Timer(const Duration(milliseconds: 500), _fireAvtChange);
           return;
         case 'Pause':
           hooks.onPause();
           await _soapResponse(req, service, action, '');
+          _fireAvtChange();
           return;
         case 'Stop':
           hooks.onStop();
           await _soapResponse(req, service, action, '');
+          _fireAvtChange();
           return;
         case 'Seek':
           final target = _extract(body, 'Target');
           final d = _parseTime(target);
           if (d != null) hooks.onSeek(d);
           await _soapResponse(req, service, action, '');
+          _fireAvtChange();
           return;
         case 'GetTransportInfo':
           await _soapResponse(req, service, action,
@@ -760,4 +950,15 @@ class DlnaService {
       '</serviceList>'
       '</device>'
       '</root>';
+}
+
+/// 一个 GENA 事件订阅（控制点回调）
+class _EventSubscription {
+  final String sid;
+  final String callback;
+  int seq = 0;
+  Timer expireTimer;
+
+  _EventSubscription({required this.sid, required this.callback})
+      : expireTimer = Timer(Duration.zero, () {});
 }

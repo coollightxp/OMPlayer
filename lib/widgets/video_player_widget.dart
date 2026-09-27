@@ -86,12 +86,18 @@ class VideoPlayerWidget extends StatelessWidget {
         }
 
         // 视频播放
+        // 部分投屏流（抖音等 MP4/FLV）音频先就绪、视频尺寸上报为 0，
+        // 直接用 size 会把纹理缩成 0×0 → 有声无画面；
+        // 此时用 16:9 兜底，等视频帧到达、size 更新后自动恢复真实比例
+        final w = vc.value.size.width;
+        final h = vc.value.size.height;
+        final hasSize = w > 0 && h > 0;
         return SizedBox.expand(
           child: FittedBox(
             fit: BoxFit.contain,
             child: SizedBox(
-              width: vc.value.size.width,
-              height: vc.value.size.height,
+              width: hasSize ? w : 16,
+              height: hasSize ? h : 9,
               child: VideoPlayer(vc),
             ),
           ),
