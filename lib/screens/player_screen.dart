@@ -405,7 +405,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   /// 硬件按键事件：中文输入法下依然有效（不经过字符翻译）
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent || event.repeat) {
+    // 只处理首次按下；长按重复事件是 KeyRepeatEvent，天然被排除
+    if (event is! KeyDownEvent) {
       return KeyEventResult.ignored;
     }
     final k = event.logicalKey;
@@ -880,11 +881,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _showBottomPanel() {
     setState(() => _bottomPanelVisible = true);
     _bottomHideTimer?.cancel();
-  }
-
-  /// 鼠标在抽屉内：始终保持显示
-  void _cancelDrawerHide() {
-    _drawerHideTimer?.cancel();
   }
 
   /// 抽屉 hover 移出后 3 秒自动隐藏
