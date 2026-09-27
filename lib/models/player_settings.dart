@@ -30,6 +30,12 @@ class PlayerSettings {
   /// 右上角常驻显示系统时间
   final bool showClock;
 
+  /// 窗口置顶（仅桌面端，默认开：保证快捷键焦点不被其它窗口抢走）
+  final bool alwaysOnTop;
+
+  /// DLNA 投屏接收服务开关（默认开）
+  final bool dlnaEnabled;
+
   const PlayerSettings({
     this.autoPlayNext = true,
     this.defaultVolume = 0.8,
@@ -41,6 +47,8 @@ class PlayerSettings {
     this.launchAtStartup = false,
     this.startFullscreen = false,
     this.showClock = false,
+    this.alwaysOnTop = true,
+    this.dlnaEnabled = true,
   });
 
   PlayerSettings copyWith({
@@ -54,6 +62,8 @@ class PlayerSettings {
     bool? launchAtStartup,
     bool? startFullscreen,
     bool? showClock,
+    bool? alwaysOnTop,
+    bool? dlnaEnabled,
   }) {
     return PlayerSettings(
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -66,6 +76,8 @@ class PlayerSettings {
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
       startFullscreen: startFullscreen ?? this.startFullscreen,
       showClock: showClock ?? this.showClock,
+      alwaysOnTop: alwaysOnTop ?? this.alwaysOnTop,
+      dlnaEnabled: dlnaEnabled ?? this.dlnaEnabled,
     );
   }
 }

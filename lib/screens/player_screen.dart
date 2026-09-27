@@ -43,8 +43,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   static const double _edgeWidth = 30;
   static const double _dragSensitivity = 0.005;
 
-  // 自动隐藏定时器
-  DateTime? _lastInteraction;
+  // 底部面板自动隐藏定时器
+  Timer? _bottomHideTimer;
 
   // 控制器监听
   PlayerController? _controllerRef;
@@ -62,6 +62,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // 切台 OSD
   Timer? _osdTimer;
   bool _osdVisible = false;
+
+  // 数字选台输入缓存
+  String _numBuffer = '';
+  Timer? _numTimer;
+
+  // 底部面板 hover 状态（悬停时不自动隐藏）
+  bool _bottomHovering = false;
 
   // 顶部悬停标题栏
   bool _topBarVisible = false;
@@ -103,9 +110,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (becamePlaying && c.currentChannel != null) {
       setState(() {
         _bottomPanelVisible = true;
-        _lastInteraction = DateTime.now();
+        _bottomHovering = false;
       });
-      _scheduleAutoHide();
+      _scheduleBottomHide();
       _pokeCursor();
     }
   }
@@ -118,6 +125,52 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (mounted) setState(() => _osdVisible = false);
     });
   }
+
+  /// 数字键选台：追加到缓存，1.5 秒后跳转
+  void _onNumberKey(int n) {
+    // 设置面板打开时不拦截数字键（避免影响输入框）
+    if (_settingsOpen) return;
+    setState(() {
+      _numBuffer += n.toString();
+      _osdVisible = true;
+    });
+    _numTimer?.cancel();
+    _numTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted && _numBuffer.isNotEmpty) {
+        final number = int.tryParse(_numBuffer);
+        if (number != null) {
+          context.read<PlayerController>().playChannelByNumber(number);
+        }
+        setState(() => _numBuffer = '');
+      }
+    });
+  }
+
+  // 数字键（主键盘 + 小键盘）
+  static const List<LogicalKeyboardKey> _digitKeys = [
+    LogicalKeyboardKey.digit0,
+    LogicalKeyboardKey.digit1,
+    LogicalKeyboardKey.digit2,
+    LogicalKeyboardKey.digit3,
+    LogicalKeyboardKey.digit4,
+    LogicalKeyboardKey.digit5,
+    LogicalKeyboardKey.digit6,
+    LogicalKeyboardKey.digit7,
+    LogicalKeyboardKey.digit8,
+    LogicalKeyboardKey.digit9,
+  ];
+  static const List<LogicalKeyboardKey> _numpadKeys = [
+    LogicalKeyboardKey.numpad0,
+    LogicalKeyboardKey.numpad1,
+    LogicalKeyboardKey.numpad2,
+    LogicalKeyboardKey.numpad3,
+    LogicalKeyboardKey.numpad4,
+    LogicalKeyboardKey.numpad5,
+    LogicalKeyboardKey.numpad6,
+    LogicalKeyboardKey.numpad7,
+    LogicalKeyboardKey.numpad8,
+    LogicalKeyboardKey.numpad9,
+  ];
 
   /// 鼠标活动：恢复显示并重置 3 秒隐藏计时（仅播放中计时）
   void _pokeCursor() {
@@ -154,6 +207,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _cursorHideTimer?.cancel();
     _drawerHideTimer?.cancel();
     _osdTimer?.cancel();
+    _numTimer?.cancel();
     _controllerRef?.removeListener(_onControllerChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
@@ -191,6 +245,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
             _onArrow('prevChannel'),
         const SingleActivator(LogicalKeyboardKey.arrowDown): () =>
             _onArrow('nextChannel'),
+        for (var i = 0; i < 10; i++)
+          SingleActivator(_digitKeys[i]): () => _onNumberKey(i),
+        for (var i = 0; i < 10; i++)
+          SingleActivator(_numpadKeys[i]): () => _onNumberKey(i),
       },
       child: Focus(
         autofocus: true,
@@ -241,32 +299,81 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   // 手势检测层
                   _buildGestureLayer(controller),
 
-                  // 左右边缘点击区：单击打开对应侧边栏
-                  _buildEdgeTapZones(),
+                  // 左右边缘点击区（移动端；桌面端用 hover 自动弹出）
+                  if (!controller.isDesktop) _buildEdgeTapZones(),
+
+                  // 桌面端 hover 边缘自动弹出
+                  if (controller.isDesktop) ...[
+                    // 左边缘
+                    Positioned(
+                      left: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: 20,
+                      child: MouseRegion(
+                        onEnter: (_) => _openDrawer(left: true),
+                        onExit: (_) => _startDrawerHideTimer(),
+                      ),
+                    ),
+                    // 右边缘
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: 20,
+                      child: MouseRegion(
+                        onEnter: (_) => _openDrawer(left: false),
+                        onExit: (_) => _startDrawerHideTimer(),
+                      ),
+                    ),
+                    // 底部边缘
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      height: 20,
+                      child: MouseRegion(
+                        onEnter: (_) => _showBottomPanel(),
+                        onExit: (_) => _scheduleBottomHide(),
+                      ),
+                    ),
+                  ],
 
                   // 底部信息/控制面板
-                  BottomProgramPanel(
-                    isVisible: panelVisible,
-                    onTogglePlayPause: controller.togglePlayPause,
-                    onOpenChannels: () => _openDrawer(left: true),
-                    onOpenEpg: () => _openDrawer(left: false),
-                    onOpenSettings: _toggleSettings,
-                    onScreenshot: _takeScreenshot,
-                    onToggleRecord: () => _toggleRecording(controller),
+                  MouseRegion(
+                    onEnter: (_) => _cancelBottomHide(),
+                    onExit: (_) => _scheduleBottomHide(),
+                    child: BottomProgramPanel(
+                      isVisible: panelVisible,
+                      onTogglePlayPause: controller.togglePlayPause,
+                      onOpenChannels: () => _openDrawer(left: true),
+                      onOpenEpg: () => _openDrawer(left: false),
+                      onOpenSettings: _toggleSettings,
+                      onScreenshot: _takeScreenshot,
+                      onToggleRecord: () => _toggleRecording(controller),
+                    ),
                   ),
 
                   // 左侧频道抽屉
-                  LeftChannelDrawer(
-                    isOpen: _leftDrawerOpen,
-                    onClose: () =>
-                        setState(() => _leftDrawerOpen = false),
+                  MouseRegion(
+                    onEnter: (_) => _drawerHideTimer?.cancel(),
+                    onExit: (_) => _startDrawerHideTimer(),
+                    child: LeftChannelDrawer(
+                      isOpen: _leftDrawerOpen,
+                      onClose: () =>
+                          setState(() => _leftDrawerOpen = false),
+                    ),
                   ),
 
                   // 右侧 EPG 面板
-                  RightEpgPanel(
-                    isOpen: _rightEpgOpen,
-                    onClose: () =>
-                        setState(() => _rightEpgOpen = false),
+                  MouseRegion(
+                    onEnter: (_) => _drawerHideTimer?.cancel(),
+                    onExit: (_) => _startDrawerHideTimer(),
+                    child: RightEpgPanel(
+                      isOpen: _rightEpgOpen,
+                      onClose: () =>
+                          setState(() => _rightEpgOpen = false),
+                    ),
                   ),
 
                   // 切台 OSD（左上角大字台名 + 小字节目名）
@@ -344,7 +451,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               child: Container(
                 width: _edgeWidth.toDouble(),
                 alignment: Alignment.centerLeft,
-                child: Container(width: 2, color: Colors.white24),
+                child: const SizedBox.expand(),
               ),
             ),
             const Spacer(),
@@ -354,7 +461,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               child: Container(
                 width: _edgeWidth.toDouble(),
                 alignment: Alignment.centerRight,
-                child: Container(width: 2, color: Colors.white24),
+                child: const SizedBox.expand(),
               ),
             ),
           ],
@@ -406,45 +513,78 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget _buildChannelOsd(PlayerController controller) {
     final ch = controller.currentChannel;
     final program = controller.currentProgram?.title;
+    final number = controller.currentChannelNumber;
+    final showOsd = (_osdVisible && ch != null) || _numBuffer.isNotEmpty;
     return Positioned(
       top: 0,
       left: 0,
       child: AnimatedOpacity(
-        opacity: _osdVisible && ch != null ? 1.0 : 0.0,
+        opacity: showOsd ? 1.0 : 0.0,
         duration: const Duration(milliseconds: 300),
         child: SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  ch?.name ?? '',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 34,
-                    fontWeight: FontWeight.bold,
-                    shadows: [
-                      Shadow(color: Colors.black87, blurRadius: 8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              decoration: BoxDecoration(
+                color: const Color(0xCC1A1A2E),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 第一行：大号数字 + 频道名
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        number != null ? number.toString().padLeft(2, '0') : '--',
+                        style: const TextStyle(
+                          color: Colors.blueAccent,
+                          fontSize: 48,
+                          fontWeight: FontWeight.bold,
+                          height: 1,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        ch?.name ?? '',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ],
                   ),
-                ),
-                if (program != null && program.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      program,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 16,
-                        shadows: [
-                          Shadow(color: Colors.black87, blurRadius: 6),
-                        ],
+                  // 第二行：正在直播 + 当前节目
+                  if (program != null && program.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        '正在直播 · $program',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 14,
+                        ),
                       ),
                     ),
-                  ),
-              ],
+                  // 数字选台输入提示
+                  if (_numBuffer.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        '输入: $_numBuffer',
+                        style: const TextStyle(
+                          color: Colors.blueAccent,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
@@ -590,8 +730,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     setState(() {
       _bottomPanelVisible = !_bottomPanelVisible;
       if (_bottomPanelVisible) {
-        _lastInteraction = DateTime.now();
-        _scheduleAutoHide();
+        _scheduleBottomHide();
       }
     });
   }
@@ -685,16 +824,38 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  void _scheduleAutoHide() {
-    Future.delayed(Duration(
-      milliseconds: context.read<PlayerController>().settings.autoHideDelay,
-    ), () {
-      if (mounted &&
-          _lastInteraction != null &&
-          DateTime.now().difference(_lastInteraction!).inMilliseconds >=
-              context.read<PlayerController>().settings.autoHideDelay) {
+  /// 底部面板 hover 取消隐藏
+  void _cancelBottomHide() {
+    setState(() => _bottomHovering = true);
+  }
+
+  /// 底部面板 hover 离开后启动隐藏计时
+  void _scheduleBottomHide() {
+    setState(() => _bottomHovering = false);
+    _bottomHideTimer?.cancel();
+    final delay =
+        context.read<PlayerController>().settings.autoHideDelay;
+    _bottomHideTimer = Timer(Duration(milliseconds: delay), () {
+      if (mounted && !_bottomHovering) {
+        setState(() => _bottomPanelVisible = false);
+      }
+    });
+  }
+
+  /// 桌面端 hover 到底部边缘时显示面板
+  void _showBottomPanel() {
+    setState(() => _bottomPanelVisible = true);
+    _bottomHideTimer?.cancel();
+  }
+
+  /// 抽屉 hover 移出后 4 秒自动隐藏
+  void _startDrawerHideTimer() {
+    _drawerHideTimer?.cancel();
+    _drawerHideTimer = Timer(_drawerAutoHide, () {
+      if (mounted) {
         setState(() {
-          _bottomPanelVisible = false;
+          _leftDrawerOpen = false;
+          _rightEpgOpen = false;
         });
       }
     });

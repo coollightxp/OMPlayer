@@ -636,6 +636,18 @@ class _SystemSettingsTab extends StatelessWidget {
           children: [
             if (controller.isDesktop) ...[
               SwitchListTile(
+                secondary: const Icon(Icons.push_pin,
+                    color: Colors.white70),
+                title: const Text('窗口置顶',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+                subtitle: const Text('窗口始终保持在最前，确保快捷键响应',
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                value: s.alwaysOnTop,
+                onChanged: (v) => controller
+                    .updateSettings(s.copyWith(alwaysOnTop: v)),
+                activeColor: Colors.blueAccent,
+              ),
+              SwitchListTile(
                 secondary: const Icon(Icons.power_settings_new,
                     color: Colors.white70),
                 title: const Text('开机启动',
@@ -670,7 +682,7 @@ class _SystemSettingsTab extends StatelessWidget {
                   controller.updateSettings(s.copyWith(showClock: v)),
               activeColor: Colors.blueAccent,
             ),
-            // DLNA 投屏接收状态（只读展示，启动即自动开启）
+            // DLNA 投屏接收状态 + 开关
             ListTile(
               leading: Icon(Icons.cast,
                   color: controller.dlnaRunning
@@ -681,9 +693,15 @@ class _SystemSettingsTab extends StatelessWidget {
               subtitle: Text(
                 controller.dlnaRunning
                     ? '已开启：${controller.dlnaName}\n${controller.dlnaEndpoint}\n手机需与本机同一局域网，防火墙需放行本程序'
-                    : '未开启：端口可能被占用或被防火墙拦截',
+                    : '未开启：服务已停止或端口被占用',
                 style: const TextStyle(
                     color: Colors.white54, fontSize: 12),
+              ),
+              trailing: Switch(
+                value: s.dlnaEnabled,
+                onChanged: (v) => controller
+                    .updateSettings(s.copyWith(dlnaEnabled: v)),
+                activeColor: Colors.blueAccent,
               ),
             ),
             const SizedBox(height: 16),

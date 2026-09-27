@@ -1,7 +1,7 @@
 name: omplayer
 description: A cross-platform Flutter live streaming media player.
 publish_to: 'none'
-version: 1.0.19+20
+version: 1.0.20+21
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -59,6 +59,9 @@ dependencies:
 
   # 集合工具（firstOrNull 等）
   collection: ^1.18.0
+
+  # FFI 工具（Windows 切换英文键盘布局）
+  ffi: ^2.1.0
 
 dev_dependencies:
   flutter_test:

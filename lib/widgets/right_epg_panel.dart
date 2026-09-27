@@ -95,6 +95,15 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
                       style: const TextStyle(
                           color: Colors.white54, fontSize: 12),
                     ),
+                    // 联动显示当前正在播放的节目名
+                    if (controller.currentProgram != null)
+                      Text(
+                        '正在直播：${controller.currentProgram!.title}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Colors.greenAccent, fontSize: 12),
+                      ),
                   ],
                 ),
               ),

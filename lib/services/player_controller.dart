@@ -91,7 +91,6 @@ class PlayerController extends ChangeNotifier {
     await _loadSettings();
     await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
-
     // 播放中每 500ms 刷新一次（进度条、倒计时等）
     _tickTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (_videoController != null &&
@@ -110,8 +109,11 @@ class PlayerController extends ChangeNotifier {
       await refreshEpg();
     }
 
-    // 先启动 DLNA 投屏接收服务（不等系统值初始化，避免被阻塞）
-    _startDlna();
+    // 先启动 DLNA 投屏接收服务（不等系统值初始化，避免被阻塞）；
+    // 用户可在设置中关闭
+    if (_settings.dlnaEnabled) {
+      _startDlna();
+    }
     _initSystemValues();
 
     // 频道加载完毕后，恢复上次退出时播放的频道
@@ -196,6 +198,14 @@ class PlayerController extends ChangeNotifier {
 
   /// 启动 DLNA 接收服务：设备名 = OMPlayer + 机器唯一标识
   Future<void> _startDlna() async {
+    if (dlnaService.isRunning) {
+      // 已运行（用户刚重新打开开关）：只刷新状态展示
+      _dlnaName = dlnaService.deviceName;
+      _dlnaRunning = true;
+      _dlnaEndpoint = dlnaService.deviceEndpoint;
+      notifyListeners();
+      return;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       var uuid = prefs.getString('dlna_uuid') ?? '';
@@ -253,6 +263,14 @@ class PlayerController extends ChangeNotifier {
     } catch (_) {
       _dlnaRunning = false;
     }
+    notifyListeners();
+  }
+
+  /// 停止 DLNA 投屏接收服务（设置面板开关）
+  void _stopDlna() {
+    dlnaService.stop();
+    _dlnaRunning = false;
+    _dlnaEndpoint = '';
     notifyListeners();
   }
 
@@ -461,6 +479,29 @@ class PlayerController extends ChangeNotifier {
     await playChannel(all[next]);
   }
 
+  // ==================== 频道序号（数字选台） ====================
+
+  /// 全部频道按播放列表顺序展平（序号 = 下标 + 1）
+  List<Channel> get flatChannels =>
+      [for (final cat in _categories) ...cat.channels];
+
+  /// 频道序号（1 起），不在列表中返回 null
+  int? channelNumberOf(Channel? ch) {
+    if (ch == null) return null;
+    final idx = flatChannels.indexWhere((c) => c.id == ch.id);
+    return idx < 0 ? null : idx + 1;
+  }
+
+  /// 当前频道序号（1 起）
+  int? get currentChannelNumber => channelNumberOf(_currentChannel);
+
+  /// 按序号跳台（1 起），序号无效时忽略
+  Future<void> playChannelByNumber(int number) async {
+    final all = flatChannels;
+    if (number < 1 || number > all.length) return;
+    await playChannel(all[number - 1]);
+  }
+
   /// 播放当前频道的当前源；初始化失败时自动尝试下一个源
   /// （与 v1.0.6 验证可用的逻辑保持一致，不做额外的加锁拦截）
   Future<void> _playCurrentSource() async {
@@ -580,8 +621,7 @@ class PlayerController extends ChangeNotifier {
     if (!isDesktop) return;
     _isFullscreen = !_isFullscreen;
     await windowManager.setFullScreen(_isFullscreen);
-    // 全屏时窗口置顶，避免被其它窗口覆盖
-    await windowManager.setAlwaysOnTop(_isFullscreen);
+    await _applyAlwaysOnTop();
     if (!_isFullscreen) {
       // 退出全屏后恢复隐藏式标题栏（与启动默认一致）
       await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
@@ -594,7 +634,7 @@ class PlayerController extends ChangeNotifier {
     if (!_isFullscreen) return false;
     _isFullscreen = false;
     await windowManager.setFullScreen(false);
-    await windowManager.setAlwaysOnTop(false);
+    await _applyAlwaysOnTop();
     // 退出全屏后恢复隐藏式标题栏（与启动默认一致）
     await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
     notifyListeners();
@@ -610,6 +650,8 @@ class PlayerController extends ChangeNotifier {
   static const _kLaunchAtStartup = 'settings_launch_at_startup';
   static const _kStartFullscreen = 'settings_start_fullscreen';
   static const _kShowClock = 'settings_show_clock';
+  static const _kAlwaysOnTop = 'settings_always_on_top';
+  static const _kDlnaEnabled = 'settings_dlna_enabled';
   static const _kDefaultVolume = 'settings_default_volume';
   static const _kDefaultBrightness = 'settings_default_brightness';
 
@@ -624,6 +666,9 @@ class PlayerController extends ChangeNotifier {
         launchAtStartup: p.getBool(_kLaunchAtStartup) ?? false,
         startFullscreen: p.getBool(_kStartFullscreen) ?? false,
         showClock: p.getBool(_kShowClock) ?? false,
+        // 置顶默认开：避免窗口失焦后快捷键失灵
+        alwaysOnTop: p.getBool(_kAlwaysOnTop) ?? true,
+        dlnaEnabled: p.getBool(_kDlnaEnabled) ?? true,
         defaultVolume: p.getDouble(_kDefaultVolume) ?? 0.8,
         defaultBrightness: p.getDouble(_kDefaultBrightness) ?? 0.8,
       );
@@ -640,6 +685,8 @@ class PlayerController extends ChangeNotifier {
       await p.setBool(_kLaunchAtStartup, _settings.launchAtStartup);
       await p.setBool(_kStartFullscreen, _settings.startFullscreen);
       await p.setBool(_kShowClock, _settings.showClock);
+      await p.setBool(_kAlwaysOnTop, _settings.alwaysOnTop);
+      await p.setBool(_kDlnaEnabled, _settings.dlnaEnabled);
       await p.setDouble(_kDefaultVolume, _settings.defaultVolume);
       await p.setDouble(_kDefaultBrightness, _settings.defaultBrightness);
     } catch (_) {}
@@ -662,9 +709,9 @@ class PlayerController extends ChangeNotifier {
       final already = await windowManager.isFullScreen();
       if (!already) {
         await windowManager.setFullScreen(true);
-        await windowManager.setAlwaysOnTop(true);
       }
       _isFullscreen = true;
+      await _applyAlwaysOnTop();
       notifyListeners();
     } catch (_) {}
   }
@@ -672,12 +719,33 @@ class PlayerController extends ChangeNotifier {
   /// 更新设置并持久化（开机启动项会同步到系统）
   void updateSettings(PlayerSettings settings) {
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
+    final topChanged = settings.alwaysOnTop != _settings.alwaysOnTop;
+    final dlnaChanged = settings.dlnaEnabled != _settings.dlnaEnabled;
     _settings = settings;
     _saveSettings();
     if (launchChanged && isDesktop) {
       setAutoLaunchEnabled(settings.launchAtStartup);
     }
+    if (topChanged && isDesktop) {
+      _applyAlwaysOnTop();
+    }
+    if (dlnaChanged) {
+      if (settings.dlnaEnabled) {
+        _startDlna();
+      } else {
+        _stopDlna();
+      }
+    }
     notifyListeners();
+  }
+
+  /// 应用窗口置顶设置（全屏时强制置顶，退出全屏后按设置恢复）
+  Future<void> _applyAlwaysOnTop() async {
+    if (!isDesktop) return;
+    try {
+      await windowManager
+          .setAlwaysOnTop(_isFullscreen ? true : _settings.alwaysOnTop);
+    } catch (_) {}
   }
 
   // ==================== EPG & 节目信息 ====================

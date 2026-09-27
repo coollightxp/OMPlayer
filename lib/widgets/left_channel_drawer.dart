@@ -34,6 +34,60 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   }
 
   @override
+  void didUpdateWidget(covariant LeftChannelDrawer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 打开时直接定位到当前播放频道所在分类，并滚动到当前频道
+    if (!oldWidget.isOpen && widget.isOpen) {
+      final controller = context.read<PlayerController>();
+      final cur = controller.currentChannel;
+      if (cur != null) {
+        for (final cat in controller.categories) {
+          if (cat.channels.any((ch) => ch.id == cur.id)) {
+            if (_selectedCategory != cat) {
+              setState(() => _selectedCategory = cat);
+            }
+            break;
+          }
+        }
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToCurrentChannel();
+      });
+    }
+  }
+
+  /// 滚动频道列表到当前播放频道
+  void _scrollToCurrentChannel() {
+    if (!mounted) return;
+    final controller = context.read<PlayerController>();
+    final cat = _selectedCategory;
+    if (cat == null || !_channelScroll.hasClients) return;
+    final idx = cat.channels
+        .indexWhere((ch) => ch.id == controller.currentChannel?.id);
+    if (idx < 0) return;
+    // 每条目约 64px（上下 padding 12 + 图标 40）
+    const itemHeight = 64.0;
+    final target = (idx * itemHeight - 120)
+        .clamp(0.0, _channelScroll.position.maxScrollExtent);
+    _channelScroll.animateTo(
+      target,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  /// 频道全局序号（跨分类累加，1 起），与数字选台/OSD 序号一致
+  int _globalIndexOf(PlayerController controller, ChannelCategory cat,
+      int indexInCat) {
+    var offset = 0;
+    for (final c in controller.categories) {
+      if (c == cat) return offset + indexInCat + 1;
+      offset += c.channels.length;
+    }
+    return indexInCat + 1;
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
@@ -168,8 +222,10 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
       itemBuilder: (context, index) {
         final channel = category.channels[index];
         final isCurrent = controller.currentChannel?.id == channel.id;
+        final number = _globalIndexOf(controller, category, index);
         return _ChannelTile(
           channel: channel,
+          number: number,
           isSelected: isCurrent,
           onTap: () {
             controller.playChannel(channel);
@@ -236,11 +292,13 @@ class _CategoryTile extends StatelessWidget {
 
 class _ChannelTile extends StatelessWidget {
   final Channel channel;
+  final int number;
   final bool isSelected;
   final VoidCallback onTap;
 
   const _ChannelTile({
     required this.channel,
+    required this.number,
     required this.isSelected,
     required this.onTap,
   });
@@ -251,11 +309,29 @@ class _ChannelTile extends StatelessWidget {
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        color: isSelected
-            ? Colors.blueAccent.withOpacity(0.2)
-            : Colors.transparent,
+        decoration: BoxDecoration(
+          color: isSelected
+              ? Colors.blueAccent.withOpacity(0.2)
+              : Colors.transparent,
+          border: isSelected
+              ? Border.all(color: Colors.blueAccent, width: 1)
+              : null,
+          borderRadius: BorderRadius.circular(8),
+        ),
         child: Row(
           children: [
+            // 频道序号（与数字选台一致）
+            SizedBox(
+              width: 30,
+              child: Text(
+                number.toString().padLeft(2, '0'),
+                style: TextStyle(
+                  color: isSelected ? Colors.blueAccent : Colors.white38,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
             Container(
               width: 40,
               height: 40,

@@ -56,7 +56,7 @@ class DlnaService {
 
   /// 启动服务；任何失败静默返回，不阻塞播放器
   Future<void> start({required String uuid, required DlnaHooks hooks}) async {
-    if (_http != null) return;
+    if (_http != null || _ssdp != null) return;
     _uuid = uuid;
     _hooks = hooks;
     try {
@@ -217,6 +217,8 @@ class DlnaService {
           'EXT:\r\n'
           'LOCATION: $location\r\n'
           'SERVER: OMPlayer/1.0 UPnP/1.0\r\n'
+          'BOOTID.UPNP.ORG: 1\r\n'
+          'CONFIGID.UPNP.ORG: 1\r\n'
           'ST: $stVal\r\n'
           'USN: $usn\r\n\r\n';
       socket.send(resp.codeUnits, addr, port);
@@ -262,6 +264,8 @@ class DlnaService {
           'NT: ${e[0]}\r\n'
           'NTS: ssdp:alive\r\n'
           'SERVER: OMPlayer/1.0 UPnP/1.0\r\n'
+          'BOOTID.UPNP.ORG: 1\r\n'
+          'CONFIGID.UPNP.ORG: 1\r\n'
           'USN: ${e[1]}\r\n\r\n';
       socket.send(pkt.codeUnits, InternetAddress('239.255.255.250'), 1900);
     }
@@ -277,8 +281,12 @@ class DlnaService {
       if (req.method == 'GET' || req.method == 'HEAD') {
         if (path == '/device.xml') {
           await _respondXml(req, _deviceXml());
-        } else if (path.startsWith('/scpd/')) {
-          await _respondXml(req, _scpdXml);
+        } else if (path == '/scpd/AVTransport.xml') {
+          await _respondXml(req, _scpdAvTransport);
+        } else if (path == '/scpd/RenderingControl.xml') {
+          await _respondXml(req, _scpdRenderingControl);
+        } else if (path == '/scpd/ConnectionManager.xml') {
+          await _respondXml(req, _scpdConnectionManager);
         } else {
           req.response.statusCode = 404;
           await req.response.close();
@@ -368,7 +376,9 @@ class DlnaService {
               '<TrackMetaData></TrackMetaData>'
               '<TrackURI>$uri</TrackURI>'
               '<RelTime>$pos</RelTime>'
-              '<AbsTime>$pos</AbsTime>');
+              '<AbsTime>$pos</AbsTime>'
+              '<RelCount>2147483647</RelCount>'
+              '<AbsCount>2147483647</AbsCount>');
           return;
         case 'GetMediaInfo':
           final dur = _fmtTime(hooks.duration());
@@ -378,9 +388,15 @@ class DlnaService {
               '<MediaDuration>$dur</MediaDuration>'
               '<CurrentURI>$uri</CurrentURI>'
               '<CurrentURIMetaData></CurrentURIMetaData>'
+              '<NextURI></NextURI>'
+              '<NextURIMetaData></NextURIMetaData>'
               '<PlayMedium>NETWORK</PlayMedium>'
               '<RecordMedium>NOT_IMPLEMENTED</RecordMedium>'
               '<WriteStatus>NOT_IMPLEMENTED</WriteStatus>');
+          return;
+        case 'GetCurrentTransportActions':
+          await _soapResponse(req, service, action,
+              '<Actions>Play,Pause,Stop,Seek</Actions>');
           return;
         default:
           await _soapResponse(req, service, action, '');
@@ -403,6 +419,9 @@ class DlnaService {
         case 'GetMute':
           await _soapResponse(req, service, action, '<CurrentMute>0</CurrentMute>');
           return;
+        case 'SetMute':
+          await _soapResponse(req, service, action, '');
+          return;
         default:
           await _soapResponse(req, service, action, '');
           return;
@@ -410,9 +429,22 @@ class DlnaService {
     }
 
     if (service.contains('ConnectionManager')) {
-      await _soapResponse(req, service, action,
-          '<SinkProtocolInfo></SinkProtocolInfo><SourceProtocolInfo></SourceProtocolInfo><CurrentConnectionIDs>0</CurrentConnectionIDs>');
-      return;
+      switch (action) {
+        case 'GetProtocolInfo':
+          // 我们是接收端（Sink），Source 留空；Sink 声明支持的协议，
+          // 抖音会据此判断能否投屏，必须非空且包含 mp4
+          await _soapResponse(req, service, action,
+              '<Source></Source>'
+              '<Sink>http-get:*:video/mp4:*,http-get:*:video/x-matroska:*,http-get:*:video/avi:*,http-get:*:video/mpeg:*,http-get:*:video/mp2t:*,http-get:*:application/vnd.apple.mpegurl:*,http-get:*:application/x-mpegURL:*,http-get:*:video/*:*,http-get:*:audio/*:*,http-get:*:image/*:*</Sink>');
+          return;
+        case 'GetCurrentConnectionIDs':
+          await _soapResponse(req, service, action,
+              '<ConnectionIDs>0</ConnectionIDs>');
+          return;
+        default:
+          await _soapResponse(req, service, action, '');
+          return;
+      }
     }
 
     req.response.statusCode = 404;
@@ -499,12 +531,198 @@ class DlnaService {
 
   // ==================== 描述文件 ====================
 
-  String get _scpdXml => '<?xml version="1.0" encoding="utf-8"?>'
-      '<scpd xmlns="urn:schemas-upnp-org:service-1-0">'
-      '<specVersion><major>1</major><minor>0</minor></specVersion>'
-      '<actionList></actionList>'
-      '<serviceStateTable></serviceStateTable>'
-      '</scpd>';
+  static const String _scpdAvTransport =
+      '''<?xml version="1.0" encoding="utf-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+<specVersion><major>1</major><minor>0</minor></specVersion>
+<actionList>
+<action>
+<name>SetAVTransportURI</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>CurrentURI</name><direction>in</direction><relatedStateVariable>AVTransportURI</relatedStateVariable></argument>
+<argument><name>CurrentURIMetaData</name><direction>in</direction><relatedStateVariable>AVTransportURIMetaData</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>Play</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>Speed</name><direction>in</direction><relatedStateVariable>TransportPlaySpeed</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>Pause</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>Stop</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>Seek</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>Unit</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_SeekMode</relatedStateVariable></argument>
+<argument><name>Target</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_SeekTarget</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>GetTransportInfo</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>CurrentTransportState</name><direction>out</direction><relatedStateVariable>TransportState</relatedStateVariable></argument>
+<argument><name>CurrentTransportStatus</name><direction>out</direction><relatedStateVariable>TransportStatus</relatedStateVariable></argument>
+<argument><name>CurrentSpeed</name><direction>out</direction><relatedStateVariable>TransportPlaySpeed</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>GetPositionInfo</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>Track</name><direction>out</direction><relatedStateVariable>CurrentTrack</relatedStateVariable></argument>
+<argument><name>TrackDuration</name><direction>out</direction><relatedStateVariable>CurrentTrackDuration</relatedStateVariable></argument>
+<argument><name>TrackMetaData</name><direction>out</direction><relatedStateVariable>CurrentTrackMetaData</relatedStateVariable></argument>
+<argument><name>TrackURI</name><direction>out</direction><relatedStateVariable>CurrentTrackURI</relatedStateVariable></argument>
+<argument><name>RelTime</name><direction>out</direction><relatedStateVariable>RelativeTimePosition</relatedStateVariable></argument>
+<argument><name>AbsTime</name><direction>out</direction><relatedStateVariable>AbsoluteTimePosition</relatedStateVariable></argument>
+<argument><name>RelCount</name><direction>out</direction><relatedStateVariable>RelativeCounterPosition</relatedStateVariable></argument>
+<argument><name>AbsCount</name><direction>out</direction><relatedStateVariable>AbsoluteCounterPosition</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>GetMediaInfo</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>NrTracks</name><direction>out</direction><relatedStateVariable>NumberOfTracks</relatedStateVariable></argument>
+<argument><name>MediaDuration</name><direction>out</direction><relatedStateVariable>CurrentMediaDuration</relatedStateVariable></argument>
+<argument><name>CurrentURI</name><direction>out</direction><relatedStateVariable>AVTransportURI</relatedStateVariable></argument>
+<argument><name>CurrentURIMetaData</name><direction>out</direction><relatedStateVariable>AVTransportURIMetaData</relatedStateVariable></argument>
+<argument><name>NextURI</name><direction>out</direction><relatedStateVariable>NextAVTransportURI</relatedStateVariable></argument>
+<argument><name>NextURIMetaData</name><direction>out</direction><relatedStateVariable>NextAVTransportURIMetaData</relatedStateVariable></argument>
+<argument><name>PlayMedium</name><direction>out</direction><relatedStateVariable>PlaybackStorageMedium</relatedStateVariable></argument>
+<argument><name>RecordMedium</name><direction>out</direction><relatedStateVariable>RecordStorageMedium</relatedStateVariable></argument>
+<argument><name>WriteStatus</name><direction>out</direction><relatedStateVariable>RecordMediumWriteStatus</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>GetCurrentTransportActions</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>Actions</name><direction>out</direction><relatedStateVariable>CurrentTransportActions</relatedStateVariable></argument>
+</argumentList>
+</action>
+</actionList>
+<serviceStateTable>
+<stateVariable sendEvents="no"><name>TransportState</name><dataType>string</dataType><allowedValueList><allowedValue>STOPPED</allowedValue><allowedValue>PLAYING</allowedValue><allowedValue>PAUSED_PLAYBACK</allowedValue><allowedValue>TRANSITIONING</allowedValue><allowedValue>NO_MEDIA_PRESENT</allowedValue></allowedValueList></stateVariable>
+<stateVariable sendEvents="no"><name>TransportStatus</name><dataType>string</dataType><allowedValueList><allowedValue>OK</allowedValue><allowedValue>ERROR_OCCURRED</allowedValue></allowedValueList></stateVariable>
+<stateVariable sendEvents="no"><name>TransportPlaySpeed</name><dataType>string</dataType><allowedValueList><allowedValue>1</allowedValue></allowedValueList></stateVariable>
+<stateVariable sendEvents="no"><name>PlaybackStorageMedium</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>RecordStorageMedium</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>RecordMediumWriteStatus</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>CurrentTrack</name><dataType>ui4</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>NumberOfTracks</name><dataType>ui4</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>CurrentTrackDuration</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>CurrentMediaDuration</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>CurrentTrackMetaData</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>CurrentTrackURI</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>AVTransportURI</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>AVTransportURIMetaData</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>NextAVTransportURI</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>NextAVTransportURIMetaData</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>RelativeTimePosition</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>AbsoluteTimePosition</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>RelativeCounterPosition</name><dataType>i4</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>AbsoluteCounterPosition</name><dataType>i4</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>CurrentTransportActions</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="yes"><name>LastChange</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_SeekMode</name><dataType>string</dataType><allowedValueList><allowedValue>REL_TIME</allowedValue><allowedValue>TRACK_NR</allowedValue></allowedValueList></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_SeekTarget</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_InstanceID</name><dataType>ui4</dataType></stateVariable>
+</serviceStateTable>
+</scpd>''';
+
+  static const String _scpdRenderingControl =
+      '''<?xml version="1.0" encoding="utf-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+<specVersion><major>1</major><minor>0</minor></specVersion>
+<actionList>
+<action>
+<name>SetVolume</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>Channel</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Channel</relatedStateVariable></argument>
+<argument><name>DesiredVolume</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Volume</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>GetVolume</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>Channel</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Channel</relatedStateVariable></argument>
+<argument><name>CurrentVolume</name><direction>out</direction><relatedStateVariable>Volume</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>GetMute</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>Channel</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Channel</relatedStateVariable></argument>
+<argument><name>CurrentMute</name><direction>out</direction><relatedStateVariable>Mute</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>SetMute</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>Channel</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Channel</relatedStateVariable></argument>
+<argument><name>DesiredMute</name><direction>in</direction><relatedStateVariable>Mute</relatedStateVariable></argument>
+</argumentList>
+</action>
+</actionList>
+<serviceStateTable>
+<stateVariable sendEvents="yes"><name>Volume</name><dataType>ui2</dataType><allowedValueRange><minimum>0</minimum><maximum>100</maximum><step>1</step></allowedValueRange></stateVariable>
+<stateVariable sendEvents="yes"><name>Mute</name><dataType>boolean</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_Channel</name><dataType>string</dataType><allowedValueList><allowedValue>Master</allowedValue></allowedValueList></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_InstanceID</name><dataType>ui4</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_Volume</name><dataType>ui2</dataType><allowedValueRange><minimum>0</minimum><maximum>100</maximum><step>1</step></allowedValueRange></stateVariable>
+</serviceStateTable>
+</scpd>''';
+
+  static const String _scpdConnectionManager =
+      '''<?xml version="1.0" encoding="utf-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+<specVersion><major>1</major><minor>0</minor></specVersion>
+<actionList>
+<action>
+<name>GetProtocolInfo</name>
+<argumentList>
+<argument><name>Source</name><direction>out</direction><relatedStateVariable>SourceProtocolInfo</relatedStateVariable></argument>
+<argument><name>Sink</name><direction>out</direction><relatedStateVariable>SinkProtocolInfo</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>GetCurrentConnectionIDs</name>
+<argumentList>
+<argument><name>ConnectionIDs</name><direction>out</direction><relatedStateVariable>CurrentConnectionIDs</relatedStateVariable></argument>
+</argumentList>
+</action>
+</actionList>
+<serviceStateTable>
+<stateVariable sendEvents="yes"><name>SourceProtocolInfo</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="yes"><name>SinkProtocolInfo</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="yes"><name>CurrentConnectionIDs</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionID</name><dataType>i4</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionManager</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_Direction</name><dataType>string</dataType><allowedValueList><allowedValue>Input</allowedValue><allowedValue>Output</allowedValue></allowedValueList></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_ProtocolInfo</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>A_ARG_TYPE_ConnectionStatus</name><dataType>string</dataType><allowedValueList><allowedValue>OK</allowedValue><allowedValue>ContentFormatMismatch</allowedValue><allowedValue>InsufficientBandwidth</allowedValue><allowedValue>UnreliableChannel</allowedValue><allowedValue>Unknown</allowedValue></allowedValueList></stateVariable>
+</serviceStateTable>
+</scpd>''';
 
   String _deviceXml() => '<?xml version="1.0" encoding="utf-8"?>'
       '<root xmlns="urn:schemas-upnp-org:device-1-0">'

@@ -46,6 +46,12 @@ void main() async {
       () async {
         await windowManager.show();
         await windowManager.focus();
+        // 窗口置顶（默认开）：避免被其它窗口抢焦点导致快捷键失灵；
+        // 设置面板里可关闭
+        final alwaysOnTop = prefs.getBool('settings_always_on_top') ?? true;
+        if (alwaysOnTop) {
+          await windowManager.setAlwaysOnTop(true);
+        }
         // 启动后把输入法切到英文，避免快捷键被中文输入法拦截
         forceEnglishKeyboard();
       },
