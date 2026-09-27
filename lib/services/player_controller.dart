@@ -396,6 +396,9 @@ class PlayerController extends ChangeNotifier {
     _isCasting = false;
     _watchPosMs = -1;
     _watchAdvanceAt = null;
+    // 清空 DLNA 服务端当前媒体：发送端轮询 GetMediaInfo 时看到无媒体，
+    // 即可知道投屏已结束，不再显示"已连接"。
+    dlnaService.clearCurrentMedia();
     final restore = _preCastChannel;
     _preCastChannel = null;
     if (restore != null) {
@@ -633,6 +636,13 @@ class PlayerController extends ChangeNotifier {
     _videoListenerClosure = closure;
     c.addListener(closure);
 
+    // HLS（m3u8）流的初始化需要下载分片列表 + 探测首片，跨网 CDN 慢时
+    // 可能需要 30~60 秒。MP4/FLV 等直接媒体 15 秒足够。
+    final rawUrl = channel.streamUrls[_sourceIndex].toLowerCase();
+    final isHls = rawUrl.contains('.m3u8') || rawUrl.contains('.m3u');
+    final initTimeout =
+        isHls ? const Duration(seconds: 45) : const Duration(seconds: 15);
+
     // 代际已过期：静默移除监听并丢弃结果（controller 已被新代 dispose）
     void discardLate(String why) {
       try {
@@ -643,7 +653,7 @@ class PlayerController extends ChangeNotifier {
 
     try {
       // 加超时：流地址失效或后端不支持时显示"播放失败"，避免永远转圈
-      await c.initialize().timeout(const Duration(seconds: 15));
+      await c.initialize().timeout(initTimeout);
       if (gen != _playGeneration) {
         discardLate('stale generation $gen');
         return;
@@ -684,6 +694,11 @@ class PlayerController extends ChangeNotifier {
         await _playCurrentSource();
         return;
       }
+      if (_isCasting) {
+        // 投屏最终失败：清空 DLNA 媒体状态，发送端轮询会发现无媒体，
+        // 不再一直显示"已连接"或等待
+        dlnaService.clearCurrentMedia();
+      }
       _state = PlayerState.error;
     } catch (e) {
       if (gen != _playGeneration) {
@@ -697,6 +712,9 @@ class PlayerController extends ChangeNotifier {
         _sourceIndex++;
         await _playCurrentSource();
         return;
+      }
+      if (_isCasting) {
+        dlnaService.clearCurrentMedia();
       }
       _state = PlayerState.error;
     }

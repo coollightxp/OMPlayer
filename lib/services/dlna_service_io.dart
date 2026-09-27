@@ -73,6 +73,17 @@ class DlnaService {
 
   bool get isRunning => _http != null && _ssdp != null;
 
+  /// 清空当前投屏媒体：投屏结束（Stop/自动恢复）后调用，
+  /// 这样发送端轮询 GetMediaInfo/GetPositionInfo 时看到无媒体，
+  /// 即使 GENA 通知因跨网段发不出去，发送端也能知道投屏已结束
+  /// （否则发送端会一直显示"已连接"，点断开也无反应）。
+  void clearCurrentMedia() {
+    _currentUri = null;
+    _currentTitle = '';
+    _lastPushedState = null;
+    _lastPushedPosSec = -1;
+  }
+
   /// 设备名称（OMPlayer + 机器标识）
   String get deviceName => _name;
 
@@ -636,6 +647,10 @@ class DlnaService {
           _fireAvtChange();
           return;
         case 'Stop':
+          // 发送端主动停止：立即清空当前媒体，让 GetMediaInfo 返回空，
+          // 发送端轮询即可知道投屏已结束（不依赖 GENA 通知）
+          _currentUri = null;
+          _currentTitle = '';
           hooks.onStop();
           await _soapResponse(req, service, action, '');
           _fireAvtChange();

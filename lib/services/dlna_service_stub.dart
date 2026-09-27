@@ -39,4 +39,6 @@ class DlnaService {
   Future<void> start({required String uuid, required DlnaHooks hooks}) async {}
 
   void stop() {}
+
+  void clearCurrentMedia() {}
 }
