@@ -10,10 +10,16 @@ class RightEpgPanel extends StatefulWidget {
   final bool isOpen;
   final VoidCallback onClose;
 
+  /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
+  final VoidCallback? onHoverEnter;
+  final VoidCallback? onHoverExit;
+
   const RightEpgPanel({
     super.key,
     required this.isOpen,
     required this.onClose,
+    this.onHoverEnter,
+    this.onHoverExit,
   });
 
   @override
@@ -49,14 +55,17 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
       top: 0,
       bottom: 0,
       width: 340,
-      child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 200),
-        opacity: widget.isOpen ? 1.0 : 0.0,
-        child: Material(
-          color: Colors.black87,
-          elevation: 16,
-          child: SafeArea(
-            child: Column(
+      child: MouseRegion(
+        onEnter: (_) => widget.onHoverEnter?.call(),
+        onExit: (_) => widget.onHoverExit?.call(),
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 200),
+          opacity: widget.isOpen ? 1.0 : 0.0,
+          child: Material(
+            color: Colors.black87,
+            elevation: 16,
+            child: SafeArea(
+              child: Column(
               children: [
                 _buildHeader(),
                 const Divider(height: 1, color: Colors.white12),
@@ -64,6 +73,7 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
               ],
             ),
           ),
+        ),
         ),
       ),
     );

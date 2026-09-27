@@ -339,41 +339,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ),
                   ],
 
-                  // 底部信息/控制面板
-                  MouseRegion(
-                    onEnter: (_) => _cancelBottomHide(),
-                    onExit: (_) => _scheduleBottomHide(),
-                    child: BottomProgramPanel(
-                      isVisible: panelVisible,
-                      onTogglePlayPause: controller.togglePlayPause,
-                      onOpenChannels: () => _openDrawer(left: true),
-                      onOpenEpg: () => _openDrawer(left: false),
-                      onOpenSettings: _toggleSettings,
-                      onScreenshot: _takeScreenshot,
-                      onToggleRecord: () => _toggleRecording(controller),
-                    ),
+                  // 底部信息/控制面板（hover 回调由面板内部 MouseRegion 处理，
+                  // 不能在外面用 MouseRegion 包裹：根是 AnimatedPositioned 的
+                  // 组件被其它 RenderObjectWidget 包裹会破坏 Stack parentData，
+                  // release 下直接灰屏）
+                  BottomProgramPanel(
+                    isVisible: panelVisible,
+                    onHoverEnter: _cancelBottomHide,
+                    onHoverExit: _scheduleBottomHide,
+                    onTogglePlayPause: controller.togglePlayPause,
+                    onOpenChannels: () => _openDrawer(left: true),
+                    onOpenEpg: () => _openDrawer(left: false),
+                    onOpenSettings: _toggleSettings,
+                    onScreenshot: _takeScreenshot,
+                    onToggleRecord: () => _toggleRecording(controller),
                   ),
 
                   // 左侧频道抽屉
-                  MouseRegion(
-                    onEnter: (_) => _drawerHideTimer?.cancel(),
-                    onExit: (_) => _startDrawerHideTimer(),
-                    child: LeftChannelDrawer(
-                      isOpen: _leftDrawerOpen,
-                      onClose: () =>
-                          setState(() => _leftDrawerOpen = false),
-                    ),
+                  LeftChannelDrawer(
+                    isOpen: _leftDrawerOpen,
+                    onClose: () => setState(() => _leftDrawerOpen = false),
+                    onHoverEnter: () => _drawerHideTimer?.cancel(),
+                    onHoverExit: _startDrawerHideTimer,
                   ),
 
                   // 右侧 EPG 面板
-                  MouseRegion(
-                    onEnter: (_) => _drawerHideTimer?.cancel(),
-                    onExit: (_) => _startDrawerHideTimer(),
-                    child: RightEpgPanel(
-                      isOpen: _rightEpgOpen,
-                      onClose: () =>
-                          setState(() => _rightEpgOpen = false),
-                    ),
+                  RightEpgPanel(
+                    isOpen: _rightEpgOpen,
+                    onClose: () => setState(() => _rightEpgOpen = false),
+                    onHoverEnter: () => _drawerHideTimer?.cancel(),
+                    onHoverExit: _startDrawerHideTimer,
                   ),
 
                   // 切台 OSD（左上角大字台名 + 小字节目名）

@@ -17,6 +17,10 @@ class BottomProgramPanel extends StatelessWidget {
   final VoidCallback onScreenshot;
   final VoidCallback onToggleRecord;
 
+  /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
+  final VoidCallback? onHoverEnter;
+  final VoidCallback? onHoverExit;
+
   const BottomProgramPanel({
     super.key,
     required this.isVisible,
@@ -26,6 +30,8 @@ class BottomProgramPanel extends StatelessWidget {
     required this.onOpenSettings,
     required this.onScreenshot,
     required this.onToggleRecord,
+    this.onHoverEnter,
+    this.onHoverExit,
   });
 
   static final _hm = DateFormat('HH:mm');
@@ -46,10 +52,13 @@ class BottomProgramPanel extends StatelessWidget {
       left: 0,
       right: 0,
       bottom: isVisible ? 0 : -240,
-      child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 200),
-        opacity: isVisible ? 1.0 : 0.0,
-        child: Container(
+      child: MouseRegion(
+        onEnter: (_) => onHoverEnter?.call(),
+        onExit: (_) => onHoverExit?.call(),
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 200),
+          opacity: isVisible ? 1.0 : 0.0,
+          child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
@@ -91,6 +100,7 @@ class BottomProgramPanel extends StatelessWidget {
               ),
             ),
           ),
+        ),
         ),
       ),
     );
