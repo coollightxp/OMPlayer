@@ -517,19 +517,28 @@ class DlnaService {
         '</e:propertyset>';
   }
 
-  /// 向控制点回调地址发送 GENA NOTIFY（失败静默，不影响播放）
+  /// 向控制点回调地址发送 GENA NOTIFY（失败静默，不影响播放）。
+  /// 每个订阅串行排队，保证 SEQ 严格递增、不被网络延迟乱序，
+  /// 否则严格的发送端收到 SEQ 回退会丢弃事件并提示重试。
   Future<void> _notify(_EventSubscription sub, String body) async {
+    final seq = sub.seq++;
+    final data = utf8.encode(body);
+    final prev = sub.sending;
+    final completer = Completer<void>();
+    sub.sending = completer.future;
+    // 等上一条发完（或失败）再发本条
+    prev.whenComplete(() => completer.complete());
+    await prev;
     HttpClient? client;
     try {
       final uri = Uri.parse(sub.callback);
       client = HttpClient();
-      final data = utf8.encode(body);
       final req = await client.openUrl('NOTIFY', uri);
       req.headers.set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
       req.headers.set('NT', 'upnp:event');
       req.headers.set('NTS', 'upnp:propchange');
       req.headers.set('SID', sub.sid);
-      req.headers.set('SEQ', '${sub.seq++}');
+      req.headers.set('SEQ', '$seq');
       req.contentLength = data.length;
       req.add(data);
       final resp = await req.close().timeout(const Duration(seconds: 3));
@@ -606,7 +615,11 @@ class DlnaService {
           return;
         case 'GetPositionInfo':
           final pos = _fmtTime(hooks.position());
-          final dur = _fmtTime(hooks.duration());
+          // 直播流/时长未知时按规范返回空串，不能返回 0:00:00，
+          // 否则部分发送端会把进度算成 100% 或判定异常
+          final dur = hooks.duration() > Duration.zero
+              ? _fmtTime(hooks.duration())
+              : '';
           final uri = _xmlEscape(_currentUri ?? '');
           await _soapResponse(req, service, action,
               '<Track>1</Track>'
@@ -619,7 +632,9 @@ class DlnaService {
               '<AbsCount>2147483647</AbsCount>');
           return;
         case 'GetMediaInfo':
-          final dur = _fmtTime(hooks.duration());
+          final dur = hooks.duration() > Duration.zero
+              ? _fmtTime(hooks.duration())
+              : '';
           final uri = _xmlEscape(_currentUri ?? '');
           await _soapResponse(req, service, action,
               '<NrTracks>1</NrTracks>'
@@ -789,6 +804,8 @@ class DlnaService {
     final data = utf8.encode(xml);
     req.response.headers
         .set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
+    // UPnP 设备惯例：所有 HTTP 响应带 SERVER 头
+    req.response.headers.set('SERVER', 'OMPlayer/1.0 UPnP/1.0');
     req.response.contentLength = data.length;
     req.response.add(data);
     await req.response.close();
@@ -1033,6 +1050,9 @@ class _EventSubscription {
   final String callback;
   int seq = 0;
   Timer expireTimer;
+
+  /// 串行发送队列：保证事件按入队顺序送达
+  Future<void> sending = Future.value();
 
   _EventSubscription({required this.sid, required this.callback})
       : expireTimer = Timer(Duration.zero, () {});

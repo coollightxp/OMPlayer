@@ -249,6 +249,9 @@ class PlayerController extends ChangeNotifier {
                 return 'PLAYING';
               case PlayerState.paused:
                 return 'PAUSED_PLAYBACK';
+              case PlayerState.loading:
+                // 标准状态：媒体正在准备，发送端此时不应判定为失败/重试
+                return 'TRANSITIONING';
               default:
                 return 'STOPPED';
             }

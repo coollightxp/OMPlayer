@@ -300,15 +300,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   // 桌面端 hover 边缘自动弹出
                   if (controller.isDesktop) ...[
-                    // 左边缘
+                    // 左边缘：不在 onExit 里启动隐藏计时——面板滑入会覆盖
+                    // 这个 20px 触发区，触发区合成 onExit 与面板 onEnter 的
+                    // 回调顺序若为「先入后出」，会把面板刚取消的隐藏定时器
+                    // 重新启动，导致光标明明停在面板内、3 秒后仍自动关闭，
+                    // 表现为顶部返回/关闭钮点不到。隐藏统一由面板自身
+                    // onExit 负责。
                     Positioned(
                       left: 0,
                       top: 0,
                       bottom: 0,
                       width: 20,
                       child: MouseRegion(
-                        onEnter: (_) => _openDrawer(left: true),
-                        onExit: (_) => _startDrawerHideTimer(),
+                        onEnter: (_) {
+                          if (_leftDrawerOpen) {
+                            _cancelDrawerHide();
+                          } else {
+                            _openDrawer(left: true);
+                          }
+                        },
                       ),
                     ),
                     // 右边缘
@@ -318,8 +328,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       bottom: 0,
                       width: 20,
                       child: MouseRegion(
-                        onEnter: (_) => _openDrawer(left: false),
-                        onExit: (_) => _startDrawerHideTimer(),
+                        onEnter: (_) {
+                          if (_rightEpgOpen) {
+                            _cancelDrawerHide();
+                          } else {
+                            _openDrawer(left: false);
+                          }
+                        },
                       ),
                     ),
                     // 底部边缘
