@@ -17,6 +17,7 @@ import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../models/reservation.dart';
 import 'auto_launch.dart';
+import 'cast_log.dart';
 import 'dlna_service.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
@@ -46,6 +47,17 @@ class PlayerController extends ChangeNotifier {
   final DlnaService dlnaService = DlnaService();
   bool _isCasting = false;
   Channel? _preCastChannel; // 投屏前的频道，用于断开后恢复
+
+  // 投屏诊断日志路径（设置面板展示给用户反馈问题）
+  String _castLogPath = '';
+  String get castLogPath => _castLogPath;
+
+  // 投屏卡顿看门狗：状态仍为"播放中"但播放位置长时间不推进时，
+  // 说明网络流被静默掐断（常见于 HTTP-FLV/视频号直播），需要自愈
+  int _watchPosMs = -1;
+  DateTime? _watchAdvanceAt;
+  bool _stallNudged = false;
+  bool _stallReinitTried = false;
 
   // 静音状态
   bool _isMuted = false;
@@ -91,8 +103,16 @@ class PlayerController extends ChangeNotifier {
     await _loadSettings();
     await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
+    // 投屏诊断日志路径（供设置面板展示）
+    CastLog.path().then((p) {
+      if (p.isNotEmpty && _castLogPath != p) {
+        _castLogPath = p;
+        notifyListeners();
+      }
+    });
     // 播放中每 500ms 刷新一次（进度条、倒计时等）
     _tickTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      _checkCastStall();
       if (_videoController != null &&
           _videoController!.value.isInitialized) {
         notifyListeners();
@@ -286,6 +306,13 @@ class PlayerController extends ChangeNotifier {
             ? null
             : _currentChannel;
     _isCasting = true;
+    // 重置卡顿看门狗
+    _watchPosMs = -1;
+    _watchAdvanceAt = null;
+    _stallNudged = false;
+    _stallReinitTried = false;
+    CastLog.write(
+        'cast play: title="$title" url=${url.length > 300 ? url.substring(0, 300) : url}');
     final cast = Channel(
       id: '__dlna_cast__',
       name: title.isEmpty ? 'DLNA 投屏' : title,
@@ -298,7 +325,10 @@ class PlayerController extends ChangeNotifier {
   /// 投屏端断开/停止：自动恢复接收投屏前的状态
   Future<void> stopCastAndRestore() async {
     if (!_isCasting) return;
+    CastLog.write('cast stopped by sender, restore previous channel');
     _isCasting = false;
+    _watchPosMs = -1;
+    _watchAdvanceAt = null;
     final restore = _preCastChannel;
     _preCastChannel = null;
     if (restore != null) {
@@ -532,10 +562,17 @@ class PlayerController extends ChangeNotifier {
       await WakelockPlus.enable();
 
       _state = PlayerState.playing;
+      if (_isCasting) {
+        CastLog.write(
+            'cast init ok: dur=${_videoController!.value.duration.inSeconds}s '
+            'size=${_videoController!.value.size.width.toInt()}x'
+            '${_videoController!.value.size.height.toInt()}');
+      }
       // 记录当前频道，下次启动时恢复
       await _saveLastChannel();
     } catch (e) {
       debugPrint('源 ${_sourceIndex + 1}/$sourceCount 播放失败: $e');
+      if (_isCasting) CastLog.write('cast init FAILED: $e');
       // 自动尝试下一个源
       if (hasNextSource) {
         _sourceIndex++;
@@ -549,13 +586,27 @@ class PlayerController extends ChangeNotifier {
 
   void _onVideoListener() {
     if (_videoController == null) return;
-    if (_videoController!.value.hasError) {
+    final v = _videoController!.value;
+    if (v.hasError) {
+      if (_isCasting) {
+        CastLog.write('cast playback error: ${v.errorDescription}');
+      }
       // 播放中途出错且有备用源时自动切换
       if (hasNextSource) {
         nextSource();
         return;
       }
       _state = PlayerState.error;
+      notifyListeners();
+      return;
+    }
+    // 投屏点播内容正常播完：状态切到 ended（DLNA 上报 STOPPED），
+    // 发送端据此知道视频结束（否则最后一帧永驻、手机端一直转圈/卡住）
+    if (_isCasting &&
+        v.isCompleted &&
+        _state == PlayerState.playing) {
+      CastLog.write('cast stream completed (end of media)');
+      _state = PlayerState.ended;
       notifyListeners();
     }
   }
@@ -819,8 +870,62 @@ class PlayerController extends ChangeNotifier {
   Duration get duration => _videoController?.value.duration ?? Duration.zero;
 
   Future<void> seekTo(Duration position) async {
+    // 直播/时长未知的投屏流不支持 seek：部分发送端（微信视频号等）会
+    // 周期性下发 Seek 做进度同步，对 HTTP-FLV/HLS 直播执行 seek 会把
+    // 播放内核挂起（画面永久卡死），直接忽略
+    if (_isCasting && duration <= Duration.zero) {
+      CastLog.write('ignore Seek on live cast: $position');
+      return;
+    }
     await _videoController?.seekTo(position);
     notifyListeners();
+  }
+
+  /// 投屏卡顿看门狗（500ms 一次）：播放中位置超过 12 秒不推进，
+  /// 先尝试 play() 轻推；再过 13 秒仍不动则销毁重建播放内核自愈。
+  void _checkCastStall() {
+    if (!_isCasting) return;
+    final vc = _videoController;
+    if (vc == null || !vc.value.isInitialized) return;
+    if (_state != PlayerState.playing) return;
+    final posMs = vc.value.position.inMilliseconds;
+    final now = DateTime.now();
+    if (posMs != _watchPosMs) {
+      _watchPosMs = posMs;
+      _watchAdvanceAt = now;
+      _stallNudged = false;
+      _stallReinitTried = false;
+      return;
+    }
+    _watchAdvanceAt ??= now;
+    final stalledMs = now.difference(_watchAdvanceAt!).inMilliseconds;
+    if (!_stallNudged && stalledMs >= 12000) {
+      _stallNudged = true;
+      CastLog.write('cast stall detected (${stalledMs}ms), nudge play()');
+      vc.play().catchError((_) {});
+    } else if (_stallNudged &&
+        !_stallReinitTried &&
+        stalledMs >= 25000) {
+      _stallReinitTried = true;
+      _recoverCastPlayback();
+    }
+  }
+
+  /// 投屏流卡死的最终自愈：销毁内核、用同一 URL 重新拉流。
+  /// 点播从上次位置续播，直播从头缓冲。整场投屏只重建一次，避免死循环。
+  Future<void> _recoverCastPlayback() async {
+    final ch = _currentChannel;
+    if (ch == null) return;
+    final savedPos = _videoController?.value.position ?? Duration.zero;
+    final isLive = duration <= Duration.zero;
+    CastLog.write(
+        'cast stall recovery: re-init player (live=$isLive, pos=$savedPos)');
+    await _playCurrentSource();
+    if (!isLive && savedPos > const Duration(seconds: 2)) {
+      try {
+        await _videoController?.seekTo(savedPos);
+      } catch (_) {}
+    }
   }
 
   /// 获取当前播放节目信息

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'cast_log.dart';
+
 /// DLNA/UPnP 回调集合：由播放器注入实际控制能力
 class DlnaHooks {
   final void Function(String url, String title) onPlay;
@@ -58,6 +60,16 @@ class DlnaService {
   Timer? _positionEventTimer;
   String? _lastPushedState;
   int _lastPushedPosSec = -1;
+
+  /// 高频轮询动作的诊断日志限频（最多 10 秒一条）
+  final Map<String, DateTime> _lastPollLog = {};
+  static const _noisyActions = {
+    'GetPositionInfo',
+    'GetTransportInfo',
+    'GetVolume',
+    'GetMute',
+    'GetMediaInfo',
+  };
 
   bool get isRunning => _http != null && _ssdp != null;
 
@@ -369,6 +381,7 @@ class DlnaService {
         sub.expireTimer.cancel();
         _subs.removeWhere((_, s) => s.sid == sub.sid);
       }
+      CastLog.write('GENA unsubscribe sid=$sidHdr found=${sub != null}');
       req.response.statusCode = 200;
       req.response.contentLength = 0;
       await req.response.close();
@@ -379,11 +392,13 @@ class DlnaService {
     if (sidHdr != null && sidHdr.isNotEmpty) {
       final sub = _findSubBySid(sidHdr);
       if (sub == null) {
+        CastLog.write('GENA renew unknown sid=$sidHdr -> 412');
         req.response.statusCode = 412;
         await req.response.close();
         return;
       }
       _armExpiry(sub, path);
+      CastLog.write('GENA renew sid=$sidHdr path=$path');
       req.response.headers.set('SID', sub.sid);
       req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
       req.response.statusCode = 200;
@@ -396,6 +411,7 @@ class DlnaService {
     final cbRaw = h.value('CALLBACK') ?? '';
     final m = RegExp(r'<([^>]+)>').firstMatch(cbRaw);
     if (m == null) {
+      CastLog.write('GENA subscribe without CALLBACK -> 412 (path=$path)');
       req.response.statusCode = 412;
       await req.response.close();
       return;
@@ -406,6 +422,7 @@ class DlnaService {
     final sub = _EventSubscription(sid: sid, callback: callback);
     _subs[path] = sub;
     _armExpiry(sub, path);
+    CastLog.write('GENA subscribe path=$path sid=$sid callback=$callback');
 
     req.response.headers.set('SID', sid);
     req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
@@ -544,11 +561,13 @@ class DlnaService {
       final resp = await req.close().timeout(const Duration(seconds: 3));
       // 412 Precondition Failed：SID 无效，控制点要求重新订阅
       if (resp.statusCode == 412) {
+        CastLog.write('GENA NOTIFY 412, drop sid=${sub.sid}');
         _subs.removeWhere((_, s) => s.sid == sub.sid);
       }
       resp.drain<void>();
-    } catch (_) {
+    } catch (e) {
       // 手机息屏/回调端口关闭等，忽略
+      CastLog.write('GENA NOTIFY failed seq=$seq -> $e');
       client?.close(force: true);
     }
   }
@@ -569,6 +588,8 @@ class DlnaService {
     final service = hashIdx >= 0 ? soapAction.substring(0, hashIdx) : '';
     final action =
         hashIdx >= 0 ? soapAction.substring(hashIdx + 1).trim() : '';
+
+    _logSoap(service, action, body);
 
     if (service.contains('AVTransport')) {
       switch (action) {
@@ -721,6 +742,18 @@ class DlnaService {
           await _soapResponse(req, service, action,
               '<ConnectionIDs>0</ConnectionIDs>');
           return;
+        case 'GetCurrentConnectionInfo':
+          // 部分发送端（微信等）建链时会查询连接信息，缺失会导致其放弃投屏。
+          // 返回一个处于 Input/OK 状态的连接（RcsID/AVTransportID=0）。
+          await _soapResponse(req, service, action,
+              '<RcsID>0</RcsID>'
+              '<AVTransportID>0</AVTransportID>'
+              '<ProtocolInfo></ProtocolInfo>'
+              '<PeerConnectionManager></PeerConnectionManager>'
+              '<PeerConnectionID>-1</PeerConnectionID>'
+              '<Direction>Input</Direction>'
+              '<Status>OK</Status>');
+          return;
         default:
           await _soapResponse(req, service, action, '');
           return;
@@ -728,7 +761,49 @@ class DlnaService {
     }
 
     req.response.statusCode = 404;
+    CastLog.write('SOAP unhandled: $service#$action -> 404');
     await req.response.close();
+  }
+
+  /// SOAP 信令诊断日志：控制类动作全量记录，高频轮询 10 秒限频一条
+  void _logSoap(String service, String action, String body) {
+    final shortSvc = service.contains('AVTransport')
+        ? 'AVT'
+        : service.contains('RenderingControl')
+            ? 'RCS'
+            : service.contains('ConnectionManager')
+                ? 'CM'
+                : service;
+    if (_noisyActions.contains(action)) {
+      final last = _lastPollLog[action];
+      if (last != null &&
+          DateTime.now().difference(last) < const Duration(seconds: 10)) {
+        return;
+      }
+      _lastPollLog[action] = DateTime.now();
+    }
+    String extra = '';
+    switch (action) {
+      case 'SetAVTransportURI':
+        final uri = _extract(body, 'CurrentURI');
+        extra =
+            ' uri=${uri.length > 200 ? uri.substring(0, 200) : uri}';
+        break;
+      case 'Seek':
+        extra = ' unit=${_extract(body, 'Unit')} '
+            'target=${_extract(body, 'Target')}';
+        break;
+      case 'SetVolume':
+        extra = ' vol=${_extract(body, 'DesiredVolume')}';
+        break;
+      case 'SetMute':
+        extra = ' mute=${_extract(body, 'DesiredMute')}';
+        break;
+      case 'Play':
+        extra = ' speed=${_extract(body, 'Speed')}';
+        break;
+    }
+    CastLog.write('SOAP[$shortSvc] $action$extra');
   }
 
   // ==================== XML/SOAP 工具 ====================

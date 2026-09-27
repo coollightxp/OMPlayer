@@ -681,7 +681,9 @@ class _SystemSettingsTab extends StatelessWidget {
               subtitle: Text(
                 controller.dlnaRunning
                     ? '已开启：${controller.dlnaName}\n${controller.dlnaEndpoint}\n手机需与本机同一局域网，防火墙需放行本程序'
-                    : '未开启：服务已停止或端口被占用',
+                        '${controller.castLogPath.isNotEmpty ? '\n投屏异常时请反馈诊断日志：\n${controller.castLogPath}' : ''}'
+                    : '未开启：服务已停止或端口被占用'
+                        '${controller.castLogPath.isNotEmpty ? '\n投屏异常时请反馈诊断日志：\n${controller.castLogPath}' : ''}',
                 style: const TextStyle(
                     color: Colors.white54, fontSize: 12),
               ),
