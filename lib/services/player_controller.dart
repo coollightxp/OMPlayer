@@ -680,14 +680,21 @@ class PlayerController extends ChangeNotifier {
   /// 退出画中画（桌面迷你窗恢复；Android 由系统控制退出）
   Future<void> exitPip() async {
     final restored = await pipService.exitMiniWindow();
-    if (restored &&
-        _currentChannel != null &&
-        _videoController != null) {
-      // Windows 下进出迷你窗的程序化缩放会让 fvp/MDK 的视频输出表面进入
-      // 错误状态：画面残留一层灰白半透明伪影，微调窗口尺寸也无法自愈。
-      // 重建播放内核（全新渲染器/纹理）是唯一可靠的恢复手段；
-      // 直播流重新拉起通常 1 秒内完成，当前频道与线路保持不变。
-      await _playCurrentSource();
+    if (restored) {
+      // Windows 下进出迷你窗的快速缩放会让窗口合成树进入坏状态：
+      // 视频纹理以灰白半透明方式合成（EPG 等普通控件不受影响）。
+      // 仅重建播放内核无效——新内核的纹理诞生时合成状态尚未恢复，
+      // 一出生即被污染。先隐藏再显示窗口，强制 DWM 销毁并重建窗口
+      // 合成树得到干净表面，随后再重建播放内核，让新纹理在干净
+      // 表面上合成。
+      try {
+        await windowManager.hide();
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
+      if (_currentChannel != null && _videoController != null) {
+        await _playCurrentSource();
+      }
     }
     notifyListeners();
   }
