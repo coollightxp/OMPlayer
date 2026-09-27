@@ -295,25 +295,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
               final panelVisible =
                   _bottomPanelVisible ||
                       controller.state != PlayerState.playing;
-              // 画中画/迷你窗模式：只保留视频画面
-              final pip = controller.pipMode;
               return Stack(
                 children: [
                   // 视频播放层
                   const Positioned.fill(child: VideoPlayerWidget()),
 
-                  // 桌面迷你窗：点击画面恢复原窗口
-                  if (pip && controller.isDesktop)
-                    Positioned.fill(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => controller.exitPip(),
-                        child: const SizedBox.expand(),
-                      ),
-                    ),
-
-                  // 画中画模式下不渲染任何覆盖层
-                  if (!pip) ...[
                   // 桌面端亮度调节：屏幕前叠加黑色遮罩（screen_brightness 在多数桌面机无效）
                   if (controller.isDesktop)
                     Positioned.fill(
@@ -406,7 +392,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     onOpenSettings: _toggleSettings,
                     onScreenshot: _takeScreenshot,
                     onToggleRecord: () => _toggleRecording(controller),
-                    onPip: () => controller.togglePip(),
                   ),
 
                   // 左侧频道抽屉
@@ -483,7 +468,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         }
                       },
                     ),
-                  ], // if (!pip) 覆盖层组结束
                 ],
               );
             },
@@ -544,8 +528,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
       action = 'settings';
     } else if (k == LogicalKeyboardKey.keyR) {
       action = 'record';
-    } else if (k == LogicalKeyboardKey.keyP) {
-      action = 'pip';
     }
     if (action != null) {
       _onShortcut(action);
@@ -900,8 +882,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
         controller.toggleMute();
       case 'screenshot':
         _takeScreenshot();
-      case 'pip':
-        controller.togglePip();
     }
   }
 

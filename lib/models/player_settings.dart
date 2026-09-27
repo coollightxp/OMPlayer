@@ -9,9 +9,6 @@ class PlayerSettings {
   /// 默认亮度 (0.0 - 1.0)
   final double defaultBrightness;
 
-  /// 画中画模式
-  final bool pipEnabled;
-
   /// 视频质量偏好
   final VideoQuality preferredQuality;
 
@@ -40,7 +37,6 @@ class PlayerSettings {
     this.autoPlayNext = true,
     this.defaultVolume = 0.8,
     this.defaultBrightness = 0.8,
-    this.pipEnabled = false,
     this.preferredQuality = VideoQuality.auto,
     this.gestureSensitivity = 1.0,
     this.autoHideDelay = 3000,
@@ -55,7 +51,6 @@ class PlayerSettings {
     bool? autoPlayNext,
     double? defaultVolume,
     double? defaultBrightness,
-    bool? pipEnabled,
     VideoQuality? preferredQuality,
     double? gestureSensitivity,
     int? autoHideDelay,
@@ -69,7 +64,6 @@ class PlayerSettings {
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
       defaultVolume: defaultVolume ?? this.defaultVolume,
       defaultBrightness: defaultBrightness ?? this.defaultBrightness,
-      pipEnabled: pipEnabled ?? this.pipEnabled,
       preferredQuality: preferredQuality ?? this.preferredQuality,
       gestureSensitivity: gestureSensitivity ?? this.gestureSensitivity,
       autoHideDelay: autoHideDelay ?? this.autoHideDelay,

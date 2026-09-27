@@ -20,7 +20,6 @@ import 'auto_launch.dart';
 import 'dlna_service.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
-import 'pip_service.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
 
@@ -42,14 +41,6 @@ class PlayerController extends ChangeNotifier {
   final SourceManager sourceManager = SourceManager();
   final ReservationManager reservationManager = ReservationManager();
   final MediaCaptureService captureService = MediaCaptureService();
-
-  // 画中画（Android 系统级 PiP / 桌面迷你窗口）
-  final PipService pipService = PipService();
-  bool _pipSupported = false;
-  bool _lastAutoPipSent = false;
-  bool get pipSupported => _pipSupported;
-  bool get pipEnabled => _settings.pipEnabled;
-  bool get pipMode => pipService.pipMode;
 
   // DLNA 投屏接收服务（接收其它设备推送的视频）
   final DlnaService dlnaService = DlnaService();
@@ -100,15 +91,8 @@ class PlayerController extends ChangeNotifier {
     await _loadSettings();
     await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
-
-    // 画中画：探测平台支持，订阅小窗状态变化
-    _pipSupported = await pipService.isSupported();
-    pipService.onPipModeChanged.listen((_) => notifyListeners());
-    _syncAutoPip();
-
     // 播放中每 500ms 刷新一次（进度条、倒计时等）
     _tickTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      _syncAutoPip();
       if (_videoController != null &&
           _videoController!.value.isInitialized) {
         notifyListeners();
@@ -668,59 +652,9 @@ class PlayerController extends ChangeNotifier {
     return true;
   }
 
-  // ==================== 画中画 ====================
-
-  /// 进入画中画（Android 系统小窗 / 桌面迷你窗）
-  Future<void> enterPip() async {
-    if (!_pipSupported) return;
-    await pipService.enter();
-    notifyListeners();
-  }
-
-  /// 退出画中画（桌面迷你窗恢复；Android 由系统控制退出）
-  Future<void> exitPip() async {
-    final restored = await pipService.exitMiniWindow();
-    if (restored) {
-      // Windows 下进出迷你窗的快速缩放会让窗口合成树进入坏状态：
-      // 视频纹理以灰白半透明方式合成（EPG 等普通控件不受影响）。
-      // 仅重建播放内核无效——新内核的纹理诞生时合成状态尚未恢复，
-      // 一出生即被污染。先隐藏再显示窗口，强制 DWM 销毁并重建窗口
-      // 合成树得到干净表面，随后再重建播放内核，让新纹理在干净
-      // 表面上合成。
-      try {
-        await windowManager.hide();
-        await windowManager.show();
-        await windowManager.focus();
-      } catch (_) {}
-      if (_currentChannel != null && _videoController != null) {
-        await _playCurrentSource();
-      }
-    }
-    notifyListeners();
-  }
-
-  /// 切换画中画
-  Future<void> togglePip() async {
-    if (pipMode) {
-      await exitPip();
-    } else {
-      await enterPip();
-    }
-  }
-
-  /// Android：离开应用时自动进入画中画（仅播放中生效）
-  Future<void> _syncAutoPip() async {
-    if (!pipService.isAndroid) return;
-    final want = _settings.pipEnabled && isPlaying;
-    if (want == _lastAutoPipSent) return;
-    _lastAutoPipSent = want;
-    await pipService.setAutoPip(want);
-  }
-
   // ==================== 设置持久化 ====================
 
   static const _kAutoPlayNext = 'settings_auto_play_next';
-  static const _kPip = 'settings_pip';
   static const _kSensitivity = 'settings_sensitivity';
   static const _kAutoHide = 'settings_auto_hide';
   static const _kLaunchAtStartup = 'settings_launch_at_startup';
@@ -736,7 +670,6 @@ class PlayerController extends ChangeNotifier {
       final p = await SharedPreferences.getInstance();
       _settings = PlayerSettings(
         autoPlayNext: p.getBool(_kAutoPlayNext) ?? true,
-        pipEnabled: p.getBool(_kPip) ?? false,
         gestureSensitivity: p.getDouble(_kSensitivity) ?? 1.0,
         autoHideDelay: p.getInt(_kAutoHide) ?? 3000,
         launchAtStartup: p.getBool(_kLaunchAtStartup) ?? false,
@@ -755,7 +688,6 @@ class PlayerController extends ChangeNotifier {
     try {
       final p = await SharedPreferences.getInstance();
       await p.setBool(_kAutoPlayNext, _settings.autoPlayNext);
-      await p.setBool(_kPip, _settings.pipEnabled);
       await p.setDouble(_kSensitivity, _settings.gestureSensitivity);
       await p.setInt(_kAutoHide, _settings.autoHideDelay);
       await p.setBool(_kLaunchAtStartup, _settings.launchAtStartup);
@@ -797,7 +729,6 @@ class PlayerController extends ChangeNotifier {
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
     final topChanged = settings.alwaysOnTop != _settings.alwaysOnTop;
     final dlnaChanged = settings.dlnaEnabled != _settings.dlnaEnabled;
-    final pipChanged = settings.pipEnabled != _settings.pipEnabled;
     _settings = settings;
     _saveSettings();
     if (launchChanged && isDesktop) {
@@ -811,24 +742,6 @@ class PlayerController extends ChangeNotifier {
         _startDlna();
       } else {
         _stopDlna();
-      }
-    }
-    if (pipChanged) {
-      if (!settings.pipEnabled) {
-        // 关闭：桌面端若在迷你窗则恢复（含播放内核重建）
-        exitPip();
-        _lastAutoPipSent = false;
-        _syncAutoPip();
-      } else if (!_pipSupported) {
-        // 设备不支持：回退开关，避免留下无效的开启状态
-        _settings = _settings.copyWith(pipEnabled: false);
-        _saveSettings();
-      } else if (isDesktop) {
-        // 桌面端打开开关：立即进入迷你窗口（有即时反馈）
-        enterPip();
-      } else {
-        // 安卓：武装「按 Home 自动小窗」，也可用控制栏按钮手动进入
-        _syncAutoPip();
       }
     }
     notifyListeners();

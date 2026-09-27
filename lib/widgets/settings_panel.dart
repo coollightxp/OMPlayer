@@ -520,24 +520,6 @@ class _PlayerSettingsTab extends StatelessWidget {
                   .updateSettings(s.copyWith(autoPlayNext: v)),
               activeColor: Colors.blueAccent,
             ),
-            SwitchListTile(
-              secondary:
-                  const Icon(Icons.picture_in_picture, color: Colors.white70),
-              title: const Text('画中画模式',
-                  style: TextStyle(color: Colors.white, fontSize: 15)),
-              subtitle: Text(
-                controller.pipSupported
-                    ? '安卓：播放中按 Home 键自动进小窗；桌面：立即缩为迷你窗（点击画面恢复）'
-                    : '当前设备不支持画中画',
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-              value: s.pipEnabled && controller.pipSupported,
-              onChanged: controller.pipSupported
-                  ? (v) =>
-                      controller.updateSettings(s.copyWith(pipEnabled: v))
-                  : null,
-              activeColor: Colors.blueAccent,
-            ),
             _buildSlider(
               icon: Icons.touch_app,
               title: '手势灵敏度',
