@@ -422,7 +422,8 @@ class DlnaService {
     final sub = _EventSubscription(sid: sid, callback: callback);
     _subs[path] = sub;
     _armExpiry(sub, path);
-    CastLog.write('GENA subscribe path=$path sid=$sid callback=$callback');
+    CastLog.write(
+        'GENA subscribe path=$path sid=$sid callback=$callback from=${h.value('X-Forwarded-For') ?? req.connectionInfo?.remoteAddress.address ?? '?'}');
 
     req.response.headers.set('SID', sid);
     req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
@@ -546,11 +547,18 @@ class DlnaService {
     // 等上一条发完（或失败）再发本条
     prev.whenComplete(() => completer.complete());
     await prev;
+    // 回调地址不可达（如企业 WiFi 客户端隔离）退避期间丢弃事件，
+    // 避免对黑洞地址每 2 秒建一次连接（首次 SYN 要挂 21 秒）
+    final cd = sub.cooldownUntil;
+    if (cd != null && DateTime.now().isBefore(cd)) return;
     HttpClient? client;
     try {
       final uri = Uri.parse(sub.callback);
       client = HttpClient();
-      final req = await client.openUrl('NOTIFY', uri);
+      // openUrl 内部建连，黑洞地址会挂 21 秒才抛 errno 121，强制 3 秒超时
+      final req = await client
+          .openUrl('NOTIFY', uri)
+          .timeout(const Duration(seconds: 3));
       req.headers.set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
       req.headers.set('NT', 'upnp:event');
       req.headers.set('NTS', 'upnp:propchange');
@@ -559,6 +567,9 @@ class DlnaService {
       req.contentLength = data.length;
       req.add(data);
       final resp = await req.close().timeout(const Duration(seconds: 3));
+      // 发送成功：清除退避
+      sub.failStreak = 0;
+      sub.cooldownUntil = null;
       // 412 Precondition Failed：SID 无效，控制点要求重新订阅
       if (resp.statusCode == 412) {
         CastLog.write('GENA NOTIFY 412, drop sid=${sub.sid}');
@@ -566,9 +577,16 @@ class DlnaService {
       }
       resp.drain<void>();
     } catch (e) {
-      // 手机息屏/回调端口关闭等，忽略
-      CastLog.write('GENA NOTIFY failed seq=$seq -> $e');
       client?.close(force: true);
+      // 指数退避：4s、8s、16s、30s、30s…
+      const waits = [4, 8, 16, 30];
+      sub.failStreak++;
+      final waitSec = waits[(sub.failStreak - 1).clamp(0, waits.length - 1)];
+      sub.cooldownUntil =
+          DateTime.now().add(Duration(seconds: waitSec));
+      CastLog.write(
+          'GENA NOTIFY failed seq=$seq streak=${sub.failStreak} '
+          'backoff=${waitSec}s -> $e');
     }
   }
 
@@ -589,7 +607,8 @@ class DlnaService {
     final action =
         hashIdx >= 0 ? soapAction.substring(hashIdx + 1).trim() : '';
 
-    _logSoap(service, action, body);
+    _logSoap(service, action, body,
+        req.connectionInfo?.remoteAddress.address ?? '?');
 
     if (service.contains('AVTransport')) {
       switch (action) {
@@ -766,7 +785,7 @@ class DlnaService {
   }
 
   /// SOAP 信令诊断日志：控制类动作全量记录，高频轮询 10 秒限频一条
-  void _logSoap(String service, String action, String body) {
+  void _logSoap(String service, String action, String body, String fromIp) {
     final shortSvc = service.contains('AVTransport')
         ? 'AVT'
         : service.contains('RenderingControl')
@@ -785,9 +804,7 @@ class DlnaService {
     String extra = '';
     switch (action) {
       case 'SetAVTransportURI':
-        final uri = _extract(body, 'CurrentURI');
-        extra =
-            ' uri=${uri.length > 200 ? uri.substring(0, 200) : uri}';
+        extra = ' uri=${_extract(body, 'CurrentURI')}';
         break;
       case 'Seek':
         extra = ' unit=${_extract(body, 'Unit')} '
@@ -803,7 +820,7 @@ class DlnaService {
         extra = ' speed=${_extract(body, 'Speed')}';
         break;
     }
-    CastLog.write('SOAP[$shortSvc] $action$extra');
+    CastLog.write('SOAP[$shortSvc] $action$extra from=$fromIp');
   }
 
   // ==================== XML/SOAP 工具 ====================
@@ -1128,6 +1145,10 @@ class _EventSubscription {
 
   /// 串行发送队列：保证事件按入队顺序送达
   Future<void> sending = Future.value();
+
+  /// 回调地址连续失败退避（企业 WiFi 隔离时地址不可达）
+  int failStreak = 0;
+  DateTime? cooldownUntil;
 
   _EventSubscription({required this.sid, required this.callback})
       : expireTimer = Timer(Duration.zero, () {});

@@ -59,6 +59,12 @@ class PlayerController extends ChangeNotifier {
   bool _stallNudged = false;
   bool _stallReinitTried = false;
 
+  // 投屏诊断：1 秒一次状态采样 + buffering 持续超时自愈
+  DateTime? _lastCastTickAt;
+  bool _wasBuffering = false;
+  DateTime? _bufferingSince;
+  bool _bufferReinitTried = false;
+
   // 静音状态
   bool _isMuted = false;
   double _volumeBeforeMute = 0.8;
@@ -311,8 +317,12 @@ class PlayerController extends ChangeNotifier {
     _watchAdvanceAt = null;
     _stallNudged = false;
     _stallReinitTried = false;
+    _lastCastTickAt = null;
+    _wasBuffering = false;
+    _bufferingSince = null;
+    _bufferReinitTried = false;
     CastLog.write(
-        'cast play: title="$title" url=${url.length > 300 ? url.substring(0, 300) : url}');
+        'cast play: title="$title" url=$url');
     final cast = Channel(
       id: '__dlna_cast__',
       name: title.isEmpty ? 'DLNA 投屏' : title,
@@ -881,15 +891,53 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 投屏卡顿看门狗（500ms 一次）：播放中位置超过 12 秒不推进，
-  /// 先尝试 play() 轻推；再过 13 秒仍不动则销毁重建播放内核自愈。
+  /// 投屏卡顿看门狗（500ms 一次）：
+  /// - 播放中位置超过 12 秒不推进，先尝试 play() 轻推；25 秒仍不动则重新拉流
+  /// - isBuffering 持续超过 10 秒（网络断流但未报错）直接重新拉流
+  /// - 每秒采样一行状态到诊断日志（定位"画面冻死但时钟照走"的解码层卡死）
   void _checkCastStall() {
     if (!_isCasting) return;
     final vc = _videoController;
     if (vc == null || !vc.value.isInitialized) return;
-    if (_state != PlayerState.playing) return;
-    final posMs = vc.value.position.inMilliseconds;
     final now = DateTime.now();
+    final posMs = vc.value.position.inMilliseconds;
+    final isBuf = vc.value.isBuffering;
+    final isPlay = vc.value.isPlaying;
+    final done = vc.value.isCompleted;
+    final durSec = vc.value.duration.inSeconds;
+
+    // buffering 沿变化记录
+    if (isBuf != _wasBuffering) {
+      CastLog.write(isBuf
+          ? 'cast buffering START at ${(posMs / 1000).toStringAsFixed(1)}s'
+          : 'cast buffering END at ${(posMs / 1000).toStringAsFixed(1)}s');
+      _wasBuffering = isBuf;
+      _bufferingSince = isBuf ? now : null;
+    } else if (isBuf) {
+      _bufferingSince ??= now;
+    }
+
+    // 每秒采样：位置/缓冲/播放/结束标志
+    if (_lastCastTickAt == null ||
+        now.difference(_lastCastTickAt!).inMilliseconds >= 1000) {
+      _lastCastTickAt = now;
+      CastLog.write(
+          'cast tick pos=${(posMs / 1000).toStringAsFixed(1)}/${durSec}s '
+          'buf=$isBuf play=$isPlay done=$done state=$_state');
+    }
+
+    // 持续 buffering 超过 10 秒：流已断但内核没报错，干净重建
+    if (isBuf &&
+        !_bufferReinitTried &&
+        _bufferingSince != null &&
+        now.difference(_bufferingSince!).inSeconds >= 10) {
+      _bufferReinitTried = true;
+      CastLog.write('cast buffering >10s, trigger recovery');
+      _recoverCastPlayback();
+      return;
+    }
+
+    if (_state != PlayerState.playing) return;
     if (posMs != _watchPosMs) {
       _watchPosMs = posMs;
       _watchAdvanceAt = now;

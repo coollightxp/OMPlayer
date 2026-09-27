@@ -12,10 +12,15 @@ void registerFvp() {
     // 注意：不使用 reconnect_at_eof，避免点播短视频正常播完后被无限重开。
     fvp.registerWith(options: {
       'player': {
+        // ffmpeg http/https 协议层：断连自动重连（含点播 MP4 的传输中途网络错误）
         'avio.reconnect': '1',
         'avio.reconnect_streamed': '1',
+        'avio.reconnect_on_network_error': '1',
         'avio.reconnect_delay_max': '5',
         'avio.rw_timeout': '15000000', // 微秒，15 秒
+        // 读包缓冲扩大到 15 秒（默认仅 4 秒）：CDN 限速/网关掐流时争取缓冲窗口，
+        // 突发预读也让下载以更快节奏完成，减少"慢速消费被 CDN 断开"的概率
+        'buffer.range': '1000+15000',
       },
     });
   }
