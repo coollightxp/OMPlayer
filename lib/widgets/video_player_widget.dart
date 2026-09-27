@@ -52,8 +52,14 @@ class VideoPlayerWidget extends StatelessWidget {
                   const SizedBox(height: 8),
                   ElevatedButton.icon(
                     onPressed: () {
-                      if (controller.currentChannel != null) {
-                        controller.playChannel(controller.currentChannel!);
+                      final ch = controller.currentChannel;
+                      if (ch != null) {
+                        controller.playChannel(ch);
+                      } else if (controller.flatChannels.isNotEmpty) {
+                        // 启动恢复失败等场景下 currentChannel 可能为空：
+                        // 兜底播放列表第一个频道，避免按钮完全无反应
+                        controller
+                            .playChannel(controller.flatChannels.first);
                       }
                     },
                     icon: const Icon(Icons.refresh),
