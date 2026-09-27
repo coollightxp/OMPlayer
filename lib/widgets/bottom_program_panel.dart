@@ -17,6 +17,9 @@ class BottomProgramPanel extends StatelessWidget {
   final VoidCallback onScreenshot;
   final VoidCallback onToggleRecord;
 
+  /// 进入画中画（开启画中画设置且平台支持时显示按钮）
+  final VoidCallback? onPip;
+
   /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
   final VoidCallback? onHoverEnter;
   final VoidCallback? onHoverExit;
@@ -31,6 +34,7 @@ class BottomProgramPanel extends StatelessWidget {
     required this.onOpenSettings,
     required this.onScreenshot,
     required this.onToggleRecord,
+    this.onPip,
     this.onHoverEnter,
     this.onHoverExit,
     this.onHoverMove,
@@ -282,6 +286,9 @@ class BottomProgramPanel extends StatelessWidget {
         ],
         _btn(Icons.list, '频道列表', onOpenChannels),
         _btn(Icons.menu_book, '节目单', onOpenEpg),
+        // 画中画：设置开启且平台支持时可用
+        if (onPip != null && c.pipEnabled && c.pipSupported)
+          _btn(Icons.picture_in_picture_alt, '画中画小窗', onPip),
         _btn(Icons.settings, '设置', onOpenSettings),
       ],
     );

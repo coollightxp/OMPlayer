@@ -35,13 +35,80 @@ jobs:
       - name: Create Android project files
         run: flutter create . --platforms=android --project-name omplayer
 
-      - name: Patch Android config (cleartext HTTP / cutout fullscreen)
+      - name: Patch Android config (cleartext HTTP / cutout fullscreen / PiP)
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
           # IPTV 源多为 http:// 明文地址，必须允许明文流量
           sed -i 's|<application|<application android:usesCleartextTraffic="true"|' $MANIFEST
           # 显式声明网络权限（video_player 会合并，但显式更稳）
           grep -q "android.permission.INTERNET" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <application|' $MANIFEST
+          # 声明支持画中画（Android 8+ 系统级小窗）
+          sed -i 's|android:name=".MainActivity"|android:name=".MainActivity"\n                android:supportsPictureInPicture="true"|' $MANIFEST
+          # 自定义 MainActivity：画中画 MethodChannel + Home 键自动小窗
+          rm -rf android/app/src/main/kotlin android/app/src/main/java
+          mkdir -p android/app/src/main/kotlin/com/example/omplayer
+          cat > android/app/src/main/kotlin/com/example/omplayer/MainActivity.kt <<'KT'
+          package com.example.omplayer
+
+          import android.app.PictureInPictureParams
+          import android.content.pm.PackageManager
+          import android.content.res.Configuration
+          import android.os.Build
+          import android.util.Rational
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+
+          class MainActivity : FlutterActivity() {
+              private var pipChannel: MethodChannel? = null
+              private var autoPip = false
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  pipChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "omplayer/pip")
+                  pipChannel?.setMethodCallHandler { call, result ->
+                      when (call.method) {
+                          "isPipSupported" -> result.success(isPipSupported())
+                          "enterPip" -> {
+                              if (isPipSupported()) {
+                                  val params = PictureInPictureParams.Builder()
+                                      .setAspectRatio(Rational(16, 9))
+                                      .build()
+                                  enterPictureInPictureMode(params)
+                                  result.success(true)
+                              } else {
+                                  result.success(false)
+                              }
+                          }
+                          "setAutoPip" -> {
+                              autoPip = call.argument<Boolean>("enabled") ?: false
+                              result.success(true)
+                          }
+                          else -> result.notImplemented()
+                      }
+                  }
+              }
+
+              private fun isPipSupported(): Boolean =
+                  Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                      packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+
+              override fun onUserLeaveHint() {
+                  super.onUserLeaveHint()
+                  if (autoPip && isPipSupported()) {
+                      val params = PictureInPictureParams.Builder()
+                          .setAspectRatio(Rational(16, 9))
+                          .build()
+                      enterPictureInPictureMode(params)
+                  }
+              }
+
+              override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+                  super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+                  pipChannel?.invokeMethod("pipChanged", isInPictureInPictureMode)
+              }
+          }
+          KT
           # 挖孔/刘海屏全屏不留黑边
           mkdir -p android/app/src/main/res/values-v28
           cat > android/app/src/main/res/values-v28/styles.xml <<'XML'
