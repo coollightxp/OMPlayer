@@ -242,6 +242,7 @@ class PlayerController extends ChangeNotifier {
           onStop: () => stopCastAndRestore(),
           onSeek: (p) => seekTo(p),
           onSetVolume: (v) => setVolume(v),
+          onSetMute: (m) => setMuted(m),
           transportState: () {
             switch (_state) {
               case PlayerState.playing:
@@ -255,6 +256,7 @@ class PlayerController extends ChangeNotifier {
           position: () => position,
           duration: () => duration,
           volume: () => _volume,
+          muted: () => _isMuted,
         ),
       );
       _dlnaName = dlnaService.deviceName;
@@ -594,6 +596,12 @@ class PlayerController extends ChangeNotifier {
       await setVolume(0.0);
     }
     notifyListeners();
+  }
+
+  /// 设置指定静音状态（DLNA 发送端调用，与当前状态相同则不动作）
+  Future<void> setMuted(bool muted) async {
+    if (_isMuted == muted) return;
+    await toggleMute();
   }
 
   /// 设置亮度 (0.0 - 1.0)

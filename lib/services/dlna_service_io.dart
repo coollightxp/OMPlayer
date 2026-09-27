@@ -10,10 +10,12 @@ class DlnaHooks {
   final void Function() onStop;
   final void Function(Duration position) onSeek;
   final void Function(double volume) onSetVolume;
+  final void Function(bool muted) onSetMute;
   final String Function() transportState;
   final Duration Function() position;
   final Duration Function() duration;
   final double Function() volume;
+  final bool Function() muted;
 
   const DlnaHooks({
     required this.onPlay,
@@ -22,10 +24,12 @@ class DlnaHooks {
     required this.onStop,
     required this.onSeek,
     required this.onSetVolume,
+    required this.onSetMute,
     required this.transportState,
     required this.position,
     required this.duration,
     required this.volume,
+    required this.muted,
   });
 }
 
@@ -49,6 +53,11 @@ class DlnaService {
   /// GENA 事件订阅：key = 事件路径（/event/AVTransport 等）
   final Map<String, _EventSubscription> _subs = {};
   static const _subLifetime = Duration(seconds: 300);
+
+  /// 播放中定时把进度/状态推给订阅者（发送端可实时显示播放进度）
+  Timer? _positionEventTimer;
+  String? _lastPushedState;
+  int _lastPushedPosSec = -1;
 
   bool get isRunning => _http != null && _ssdp != null;
 
@@ -77,10 +86,32 @@ class DlnaService {
       _ip = await _localIp();
       await _startSsdp();
     } catch (_) {}
+
+    // 播放中每 2 秒向订阅者推送一次播放状态/进度，
+    // 发送端（手机）就能实时显示播放位置、播放/暂停状态。
+    // 状态变化时立即推；位置整秒变化时推送，避免无意义风暴。
+    _positionEventTimer =
+        Timer.periodic(const Duration(seconds: 2), (_) => _pushTick());
+  }
+
+  void _pushTick() {
+    final sub = _subs['/event/AVTransport'];
+    if (sub == null || _hooks == null) return;
+    final state = _hooks!.transportState();
+    final posSec = _hooks!.position().inSeconds;
+    if (state != _lastPushedState) {
+      _lastPushedState = state;
+      _lastPushedPosSec = posSec;
+      _notify(sub, _avtEventBody());
+    } else if (state == 'PLAYING' && posSec != _lastPushedPosSec) {
+      _lastPushedPosSec = posSec;
+      _notify(sub, _avtEventBody());
+    }
   }
 
   void stop() {
     _aliveTimer?.cancel();
+    _positionEventTimer?.cancel();
     for (final s in _subs.values) {
       s.expireTimer.cancel();
     }
@@ -88,6 +119,7 @@ class DlnaService {
     _ssdp?.close();
     _http?.close();
     _aliveTimer = null;
+    _positionEventTimer = null;
     _ssdp = null;
     _http = null;
   }
@@ -429,8 +461,15 @@ class DlnaService {
 
   /// AVTransport 状态变化事件（播放/暂停/停止/切地址后调用）
   void _fireAvtChange() {
+    _lastPushedState = null;
     final sub = _subs['/event/AVTransport'];
     if (sub != null) _notify(sub, _avtEventBody());
+  }
+
+  /// RenderingControl 状态变化事件（音量/静音改变后调用）
+  void _fireRcChange() {
+    final sub = _subs['/event/RenderingControl'];
+    if (sub != null) _notify(sub, _rcEventBody());
   }
 
   String _avtEventBody() {
@@ -461,14 +500,20 @@ class DlnaService {
   String _rcEventBody() {
     final hooks = _hooks;
     final vol = ((hooks?.volume() ?? 0.8) * 100).round().clamp(0, 100);
+    final mute = (hooks?.muted() ?? false) ? '1' : '0';
     final inner = '<InstanceID val="0">'
         '<Volume channel="Master" val="$vol"/>'
-        '<Mute channel="Master" val="0"/>'
+        '<Mute channel="Master" val="$mute"/>'
         '</InstanceID>';
     final lastChange = _xmlEscape(
         '<Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/">$inner</Event>');
+    // 两种标准形式都带上：
+    // - LastChange（BubbleUPnP 等通用控制点使用）
+    // - 直接 Volume/Mute 属性（部分发送端只解析独立属性）
     return '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
         '<e:property><LastChange>$lastChange</LastChange></e:property>'
+        '<e:property><Volume channel="Master">$vol</Volume></e:property>'
+        '<e:property><Mute channel="Master">$mute</Mute></e:property>'
         '</e:propertyset>';
   }
 
@@ -521,6 +566,9 @@ class DlnaService {
         case 'SetAVTransportURI':
           _currentUri = _extract(body, 'CurrentURI');
           _currentTitle = _extractCastTitle(body);
+          // 新地址：重置进度推送缓存
+          _lastPushedState = null;
+          _lastPushedPosSec = -1;
           if (_currentUri != null && _currentUri!.isNotEmpty) {
             hooks.onPlay(_currentUri!, _currentTitle);
           }
@@ -585,8 +633,20 @@ class DlnaService {
               '<WriteStatus>NOT_IMPLEMENTED</WriteStatus>');
           return;
         case 'GetCurrentTransportActions':
+          // 直播流不可 Seek；点播/投屏文件支持完整操作
+          final canSeek = hooks.duration() > Duration.zero;
+          final actions = canSeek
+              ? 'Play,Pause,Stop,Seek,X_DLNA_SeekTime'
+              : 'Play,Pause,Stop';
           await _soapResponse(req, service, action,
-              '<Actions>Play,Pause,Stop,Seek</Actions>');
+              '<Actions>$actions</Actions>');
+          return;
+        case 'Next':
+        case 'Previous':
+        case 'SetPlayMode':
+        case 'SetNextAVTransportURI':
+          // 单轨渲染器：接受请求但不做实际动作
+          await _soapResponse(req, service, action, '');
           return;
         default:
           await _soapResponse(req, service, action, '');
@@ -596,22 +656,37 @@ class DlnaService {
 
     if (service.contains('RenderingControl')) {
       switch (action) {
-        case 'SetVolume':
+        case 'SetVolume': {
           final v = int.tryParse(_extract(body, 'DesiredVolume')) ?? -1;
-          if (v >= 0 && v <= 100) hooks.onSetVolume(v / 100.0);
+          if (v >= 0 && v <= 100) {
+            hooks.onSetVolume(v / 100.0);
+            // 音量从 0 调起时自动解除静音（标准渲染器行为）
+            if (v > 0 && hooks.muted()) hooks.onSetMute(false);
+            _fireRcChange();
+          }
           await _soapResponse(req, service, action, '');
           return;
-        case 'GetVolume':
+        }
+        case 'GetVolume': {
+          // 主通道或全通道（部分发送端传空串）都返回当前音量
           final vol = (hooks.volume().clamp(0.0, 1.0) * 100).round();
           await _soapResponse(req, service, action,
               '<CurrentVolume>$vol</CurrentVolume>');
           return;
-        case 'GetMute':
-          await _soapResponse(req, service, action, '<CurrentMute>0</CurrentMute>');
-          return;
-        case 'SetMute':
+        }
+        case 'SetMute': {
+          final raw = _extract(body, 'DesiredMute').toLowerCase();
+          final mute = raw == '1' || raw == 'true';
+          hooks.onSetMute(mute);
+          _fireRcChange();
           await _soapResponse(req, service, action, '');
           return;
+        }
+        case 'GetMute': {
+          final m = hooks.muted() ? '1' : '0';
+          await _soapResponse(req, service, action, '<CurrentMute>$m</CurrentMute>');
+          return;
+        }
         default:
           await _soapResponse(req, service, action, '');
           return;

@@ -6,10 +6,12 @@ class DlnaHooks {
   final void Function() onStop;
   final void Function(Duration position) onSeek;
   final void Function(double volume) onSetVolume;
+  final void Function(bool muted) onSetMute;
   final String Function() transportState;
   final Duration Function() position;
   final Duration Function() duration;
   final double Function() volume;
+  final bool Function() muted;
 
   const DlnaHooks({
     required this.onPlay,
@@ -18,10 +20,12 @@ class DlnaHooks {
     required this.onStop,
     required this.onSeek,
     required this.onSetVolume,
+    required this.onSetMute,
     required this.transportState,
     required this.position,
     required this.duration,
     required this.volume,
+    required this.muted,
   });
 }
 
