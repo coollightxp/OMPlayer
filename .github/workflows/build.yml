@@ -195,7 +195,10 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.44.8'
+          # 3.47+: Impeller 是 Windows 默认渲染器。Skia 下 fvp 视频外部纹理
+          # 在程序化窗口缩放（迷你窗恢复）后合成发灰白；换用 Impeller 的
+          # 全新外部纹理实现规避该问题
+          flutter-version: '3.47.5'
           channel: 'stable'
           cache: true
 
