@@ -19,6 +19,7 @@ class PipService {
   bool _pipMode = false;
   bool _miniWindow = false;
   bool _savedFullscreen = false;
+  bool _savedMaximized = false;
   bool _savedAlwaysOnTop = false;
   Rect? _savedBounds;
 
@@ -94,14 +95,41 @@ class PipService {
     _pipMode = false;
     _pipModeCtrl.add(false);
     try {
-      await windowManager.setAlwaysOnTop(_savedAlwaysOnTop);
       final b = _savedBounds;
       if (b != null && b.width > 0 && b.height > 0) {
         await windowManager.setBounds(b);
       }
+      await windowManager.setAlwaysOnTop(_savedAlwaysOnTop);
       if (_savedFullscreen) {
         await windowManager.setFullScreen(true);
+      } else if (_savedMaximized) {
+        await windowManager.maximize();
+      } else {
+        // 普通窗口：恢复尺寸后强制重建一次视频输出表面，
+        // 否则 Windows 下快速缩放会残留灰白半透明伪影
+        await _refreshSurface();
       }
+    } catch (_) {}
+  }
+
+  /// Windows 下程序化快速缩放窗口（进出迷你窗）后，fvp/MDK 的视频输出
+  /// 表面可能与合成器短暂失配，画面上残留一层灰白半透明伪影且不消失。
+  /// 模拟一次用户式微调（+1px 再还原）强制 Flutter/视频输出按最终尺寸
+  /// 完整重建；150ms 后再刷一次，覆盖表面重建竞态。
+  Future<void> _refreshSurface() async {
+    try {
+      final size = await windowManager.getSize();
+      await windowManager.setSize(Size(size.width + 1, size.height + 1));
+      await windowManager.setSize(size);
+      Future.delayed(const Duration(milliseconds: 150), () async {
+        try {
+          final s = await windowManager.getSize();
+          if (s.width == size.width && s.height == size.height) {
+            await windowManager.setSize(Size(size.width + 1, size.height + 1));
+            await windowManager.setSize(size);
+          }
+        } catch (_) {}
+      });
     } catch (_) {}
   }
 
@@ -112,6 +140,11 @@ class PipService {
       _savedFullscreen = await windowManager.isFullScreen();
       if (_savedFullscreen) {
         await windowManager.setFullScreen(false);
+      }
+      // 最大化窗口上 setSize 行为异常：先还原，记下标记恢复时再用
+      _savedMaximized = await windowManager.isMaximized();
+      if (_savedMaximized) {
+        await windowManager.restore();
       }
       _savedBounds = await windowManager.getBounds();
       _savedAlwaysOnTop = await windowManager.isAlwaysOnTop();
