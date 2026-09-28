@@ -1,7 +1,7 @@
 name: omplayer
 description: A cross-platform Flutter live streaming media player.
 publish_to: 'none'
-version: 1.0.39+40
+version: 1.0.40+41
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -59,6 +59,9 @@ dependencies:
 
   # 多编码解码（部分国内直播源 TXT 为 GBK/ANSI 编码，纯 Dart 全平台兼容）
   fl_charset: ^1.0.2
+
+  # 二维码（设置页展示局域网管理地址，手机扫码编辑直播源/EPG）
+  qr_flutter: ^4.1.0
 
   # 集合工具（firstOrNull 等）
   collection: ^1.18.0

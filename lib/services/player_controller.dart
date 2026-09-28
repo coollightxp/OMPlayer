@@ -21,6 +21,7 @@ import 'cast_log.dart';
 import 'dlna_service.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
+import 'remote_admin_service.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
 
@@ -47,6 +48,12 @@ class PlayerController extends ChangeNotifier {
   final DlnaService dlnaService = DlnaService();
   bool _isCasting = false;
   Channel? _preCastChannel; // 投屏前的频道，用于断开后恢复
+
+  // 局域网 Web 管理服务（手机扫码后增删改直播源/EPG）
+  final RemoteAdminService remoteAdminService = RemoteAdminService();
+  String _remoteAdminUrl = '';
+  String get remoteAdminUrl => _remoteAdminUrl;
+  bool get remoteAdminRunning => remoteAdminService.isRunning;
 
   // 投屏诊断日志路径（设置面板展示给用户反馈问题）
   String _castLogPath = '';
@@ -162,6 +169,10 @@ class PlayerController extends ChangeNotifier {
     if (_settings.dlnaEnabled) {
       _startDlna();
     }
+    // 启动局域网 Web 管理服务（手机扫码管理直播源/EPG）
+    if (_settings.remoteAdminEnabled) {
+      _startRemoteAdmin();
+    }
     _initSystemValues();
 
     // 频道加载完毕后，恢复上次退出时播放的频道
@@ -190,6 +201,7 @@ class PlayerController extends ChangeNotifier {
         'categoryId': ch.categoryId,
         'streamUrls': ch.streamUrls,
         'sourceIndex': _sourceIndex,
+        'userAgent': ch.userAgent,
       };
       await p.setString(_kLastChannel, jsonEncode(data));
     } catch (_) {}
@@ -229,6 +241,7 @@ class PlayerController extends ChangeNotifier {
         tvgId: data['tvgId'] as String? ?? '',
         tvgName: data['tvgName'] as String? ?? '',
         groupTitle: data['groupTitle'] as String? ?? '',
+        userAgent: data['userAgent'] as String? ?? '',
       );
       _sourceIndex =
           srcIdx < target.streamUrls.length ? srcIdx : 0;
@@ -337,6 +350,103 @@ class PlayerController extends ChangeNotifier {
     _dlnaRunning = false;
     _dlnaEndpoint = '';
     notifyListeners();
+  }
+
+  /// 启动局域网 Web 管理服务
+  Future<void> _startRemoteAdmin() async {
+    if (remoteAdminService.isRunning) {
+      _remoteAdminUrl = remoteAdminService.endpoint;
+      notifyListeners();
+      return;
+    }
+    try {
+      await remoteAdminService.start(
+        hooks: RemoteAdminHooks(
+          getSnapshot: _remoteAdminSnapshot,
+          applySnapshot: _remoteAdminApply,
+          refresh: (kind) async {
+            if (kind == 'epgs') {
+              await refreshEpg();
+            } else {
+              await refreshChannels();
+            }
+          },
+        ),
+      );
+      _remoteAdminUrl = remoteAdminService.endpoint;
+    } catch (_) {
+      _remoteAdminUrl = '';
+    }
+    notifyListeners();
+  }
+
+  void _stopRemoteAdmin() {
+    remoteAdminService.stop();
+    _remoteAdminUrl = '';
+    notifyListeners();
+  }
+
+  Future<Map<String, dynamic>> _remoteAdminSnapshot() async {
+    return {
+      'playlists': sourceManager.playlists.map((e) => e.toJson()).toList(),
+      'currentPlaylistId': sourceManager.currentPlaylistId,
+      'epgs': sourceManager.epgs.map((e) => e.toJson()).toList(),
+      'currentEpgId': sourceManager.currentEpgId,
+    };
+  }
+
+  Future<void> _remoteAdminApply(Map<String, dynamic> data) async {
+    final rawPl = (data['playlists'] as List?) ?? const [];
+    final playlists = rawPl
+        .whereType<Map>()
+        .map((m) => PlaylistSource.fromJson(
+            _normalizeRemoteItem(m.cast<String, dynamic>())))
+        .toList();
+    final newPlId = data['currentPlaylistId']?.toString();
+    final oldPlId = sourceManager.currentPlaylistId;
+    final oldPlUrl = sourceManager.currentPlaylist?.url;
+    final plExists = await sourceManager.replacePlaylists(playlists, newPlId);
+    if (plExists) {
+      final cur = sourceManager.currentPlaylist!;
+      if (cur.id != oldPlId || cur.url != oldPlUrl) {
+        await refreshChannels();
+      }
+    } else if (oldPlId != null) {
+      // 当前源被删除：清空频道
+      _categories = [];
+      _currentChannel = null;
+      notifyListeners();
+    }
+
+    final rawEpg = (data['epgs'] as List?) ?? const [];
+    final epgs = rawEpg
+        .whereType<Map>()
+        .map((m) => EpgSource.fromJson(
+            _normalizeRemoteItem(m.cast<String, dynamic>())))
+        .toList();
+    final newEpgId = data['currentEpgId']?.toString();
+    final oldEpgId = sourceManager.currentEpgId;
+    await sourceManager.replaceEpgs(epgs, newEpgId);
+    if (sourceManager.currentEpg != null &&
+        sourceManager.currentEpgId != oldEpgId) {
+      await refreshEpg();
+    }
+    notifyListeners();
+  }
+
+  /// 手机端新建项可能缺少 addedAt 等字段，补默认值
+  Map<String, dynamic> _normalizeRemoteItem(Map<String, dynamic> j) {
+    if (j['id'] is! String || (j['id'] as String).isEmpty) {
+      j['id'] = DateTime.now().millisecondsSinceEpoch.toString();
+    }
+    if (j['name'] is! String) j['name'] = '未命名';
+    if (j['url'] is! String) j['url'] = '';
+    if (j['type'] is! String) j['type'] = 'url';
+    if (j['format'] is! String) j['format'] = 'unknown';
+    if (j['addedAt'] is! String) {
+      j['addedAt'] = DateTime.now().toIso8601String();
+    }
+    return j;
   }
 
   /// 播放投屏推送的 URL（记录投屏前频道用于断开恢复）
@@ -626,9 +736,16 @@ class PlayerController extends ChangeNotifier {
 
     await _disposeVideoController();
 
+    // 频道声明的自定义 UA（M3U http-user-agent）：部分源（如 APTV）
+    // 必须带指定 UA，否则返回 404/广告。fvp 经 ffmpeg 透传 HTTP 头。
+    final headers = <String, String>{};
+    if (channel.userAgent.trim().isNotEmpty) {
+      headers['User-Agent'] = channel.userAgent.trim();
+    }
     final c = VideoPlayerController.networkUrl(
       Uri.parse(channel.streamUrls[_sourceIndex]),
       videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+      httpHeaders: headers.isEmpty ? null : headers,
     );
     _videoController = c;
     // 闭包绑定实例身份：迟到的旧 controller 事件不得读取/修改全局状态
@@ -636,12 +753,20 @@ class PlayerController extends ChangeNotifier {
     _videoListenerClosure = closure;
     c.addListener(closure);
 
-    // HLS（m3u8）流的初始化需要下载分片列表 + 探测首片，跨网 CDN 慢时
-    // 可能需要 30~60 秒。MP4/FLV 等直接媒体 15 秒足够。
+    // 起播超时：
+    // - 普通频道按用户设置（默认 5 秒，超时自动切下一个源）
+    // - 投屏只有一个地址且没有备用源，HLS 跨网慢时给 45 秒，
+    //   其它流 15 秒（与投屏重试逻辑配合）
     final rawUrl = channel.streamUrls[_sourceIndex].toLowerCase();
     final isHls = rawUrl.contains('.m3u8') || rawUrl.contains('.m3u');
-    final initTimeout =
-        isHls ? const Duration(seconds: 45) : const Duration(seconds: 15);
+    final Duration initTimeout;
+    if (_isCasting) {
+      initTimeout =
+          isHls ? const Duration(seconds: 45) : const Duration(seconds: 15);
+    } else {
+      initTimeout =
+          Duration(seconds: _settings.sourceTimeoutSeconds.clamp(3, 60));
+    }
 
     // 代际已过期：静默移除监听并丢弃结果（controller 已被新代 dispose）
     void discardLate(String why) {
@@ -866,6 +991,9 @@ class PlayerController extends ChangeNotifier {
   static const _kDlnaEnabled = 'settings_dlna_enabled';
   static const _kDefaultVolume = 'settings_default_volume';
   static const _kDefaultBrightness = 'settings_default_brightness';
+  static const _kSourceTimeout = 'settings_source_timeout_seconds';
+  static const _kUiScale = 'settings_ui_scale';
+  static const _kRemoteAdmin = 'settings_remote_admin';
 
   Future<void> _loadSettings() async {
     try {
@@ -882,6 +1010,9 @@ class PlayerController extends ChangeNotifier {
         dlnaEnabled: p.getBool(_kDlnaEnabled) ?? true,
         defaultVolume: p.getDouble(_kDefaultVolume) ?? 0.8,
         defaultBrightness: p.getDouble(_kDefaultBrightness) ?? 0.8,
+        sourceTimeoutSeconds: p.getInt(_kSourceTimeout) ?? 5,
+        uiScale: p.getDouble(_kUiScale) ?? 1.0,
+        remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
       );
     } catch (_) {}
   }
@@ -899,6 +1030,9 @@ class PlayerController extends ChangeNotifier {
       await p.setBool(_kDlnaEnabled, _settings.dlnaEnabled);
       await p.setDouble(_kDefaultVolume, _settings.defaultVolume);
       await p.setDouble(_kDefaultBrightness, _settings.defaultBrightness);
+      await p.setInt(_kSourceTimeout, _settings.sourceTimeoutSeconds);
+      await p.setDouble(_kUiScale, _settings.uiScale);
+      await p.setBool(_kRemoteAdmin, _settings.remoteAdminEnabled);
     } catch (_) {}
   }
 
@@ -931,6 +1065,8 @@ class PlayerController extends ChangeNotifier {
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
     final topChanged = settings.alwaysOnTop != _settings.alwaysOnTop;
     final dlnaChanged = settings.dlnaEnabled != _settings.dlnaEnabled;
+    final remoteAdminChanged =
+        settings.remoteAdminEnabled != _settings.remoteAdminEnabled;
     _settings = settings;
     _saveSettings();
     if (launchChanged && isDesktop) {
@@ -944,6 +1080,13 @@ class PlayerController extends ChangeNotifier {
         _startDlna();
       } else {
         _stopDlna();
+      }
+    }
+    if (remoteAdminChanged) {
+      if (settings.remoteAdminEnabled) {
+        _startRemoteAdmin();
+      } else {
+        _stopRemoteAdmin();
       }
     }
     notifyListeners();
@@ -1358,6 +1501,20 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 编辑播放列表（名称/地址/类型）；当前源地址变化时重新加载频道
+  Future<void> editPlaylist(PlaylistSource source) async {
+    final idx =
+        sourceManager.playlists.indexWhere((p) => p.id == source.id);
+    final urlChanged =
+        idx >= 0 && sourceManager.playlists[idx].url != source.url;
+    await sourceManager.updatePlaylist(source);
+    if (urlChanged && sourceManager.currentPlaylistId == source.id) {
+      await refreshChannels();
+    } else {
+      notifyListeners();
+    }
+  }
+
   Future<void> selectPlaylist(String? id) async {
     await sourceManager.selectPlaylist(id);
     if (id != null) {
@@ -1381,6 +1538,19 @@ class PlayerController extends ChangeNotifier {
   Future<void> removeEpg(String id) async {
     await sourceManager.removeEpg(id);
     notifyListeners();
+  }
+
+  /// 编辑 EPG（名称/地址）；当前源地址变化时重新加载节目单
+  Future<void> editEpg(EpgSource source) async {
+    final idx = sourceManager.epgs.indexWhere((e) => e.id == source.id);
+    final urlChanged =
+        idx >= 0 && sourceManager.epgs[idx].url != source.url;
+    await sourceManager.updateEpg(source);
+    if (urlChanged && sourceManager.currentEpgId == source.id) {
+      await refreshEpg();
+    } else {
+      notifyListeners();
+    }
   }
 
   Future<void> selectEpg(String? id) async {
@@ -1422,6 +1592,7 @@ class PlayerController extends ChangeNotifier {
     _disposeVideoController();
     WakelockPlus.disable();
     dlnaService.stop();
+    remoteAdminService.stop();
     reservationManager.dispose();
     super.dispose();
   }

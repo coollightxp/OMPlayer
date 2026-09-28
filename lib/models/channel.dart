@@ -42,6 +42,9 @@ class Channel {
   final String tvgName;
   /// 分组标题（group-title）
   final String groupTitle;
+  /// 播放该频道流时要求的 HTTP User-Agent（M3U 的 http-user-agent 属性，
+  /// 例如 APTV 源必须带 AptvPlayer-UA，否则服务器返回 404）
+  final String userAgent;
 
   /// 默认播放源（第一个）
   String get streamUrl => streamUrls.first;
@@ -56,6 +59,7 @@ class Channel {
     this.tvgId = '',
     this.tvgName = '',
     this.groupTitle = '',
+    this.userAgent = '',
   });
 
   Channel copyWith({
@@ -68,6 +72,7 @@ class Channel {
     String? tvgId,
     String? tvgName,
     String? groupTitle,
+    String? userAgent,
   }) {
     return Channel(
       id: id ?? this.id,
@@ -79,6 +84,7 @@ class Channel {
       tvgId: tvgId ?? this.tvgId,
       tvgName: tvgName ?? this.tvgName,
       groupTitle: groupTitle ?? this.groupTitle,
+      userAgent: userAgent ?? this.userAgent,
     );
   }
 }

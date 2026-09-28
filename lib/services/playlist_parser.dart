@@ -179,6 +179,8 @@ class PlaylistParser {
       final tvgId = attrs['tvg-id'] ?? '';
       final tvgName = attrs['tvg-name'] ?? name;
       final logo = attrs['tvg-logo'] ?? '';
+      // 部分源要求特定 UA 才能播放（如 APTV 的 AptvPlayer-UA）
+      final ua = (attrs['http-user-agent'] ?? '').trim();
 
       return Channel(
         id: _genId(url),
@@ -189,6 +191,7 @@ class PlaylistParser {
         groupTitle: groupTitle,
         tvgId: tvgId,
         tvgName: tvgName,
+        userAgent: ua,
       );
     } catch (_) {
       return null;
@@ -314,7 +317,6 @@ class PlaylistParser {
         }
       }
     }
-
     final map = <String, List<Channel>>{};
     for (final key in order) {
       final ch = mergedByKey[key]!;

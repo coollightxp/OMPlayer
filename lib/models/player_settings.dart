@@ -33,6 +33,15 @@ class PlayerSettings {
   /// DLNA 投屏接收服务开关（默认开）
   final bool dlnaEnabled;
 
+  /// 单个播放源起播等待秒数：超时后自动切换下一个源（默认 5 秒，5 秒一档）
+  final int sourceTimeoutSeconds;
+
+  /// 界面字体缩放（1.0 = 系统默认；4K/8K 大屏可调到 1.5~3.0）
+  final double uiScale;
+
+  /// 局域网 Web 管理服务开关（手机扫码管理直播源/EPG）
+  final bool remoteAdminEnabled;
+
   const PlayerSettings({
     this.autoPlayNext = true,
     this.defaultVolume = 0.8,
@@ -45,6 +54,9 @@ class PlayerSettings {
     this.showClock = false,
     this.alwaysOnTop = true,
     this.dlnaEnabled = true,
+    this.sourceTimeoutSeconds = 5,
+    this.uiScale = 1.0,
+    this.remoteAdminEnabled = true,
   });
 
   PlayerSettings copyWith({
@@ -59,6 +71,9 @@ class PlayerSettings {
     bool? showClock,
     bool? alwaysOnTop,
     bool? dlnaEnabled,
+    int? sourceTimeoutSeconds,
+    double? uiScale,
+    bool? remoteAdminEnabled,
   }) {
     return PlayerSettings(
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -72,6 +87,10 @@ class PlayerSettings {
       showClock: showClock ?? this.showClock,
       alwaysOnTop: alwaysOnTop ?? this.alwaysOnTop,
       dlnaEnabled: dlnaEnabled ?? this.dlnaEnabled,
+      sourceTimeoutSeconds:
+          sourceTimeoutSeconds ?? this.sourceTimeoutSeconds,
+      uiScale: uiScale ?? this.uiScale,
+      remoteAdminEnabled: remoteAdminEnabled ?? this.remoteAdminEnabled,
     );
   }
 }

@@ -119,6 +119,24 @@ class SourceManager {
     await _savePlaylists();
   }
 
+  /// 编辑播放列表源（名称/地址/类型）；地址变化后需重新加载频道
+  Future<void> updatePlaylist(PlaylistSource source) async {
+    final idx = _playlists.indexWhere((p) => p.id == source.id);
+    if (idx < 0) return;
+    _playlists[idx] = source;
+    await _savePlaylists();
+  }
+
+  /// 全量替换（Web 管理端保存）：返回当前选中项是否仍存在
+  Future<bool> replacePlaylists(
+      List<PlaylistSource> list, String? currentId) async {
+    _playlists = list;
+    _currentPlaylistId =
+        list.any((p) => p.id == currentId) ? currentId : null;
+    await _savePlaylists();
+    return _currentPlaylistId != null;
+  }
+
   /// 选择当前使用的播放列表
   Future<void> selectPlaylist(String? id) async {
     _currentPlaylistId = id;
@@ -139,23 +157,7 @@ class SourceManager {
       if (source.type == PlaylistSourceType.local) {
         bytes = await File(source.url).readAsBytes();
       } else {
-        final resp = await http
-            .get(
-              Uri.parse(source.url),
-              headers: const {
-                // 部分源校验 UA（手机盒子用 okhttp UA，浏览器 UA 兼容性最好）
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-              },
-            )
-            .timeout(const Duration(seconds: 60));
-        if (resp.statusCode != 200) {
-          throw Exception('HTTP ${resp.statusCode}');
-        }
-        bytes = resp.bodyBytes;
+        bytes = await _fetchPlaylistBytes(source.url);
       }
 
       final content = _decodePlaylistBytes(bytes);
@@ -175,6 +177,40 @@ class SourceManager {
       rethrow;
     }
     return _cachedChannels;
+  }
+
+  /// 拉取网络播放列表字节：
+  /// 国内盒子生态源（DIYP/影视仓）面向 okhttp 客户端，浏览器 UA 反而会被
+  /// 广告劫持页拦截；个别源又只认浏览器。策略：先用 okhttp，
+  /// 若返回内容是 HTML 广告页则换浏览器 UA 重试一次。
+  static const _uaBox = 'okhttp/3.15';
+  static const _uaBrowser =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+  Future<List<int>> _fetchPlaylistBytes(String url) async {
+    Future<List<int>> get(String ua) async {
+      final resp = await http
+          .get(
+            Uri.parse(url),
+            headers: {'User-Agent': ua, 'Accept': '*/*'},
+          )
+          .timeout(const Duration(seconds: 60));
+      if (resp.statusCode != 200) {
+        throw Exception('HTTP ${resp.statusCode}');
+      }
+      return resp.bodyBytes;
+    }
+
+    final first = await get(_uaBox);
+    final text = _decodePlaylistBytes(first).trimLeft().toLowerCase();
+    final looksLikeHtml = text.startsWith('<!doctype html') ||
+        text.startsWith('<html') ||
+        (text.startsWith('<!--') && text.contains('<script'));
+    if (looksLikeHtml) {
+      return get(_uaBrowser);
+    }
+    return first;
   }
 
   /// 播放列表编码自动识别：
@@ -224,6 +260,21 @@ class SourceManager {
   /// 选择当前使用的 EPG
   Future<void> selectEpg(String? id) async {
     _currentEpgId = id;
+    await _saveEpgs();
+  }
+
+  /// 编辑 EPG 源（名称/地址）
+  Future<void> updateEpg(EpgSource source) async {
+    final idx = _epgs.indexWhere((e) => e.id == source.id);
+    if (idx < 0) return;
+    _epgs[idx] = source;
+    await _saveEpgs();
+  }
+
+  /// 全量替换（Web 管理端保存）
+  Future<void> replaceEpgs(List<EpgSource> list, String? currentId) async {
+    _epgs = list;
+    _currentEpgId = list.any((e) => e.id == currentId) ? currentId : null;
     await _saveEpgs();
   }
 

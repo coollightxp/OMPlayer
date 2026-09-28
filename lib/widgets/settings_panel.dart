@@ -1,6 +1,8 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/epg_source.dart';
 import '../models/player_settings.dart';
@@ -198,6 +200,98 @@ class _PlaylistTabState extends State<_PlaylistTab> {
     setState(() => _isLoading = false);
   }
 
+  /// 编辑已有播放列表（名称/地址/类型）
+  Future<void> _editPlaylist(PlaylistSource source) async {
+    final nameCtl = TextEditingController(text: source.name);
+    final urlCtl = TextEditingController(text: source.url);
+    var type = source.type;
+    if (!mounted) return;
+    final result = await showDialog<PlaylistSource>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialog) => AlertDialog(
+          title: const Text('编辑播放列表'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SegmentedButton<PlaylistSourceType>(
+                  segments: const [
+                    ButtonSegment(
+                        value: PlaylistSourceType.url, label: Text('网络地址')),
+                    ButtonSegment(
+                        value: PlaylistSourceType.local, label: Text('本地文件')),
+                  ],
+                  selected: {type},
+                  onSelectionChanged: (s) => setDialog(() => type = s.first),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: nameCtl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: _inputDecoration('列表名称'),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: urlCtl,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: _inputDecoration(
+                            type == PlaylistSourceType.url ? '直播源地址' : '本地文件路径'),
+                      ),
+                    ),
+                    if (type == PlaylistSourceType.local)
+                      IconButton(
+                        icon: const Icon(Icons.folder_open,
+                            color: Colors.blueAccent),
+                        onPressed: () async {
+                          final f = await FilePicker.pickFile(
+                              type: FileType.any);
+                          if (f?.path != null) urlCtl.text = f!.path!;
+                        },
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final name = nameCtl.text.trim();
+                final url = urlCtl.text.trim();
+                if (name.isEmpty || url.isEmpty) return;
+                Navigator.pop(
+                  ctx,
+                  source.copyWith(name: name, url: url, type: type),
+                );
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result != null && mounted) {
+      await context.read<PlayerController>().editPlaylist(result);
+    }
+  }
+
+  /// 复制播放列表名称和地址到剪贴板
+  Future<void> _copyPlaylist(PlaylistSource p) async {
+    await Clipboard.setData(ClipboardData(text: '${p.name}\n${p.url}'));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('名称和地址已复制'), duration: Duration(seconds: 1)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Consumer<PlayerController>(
@@ -325,6 +419,18 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                         const Icon(Icons.check_circle,
                             color: Colors.blueAccent, size: 22),
                       IconButton(
+                        icon: const Icon(Icons.edit,
+                            color: Colors.lightBlueAccent),
+                        onPressed: () => _editPlaylist(p),
+                        tooltip: '编辑',
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.copy,
+                            color: Colors.white60),
+                        onPressed: () => _copyPlaylist(p),
+                        tooltip: '复制名称和地址',
+                      ),
+                      IconButton(
                         icon: const Icon(Icons.refresh,
                             color: Colors.amber),
                         onPressed: () =>
@@ -388,6 +494,62 @@ class _EpgTabState extends State<_EpgTab> {
     _nameController.clear();
     _urlController.clear();
     setState(() => _isLoading = false);
+  }
+
+  /// 编辑已有 EPG 源（名称/地址）
+  Future<void> _editEpg(EpgSource source) async {
+    final nameCtl = TextEditingController(text: source.name);
+    final urlCtl = TextEditingController(text: source.url);
+    if (!mounted) return;
+    final result = await showDialog<EpgSource>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('编辑 EPG'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameCtl,
+              style: const TextStyle(color: Colors.white),
+              decoration: _inputDecoration('EPG 名称'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: urlCtl,
+              style: const TextStyle(color: Colors.white),
+              decoration: _inputDecoration('XMLTV EPG 地址 URL'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final name = nameCtl.text.trim();
+              final url = urlCtl.text.trim();
+              if (name.isEmpty || url.isEmpty) return;
+              Navigator.pop(ctx, source.copyWith(name: name, url: url));
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (result != null && mounted) {
+      await context.read<PlayerController>().editEpg(result);
+    }
+  }
+
+  /// 复制 EPG 名称和地址到剪贴板
+  Future<void> _copyEpg(EpgSource e) async {
+    await Clipboard.setData(ClipboardData(text: '${e.name}\n${e.url}'));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('名称和地址已复制'), duration: Duration(seconds: 1)),
+    );
   }
 
   @override
@@ -476,6 +638,18 @@ class _EpgTabState extends State<_EpgTab> {
                         const Icon(Icons.check_circle,
                             color: Colors.blueAccent, size: 22),
                       IconButton(
+                        icon: const Icon(Icons.edit,
+                            color: Colors.lightBlueAccent),
+                        onPressed: () => _editEpg(e),
+                        tooltip: '编辑',
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.copy,
+                            color: Colors.white60),
+                        onPressed: () => _copyEpg(e),
+                        tooltip: '复制名称和地址',
+                      ),
+                      IconButton(
                         icon: const Icon(Icons.refresh,
                             color: Colors.amber),
                         onPressed: () => controller.refreshEpg(),
@@ -543,6 +717,30 @@ class _PlayerSettingsTab extends StatelessWidget {
               onChanged: (v) => controller.updateSettings(
                   s.copyWith(autoHideDelay: (v * 1000).round())),
             ),
+            _buildSlider(
+              icon: Icons.swap_horiz,
+              title: '切源等待时间',
+              value: s.sourceTimeoutSeconds.toDouble(),
+              min: 5,
+              max: 30,
+              divisions: 5,
+              label: '${s.sourceTimeoutSeconds} 秒',
+              onChanged: (v) => controller.updateSettings(
+                  s.copyWith(sourceTimeoutSeconds: v.round())),
+              subtitleText: '起播超过该时间未成功，自动尝试下一个源',
+            ),
+            _buildSlider(
+              icon: Icons.format_size,
+              title: '界面字体缩放',
+              value: s.uiScale,
+              min: 0.8,
+              max: 3.0,
+              divisions: 22,
+              label: '${s.uiScale.toStringAsFixed(1)}x',
+              onChanged: (v) =>
+                  controller.updateSettings(s.copyWith(uiScale: v)),
+              subtitleText: '大屏 / 4K / 8K 电视觉得字小可整体放大',
+            ),
             const SizedBox(height: 16),
           ],
         );
@@ -587,26 +785,40 @@ class _PlayerSettingsTab extends StatelessWidget {
     required int divisions,
     required String label,
     required ValueChanged<double> onChanged,
+    String? subtitleText,
   }) {
+    final clamped = value.clamp(min, max);
     return ListTile(
       leading: Icon(icon, color: Colors.white70),
       title: Text(title,
           style: const TextStyle(color: Colors.white, fontSize: 15)),
-      subtitle: SliderTheme(
-        data: SliderThemeData(
-          activeTrackColor: Colors.blueAccent,
-          inactiveTrackColor: Colors.white24,
-          thumbColor: Colors.blueAccent,
-          overlayColor: Colors.blueAccent.withOpacity(0.2),
-        ),
-        child: Slider(
-          value: value,
-          min: min,
-          max: max,
-          divisions: divisions,
-          label: label,
-          onChanged: onChanged,
-        ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (subtitleText != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Text(subtitleText,
+                  style: const TextStyle(
+                      color: Colors.white54, fontSize: 12)),
+            ),
+          SliderTheme(
+            data: SliderThemeData(
+              activeTrackColor: Colors.blueAccent,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.blueAccent,
+              overlayColor: Colors.blueAccent.withOpacity(0.2),
+            ),
+            child: Slider(
+              value: clamped,
+              min: min,
+              max: max,
+              divisions: divisions,
+              label: label,
+              onChanged: onChanged,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -695,10 +907,87 @@ class _SystemSettingsTab extends StatelessWidget {
                 activeColor: Colors.blueAccent,
               ),
             ),
+            // 局域网 Web 管理：手机扫码增删改直播源/EPG
+            ListTile(
+              leading: Icon(Icons.qr_code_2,
+                  color: s.remoteAdminEnabled &&
+                          controller.remoteAdminUrl.isNotEmpty
+                      ? Colors.greenAccent
+                      : Colors.white54),
+              title: const Text('手机扫码管理',
+                  style: TextStyle(color: Colors.white, fontSize: 15)),
+              subtitle: Text(
+                s.remoteAdminEnabled && controller.remoteAdminUrl.isNotEmpty
+                    ? '已开启：手机连同一 Wi‑Fi，扫码即可编辑直播源和 EPG\n${controller.remoteAdminUrl}\n'
+                        '手机打不开时，请在电脑防火墙提示中允许本程序联网'
+                    : (s.remoteAdminEnabled
+                        ? '服务启动中或当前平台不支持（端口 8963 起）'
+                        : '关闭后局域网内无法通过手机管理'),
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 12),
+              ),
+              trailing: Switch(
+                value: s.remoteAdminEnabled,
+                onChanged: (v) => controller
+                    .updateSettings(s.copyWith(remoteAdminEnabled: v)),
+                activeColor: Colors.blueAccent,
+              ),
+              onTap: controller.remoteAdminUrl.isEmpty
+                  ? null
+                  : () => _showRemoteAdminQr(context, controller.remoteAdminUrl),
+            ),
             const SizedBox(height: 16),
           ],
         );
       },
+    );
+  }
+
+  /// 弹出局域网管理地址二维码
+  void _showRemoteAdminQr(BuildContext context, String url) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        title: const Text('手机扫码管理',
+            style: TextStyle(color: Colors.black, fontSize: 17)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('手机与电脑连接同一 Wi‑Fi',
+                style: TextStyle(color: Colors.black54, fontSize: 13)),
+            const SizedBox(height: 16),
+            QrImageView(
+              data: url,
+              version: QrVersions.auto,
+              size: 220,
+              backgroundColor: Colors.white,
+            ),
+            const SizedBox(height: 12),
+            SelectableText(url,
+                style: const TextStyle(color: Colors.black87, fontSize: 14)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: url));
+              if (!ctx.mounted) return;
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                    content: Text('地址已复制'),
+                    duration: Duration(seconds: 1)),
+              );
+            },
+            child: const Text('复制地址'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
     );
   }
 }
