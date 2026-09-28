@@ -2,6 +2,7 @@ import 'dart:convert' show utf8;
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:fl_charset/fl_charset.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -134,19 +135,30 @@ class SourceManager {
     }
 
     try {
-      String content;
+      final List<int> bytes;
       if (source.type == PlaylistSourceType.local) {
-        content = await File(source.url).readAsString();
+        bytes = await File(source.url).readAsBytes();
       } else {
         final resp = await http
-            .get(Uri.parse(source.url))
-            .timeout(const Duration(seconds: 30));
+            .get(
+              Uri.parse(source.url),
+              headers: const {
+                // 部分源校验 UA（手机盒子用 okhttp UA，浏览器 UA 兼容性最好）
+                'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+              },
+            )
+            .timeout(const Duration(seconds: 60));
         if (resp.statusCode != 200) {
           throw Exception('HTTP ${resp.statusCode}');
         }
-        content = utf8.decode(resp.bodyBytes);
+        bytes = resp.bodyBytes;
       }
 
+      final content = _decodePlaylistBytes(bytes);
       final format = PlaylistParser.detectFormat(content, source.url);
       _cachedChannels = PlaylistParser.parse(content, format);
       _channelsLoaded = true;
@@ -163,6 +175,31 @@ class SourceManager {
       rethrow;
     }
     return _cachedChannels;
+  }
+
+  /// 播放列表编码自动识别：
+  /// 1. BOM：UTF-8(EF BB BF) / UTF-16 LE/BE
+  /// 2. 严格 UTF-8 解码成功 → UTF-8（GBK 中文双字节几乎不可能通过 UTF-8 校验）
+  /// 3. 失败 → GBK/GB18030（国内 DIYP/盒子分享源常见 ANSI 编码）
+  /// 4. 都失败 → 宽松 UTF-8（不丢数据，乱码字符替换显示）
+  static String _decodePlaylistBytes(List<int> bytes) {
+    if (bytes.isEmpty) return '';
+    // UTF-8 BOM
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xEF &&
+        bytes[1] == 0xBB &&
+        bytes[2] == 0xBF) {
+      return utf8.decode(bytes.sublist(3));
+    }
+    try {
+      return utf8.decode(bytes);
+    } catch (_) {
+      try {
+        return gbk.decode(bytes);
+      } catch (_) {
+        return utf8.decode(bytes, allowMalformed: true);
+      }
+    }
   }
 
   // ==================== EPG 管理 ====================

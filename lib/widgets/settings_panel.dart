@@ -158,9 +158,10 @@ class _PlaylistTabState extends State<_PlaylistTab> {
 
   Future<void> _pickLocalFile() async {
     // file_picker 12+ 新 API：FilePicker.pickFile 直接返回 PlatformFile?
+    // 放开所有文件类型：直播源后缀五花八门（.m3u/.m3u8/.txt/.nzk/
+    // .conf/.list/.php 甚至无后缀），加载时按内容自动识别格式
     final file = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: ['m3u', 'm3u8', 'txt'],
+      type: FileType.any,
     );
     if (file?.path != null) {
       setState(() {
@@ -180,9 +181,9 @@ class _PlaylistTabState extends State<_PlaylistTab> {
       return;
     }
     setState(() => _isLoading = true);
-    final format = url.toLowerCase().endsWith('.txt')
-        ? PlaylistFormat.txt
-        : PlaylistFormat.m3u;
+    // 格式存 unknown：加载时按文件/响应【内容】嗅探，后缀不可靠
+    // （.php 可能是 M3U 也可能是 TVBox TXT，.nzk 实际是 TXT）
+    const format = PlaylistFormat.unknown;
     final source = PlaylistSource(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       name: name,
@@ -246,8 +247,8 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                           style: const TextStyle(color: Colors.white),
                           decoration: _inputDecoration(
                               _type == PlaylistSourceType.url
-                                  ? 'M3U/TXT 地址 URL'
-                                  : '本地文件路径'),
+                                  ? '直播源地址（M3U / TVBox TXT / PHP 等，自动识别）'
+                                  : '本地文件路径（任意类型，自动识别）'),
                         ),
                       ),
                       if (_type == PlaylistSourceType.local)
