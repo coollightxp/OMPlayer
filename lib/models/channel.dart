@@ -49,6 +49,21 @@ class Channel {
   /// 默认播放源（第一个）
   String get streamUrl => streamUrls.first;
 
+  /// 是否为网页频道（TVBox 等源里的 webview:// 链接，
+  /// 如 webview://https://www.yangshipin.cn/...）
+  bool get isWebPage =>
+      streamUrls.isNotEmpty &&
+      streamUrls.first.trim().toLowerCase().startsWith('webview://');
+
+  /// 网页频道要打开的真实网址（剥掉 webview:// 前缀）
+  String get webPageUrl {
+    var inner = streamUrls.first.trim().substring('webview://'.length);
+    if (!RegExp(r'^[a-zA-Z][a-zA-Z0-9+.\-]*://').hasMatch(inner)) {
+      inner = 'https://$inner';
+    }
+    return inner;
+  }
+
   const Channel({
     required this.id,
     required this.name,

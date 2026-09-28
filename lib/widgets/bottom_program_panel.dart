@@ -48,6 +48,10 @@ class BottomProgramPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 宽屏（电视/桌面）面板内容向中间收，两侧留出更舒展的边距；
+    // 手机窄屏仍使用较小边距避免内容被挤
+    final screenW = MediaQuery.of(context).size.width;
+    final hPad = screenW > 900 ? 56.0 : 16.0;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
@@ -76,7 +80,7 @@ class BottomProgramPanel extends StatelessWidget {
           child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 14, 10),
+              padding: EdgeInsets.fromLTRB(hPad, 18, hPad - 6, 10),
               child: Consumer<PlayerController>(
                 builder: (context, c, _) => Column(
                   mainAxisSize: MainAxisSize.min,

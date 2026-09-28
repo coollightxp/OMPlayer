@@ -729,22 +729,68 @@ class _PlayerSettingsTab extends StatelessWidget {
                   s.copyWith(sourceTimeoutSeconds: v.round())),
               subtitleText: '起播超过该时间未成功，自动尝试下一个源',
             ),
-            _buildSlider(
-              icon: Icons.format_size,
-              title: '界面字体缩放',
-              value: s.uiScale,
-              min: 0.8,
-              max: 3.0,
-              divisions: 22,
-              label: '${s.uiScale.toStringAsFixed(1)}x',
-              onChanged: (v) =>
-                  controller.updateSettings(s.copyWith(uiScale: v)),
-              subtitleText: '大屏 / 4K / 8K 电视觉得字小可整体放大',
-            ),
+            _buildUiScaleTile(controller, s),
             const SizedBox(height: 16),
           ],
         );
       },
+    );
+  }
+
+  /// 字体缩放：自动按分辨率适配 + 手动滑块
+  Widget _buildUiScaleTile(PlayerController controller, PlayerSettings s) {
+    final mq = MediaQuery.of(context);
+    final physicalW = mq.size.width * mq.devicePixelRatio;
+    final autoScale = (physicalW / 1920.0).clamp(1.0, 3.0);
+    final scale = s.uiScaleAuto ? autoScale : s.uiScale;
+    return Column(
+      children: [
+        SwitchListTile(
+          secondary: const Icon(Icons.screen_rotation,
+              color: Colors.white70),
+          title: const Text('字体大小自动适配',
+              style: TextStyle(color: Colors.white, fontSize: 15)),
+          subtitle: Text(
+            '按屏幕分辨率自动缩放（当前屏幕：${physicalW.round()} 像素，自动 ${autoScale.toStringAsFixed(2)}x）',
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          value: s.uiScaleAuto,
+          onChanged: (v) =>
+              controller.updateSettings(s.copyWith(uiScaleAuto: v)),
+          activeColor: Colors.blueAccent,
+        ),
+        ListTile(
+          leading: Icon(Icons.format_size,
+              color: s.uiScaleAuto ? Colors.white24 : Colors.white70),
+          title: Text('手动字体缩放',
+              style: TextStyle(
+                  color: s.uiScaleAuto ? Colors.white38 : Colors.white,
+                  fontSize: 15)),
+          enabled: !s.uiScaleAuto,
+          subtitle: SliderTheme(
+            data: SliderThemeData(
+              activeTrackColor: Colors.blueAccent,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.blueAccent,
+              overlayColor: Colors.blueAccent.withOpacity(0.2),
+              disabledActiveTrackColor: Colors.white24,
+              disabledThumbColor: Colors.white38,
+            ),
+            child: Slider(
+              // 自动模式下展示当前生效值但禁止拖动
+              value: scale.clamp(0.8, 3.0),
+              min: 0.8,
+              max: 3.0,
+              divisions: 22,
+              label: '${scale.toStringAsFixed(1)}x',
+              onChanged: s.uiScaleAuto
+                  ? null
+                  : (v) =>
+                      controller.updateSettings(s.copyWith(uiScale: v)),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

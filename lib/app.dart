@@ -25,10 +25,17 @@ class OMPlayerApp extends StatelessWidget {
           ),
           builder: (context, child) {
             final mq = MediaQuery.of(context);
+            // 自动模式按屏幕【物理像素】宽度计算（乘以 devicePixelRatio，
+            // 不受系统 DPI 缩放影响）：1080p=1.0，2K≈1.33，4K=2.0，8K=3.0
+            double scale;
+            if (controller.settings.uiScaleAuto) {
+              final physicalW = mq.size.width * mq.devicePixelRatio;
+              scale = (physicalW / 1920.0).clamp(1.0, 3.0);
+            } else {
+              scale = controller.settings.uiScale.clamp(0.8, 3.0);
+            }
             return MediaQuery(
-              data: mq.copyWith(
-                textScaler: TextScaler.linear(controller.settings.uiScale),
-              ),
+              data: mq.copyWith(textScaler: TextScaler.linear(scale)),
               child: child!,
             );
           },

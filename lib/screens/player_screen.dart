@@ -715,7 +715,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       right: 0,
       child: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          // 与屏幕上边、右边保持约一行的距离（桌面无 SafeArea 边距，
+          // 这里显式留白）
+          padding: const EdgeInsets.only(top: 20, right: 28, bottom: 8),
           child: StreamBuilder<int>(
             stream: _clockStream,
             builder: (context, _) {

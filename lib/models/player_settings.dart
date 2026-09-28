@@ -39,6 +39,9 @@ class PlayerSettings {
   /// 界面字体缩放（1.0 = 系统默认；4K/8K 大屏可调到 1.5~3.0）
   final double uiScale;
 
+  /// 字体缩放自动适配屏幕分辨率（开启后按屏幕宽度自动计算，忽略 uiScale）
+  final bool uiScaleAuto;
+
   /// 局域网 Web 管理服务开关（手机扫码管理直播源/EPG）
   final bool remoteAdminEnabled;
 
@@ -56,6 +59,7 @@ class PlayerSettings {
     this.dlnaEnabled = true,
     this.sourceTimeoutSeconds = 5,
     this.uiScale = 1.0,
+    this.uiScaleAuto = true,
     this.remoteAdminEnabled = true,
   });
 
@@ -73,6 +77,7 @@ class PlayerSettings {
     bool? dlnaEnabled,
     int? sourceTimeoutSeconds,
     double? uiScale,
+    bool? uiScaleAuto,
     bool? remoteAdminEnabled,
   }) {
     return PlayerSettings(
@@ -90,6 +95,7 @@ class PlayerSettings {
       sourceTimeoutSeconds:
           sourceTimeoutSeconds ?? this.sourceTimeoutSeconds,
       uiScale: uiScale ?? this.uiScale,
+      uiScaleAuto: uiScaleAuto ?? this.uiScaleAuto,
       remoteAdminEnabled: remoteAdminEnabled ?? this.remoteAdminEnabled,
     );
   }

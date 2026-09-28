@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:video_player/video_player.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
@@ -21,15 +22,17 @@ import 'cast_log.dart';
 import 'dlna_service.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
+import 'numlock_service.dart';
 import 'remote_admin_service.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
+import 'web_channel_opener.dart';
 
 /// 播放器状态
 enum PlayerState { idle, loading, playing, paused, error, ended }
 
 /// 播放器控制器 - 使用 ChangeNotifier 进行状态管理
-class PlayerController extends ChangeNotifier {
+class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   VideoPlayerController? _videoController;
   PlayerSettings _settings = const PlayerSettings();
 
@@ -54,6 +57,10 @@ class PlayerController extends ChangeNotifier {
   String _remoteAdminUrl = '';
   String get remoteAdminUrl => _remoteAdminUrl;
   bool get remoteAdminRunning => remoteAdminService.isRunning;
+
+  // NumLock 状态守护（仅 Windows 生效）
+  final NumlockService _numlock = NumlockService();
+  static const _kNumlockWasOn = 'numlock_was_on';
 
   // 投屏诊断日志路径（设置面板展示给用户反馈问题）
   String _castLogPath = '';
@@ -109,6 +116,7 @@ class PlayerController extends ChangeNotifier {
 
   // 播放进度定时刷新（进度条/倒计时）
   Timer? _tickTimer;
+  Timer? _numlockSaveTimer;
 
   PlayerState get state => _state;
   Channel? get currentChannel => _currentChannel;
@@ -172,6 +180,10 @@ class PlayerController extends ChangeNotifier {
     // 启动局域网 Web 管理服务（手机扫码管理直播源/EPG）
     if (_settings.remoteAdminEnabled) {
       _startRemoteAdmin();
+    }
+    if (isDesktop) {
+      WidgetsBinding.instance.addObserver(this);
+      _initNumlockGuard();
     }
     _initSystemValues();
 
@@ -245,6 +257,12 @@ class PlayerController extends ChangeNotifier {
       );
       _sourceIndex =
           srcIdx < target.streamUrls.length ? srcIdx : 0;
+      // 上次是网页频道：启动时不自动弹网站，仅保留选中状态
+      if (target.isWebPage) {
+        _currentChannel = target;
+        notifyListeners();
+        return;
+      }
       await playChannel(target);
       // 开机时系统网络/DNS 可能尚未就绪，首次拉流偶发超时失败。
       // 3 秒后在用户无操作（未手动切台/未投屏）的前提下自动重试一次
@@ -652,9 +670,27 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放指定频道（从第一个源开始，失败自动尝试下一个源）
   Future<void> playChannel(Channel channel) async {
+    // 网页频道（webview:// 包装的网站）：停掉视频，打开内置网页
+    // 由网站自身的播放器播放
+    if (channel.isWebPage) {
+      await _openWebPageChannel(channel);
+      return;
+    }
     _currentChannel = channel;
     _sourceIndex = 0;
     await _playCurrentSource();
+  }
+
+  /// 打开网页频道（TVBox webview:// 链接，如央视网网站播放器）
+  Future<void> _openWebPageChannel(Channel channel) async {
+    await _disposeVideoController();
+    _currentChannel = channel;
+    _sourceIndex = 0;
+    // 网页由独立 WebView2 窗口播放，播放器保持空闲，关闭网页窗口后返回
+    _state = PlayerState.idle;
+    await _saveLastChannel();
+    notifyListeners();
+    await openWebChannel(channel.webPageUrl, channel.name);
   }
 
   /// 切换到上一个播放源
@@ -745,7 +781,9 @@ class PlayerController extends ChangeNotifier {
     final c = VideoPlayerController.networkUrl(
       Uri.parse(channel.streamUrls[_sourceIndex]),
       videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-      httpHeaders: headers.isEmpty ? null : headers,
+      // video_player 2.8.x 该参数为非空 Map（默认空）；空 map 时
+      // fvp 不会设置 avio.headers，与不传等价
+      httpHeaders: headers,
     );
     _videoController = c;
     // 闭包绑定实例身份：迟到的旧 controller 事件不得读取/修改全局状态
@@ -993,6 +1031,7 @@ class PlayerController extends ChangeNotifier {
   static const _kDefaultBrightness = 'settings_default_brightness';
   static const _kSourceTimeout = 'settings_source_timeout_seconds';
   static const _kUiScale = 'settings_ui_scale';
+  static const _kUiScaleAuto = 'settings_ui_scale_auto';
   static const _kRemoteAdmin = 'settings_remote_admin';
 
   Future<void> _loadSettings() async {
@@ -1012,6 +1051,7 @@ class PlayerController extends ChangeNotifier {
         defaultBrightness: p.getDouble(_kDefaultBrightness) ?? 0.8,
         sourceTimeoutSeconds: p.getInt(_kSourceTimeout) ?? 5,
         uiScale: p.getDouble(_kUiScale) ?? 1.0,
+        uiScaleAuto: p.getBool(_kUiScaleAuto) ?? true,
         remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
       );
     } catch (_) {}
@@ -1032,6 +1072,7 @@ class PlayerController extends ChangeNotifier {
       await p.setDouble(_kDefaultBrightness, _settings.defaultBrightness);
       await p.setInt(_kSourceTimeout, _settings.sourceTimeoutSeconds);
       await p.setDouble(_kUiScale, _settings.uiScale);
+      await p.setBool(_kUiScaleAuto, _settings.uiScaleAuto);
       await p.setBool(_kRemoteAdmin, _settings.remoteAdminEnabled);
     } catch (_) {}
   }
@@ -1562,6 +1603,43 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
+  // ==================== NumLock 状态守护（Windows） ====================
+
+  /// 启动后恢复 NumLock，并周期记住用户的真实选择
+  Future<void> _initNumlockGuard() async {
+    // 等窗口/引擎完成键盘状态同步后再检查（引擎正是在启动阶段
+    // 把 NumLock 意外关掉的）
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final on = _numlock.isOn;
+      if (on == null) return;
+      // 上次退出时记录的状态；首次安装无记录时默认应保持开启
+      final wasOn = prefs.getBool(_kNumlockWasOn) ?? true;
+      if (on != wasOn) {
+        _numlock.toggle();
+      }
+      // 每 30 秒记一次用户当前的选择（用户中途按过 NumLock 也能记住）
+      _numlockSaveTimer = Timer.periodic(
+          const Duration(seconds: 30), (_) => _saveNumlockState());
+    } catch (_) {}
+  }
+
+  Future<void> _saveNumlockState() async {
+    final on = _numlock.isOn;
+    if (on == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kNumlockWasOn, on);
+    } catch (_) {}
+  }
+
+  @override
+  Future<AppExitResponse> didRequestAppExit() async {
+    await _saveNumlockState();
+    return AppExitResponse.exit;
+  }
+
   Future<void> _disposeVideoController() async {
     final c = _videoController;
     if (c != null) {
@@ -1584,8 +1662,13 @@ class PlayerController extends ChangeNotifier {
   @override
   void dispose() {
     _tickTimer?.cancel();
+    _numlockSaveTimer?.cancel();
     _castRestoreTimer?.cancel();
     _castEndedTimer?.cancel();
+    if (isDesktop) {
+      WidgetsBinding.instance.removeObserver(this);
+      _saveNumlockState();
+    }
     if (_isRecording && _videoController != null) {
       fvpRecord(_videoController!, to: null);
     }
