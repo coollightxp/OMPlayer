@@ -729,7 +729,7 @@ class _PlayerSettingsTab extends StatelessWidget {
                   s.copyWith(sourceTimeoutSeconds: v.round())),
               subtitleText: '起播超过该时间未成功，自动尝试下一个源',
             ),
-            _buildUiScaleTile(controller, s),
+            _buildUiScaleTile(context, controller, s),
             const SizedBox(height: 16),
           ],
         );
@@ -738,7 +738,8 @@ class _PlayerSettingsTab extends StatelessWidget {
   }
 
   /// 字体缩放：自动按分辨率适配 + 手动滑块
-  Widget _buildUiScaleTile(PlayerController controller, PlayerSettings s) {
+  Widget _buildUiScaleTile(
+      BuildContext context, PlayerController controller, PlayerSettings s) {
     final mq = MediaQuery.of(context);
     final physicalW = mq.size.width * mq.devicePixelRatio;
     final autoScale = (physicalW / 1920.0).clamp(1.0, 3.0);

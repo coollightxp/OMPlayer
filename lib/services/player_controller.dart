@@ -1634,12 +1634,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  @override
-  Future<AppExitResponse> didRequestAppExit() async {
-    await _saveNumlockState();
-    return AppExitResponse.exit;
-  }
-
   Future<void> _disposeVideoController() async {
     final c = _videoController;
     if (c != null) {
