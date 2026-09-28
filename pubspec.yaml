@@ -1,7 +1,7 @@
 name: omplayer
 description: A cross-platform Flutter live streaming media player.
 publish_to: 'none'
-version: 1.0.42+43
+version: 1.0.43+44
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -65,6 +65,9 @@ dependencies:
 
   # 网页频道（TVBox 源里的 webview:// 链接，Windows 用独立 WebView2 窗口打开网站）
   desktop_webview_window: ^0.3.0
+
+  # FFI 内存分配辅助（设置 WebView2 浏览器参数放开自动播放，零原生代码）
+  ffi: ^2.1.0
 
   # 系统浏览器兜底（非 Windows / 无 WebView2 时打开网页频道）
   url_launcher: ^6.3.0

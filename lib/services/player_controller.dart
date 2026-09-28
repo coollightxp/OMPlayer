@@ -60,7 +60,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   // NumLock 状态守护（仅 Windows 生效）
   final NumlockService _numlock = NumlockService();
-  static const _kNumlockWasOn = 'numlock_was_on';
 
   // 投屏诊断日志路径（设置面板展示给用户反馈问题）
   String _castLogPath = '';
@@ -116,7 +115,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   // 播放进度定时刷新（进度条/倒计时）
   Timer? _tickTimer;
-  Timer? _numlockSaveTimer;
 
   PlayerState get state => _state;
   Channel? get currentChannel => _currentChannel;
@@ -1605,33 +1603,31 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   // ==================== NumLock 状态守护（Windows） ====================
 
-  /// 启动后恢复 NumLock，并周期记住用户的真实选择
+  /// 启动阶段守护 NumLock：Flutter Windows 引擎初始化键盘映射时会把
+  /// NumLock 意外关掉（发生在窗口创建后数秒内）。启动后轮询 15 秒，
+  /// 发现被关立即恢复；窗口重新获得焦点时也检查一次。
+  /// 不做持久化记忆——引擎每次启动都会重新破坏，记住"关闭"反而会把
+  /// 被破坏的状态当成用户选择固化下来。
   Future<void> _initNumlockGuard() async {
-    // 等窗口/引擎完成键盘状态同步后再检查（引擎正是在启动阶段
-    // 把 NumLock 意外关掉的）
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final on = _numlock.isOn;
-      if (on == null) return;
-      // 上次退出时记录的状态；首次安装无记录时默认应保持开启
-      final wasOn = prefs.getBool(_kNumlockWasOn) ?? true;
-      if (on != wasOn) {
-        _numlock.toggle();
-      }
-      // 每 30 秒记一次用户当前的选择（用户中途按过 NumLock 也能记住）
-      _numlockSaveTimer = Timer.periodic(
-          const Duration(seconds: 30), (_) => _saveNumlockState());
-    } catch (_) {}
+    final deadline = DateTime.now()
+        .add(const Duration(milliseconds: 15000));
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      _ensureNumlockOn();
+    }
   }
 
-  Future<void> _saveNumlockState() async {
-    final on = _numlock.isOn;
-    if (on == null) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_kNumlockWasOn, on);
-    } catch (_) {}
+  void _ensureNumlockOn() {
+    if (_numlock.isOn == false) {
+      _numlock.toggle();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _ensureNumlockOn();
+    }
   }
 
   Future<void> _disposeVideoController() async {
@@ -1656,12 +1652,10 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     _tickTimer?.cancel();
-    _numlockSaveTimer?.cancel();
     _castRestoreTimer?.cancel();
     _castEndedTimer?.cancel();
     if (isDesktop) {
       WidgetsBinding.instance.removeObserver(this);
-      _saveNumlockState();
     }
     if (_isRecording && _videoController != null) {
       fvpRecord(_videoController!, to: null);

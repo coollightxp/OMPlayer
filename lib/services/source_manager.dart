@@ -1,4 +1,4 @@
-import 'dart:convert' show utf8;
+import 'dart:convert' show jsonDecode, utf8;
 import 'dart:io';
 
 import 'package:archive/archive.dart';
@@ -161,8 +161,10 @@ class SourceManager {
       }
 
       final content = _decodePlaylistBytes(bytes);
-      final format = PlaylistParser.detectFormat(content, source.url);
-      _cachedChannels = PlaylistParser.parse(content, format);
+      // 三级解析：m3u/txt 直接解析；HTML 聚合页提取 data-copy 接口地址；
+      // TVBox 配置 JSON（lives）/多仓 JSON（urls）递归展开合并
+      _cachedChannels = await _resolveContent(content, source.url, 2,
+          {source.url});
       _channelsLoaded = true;
 
       // 更新最后更新时间
@@ -188,14 +190,15 @@ class SourceManager {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-  Future<List<int>> _fetchPlaylistBytes(String url) async {
+  Future<List<int>> _fetchPlaylistBytes(String url,
+      {Duration timeout = const Duration(seconds: 60)}) async {
     Future<List<int>> get(String ua) async {
       final resp = await http
           .get(
             Uri.parse(url),
             headers: {'User-Agent': ua, 'Accept': '*/*'},
           )
-          .timeout(const Duration(seconds: 60));
+          .timeout(timeout);
       if (resp.statusCode != 200) {
         throw Exception('HTTP ${resp.statusCode}');
       }
@@ -236,6 +239,128 @@ class SourceManager {
         return utf8.decode(bytes, allowMalformed: true);
       }
     }
+  }
+
+  // ==================== 内容递归解析 ====================
+  // 盒子生态常见三级结构：
+  // 1) HTML 聚合分享页（影视仓等）：卡片带 data-copy="接口地址" data-name="名称"
+  // 2) TVBox 配置 JSON（lives 数组，type=0 为直链）/ 多仓 JSON（urls 数组）
+  // 3) m3u / TXT 直播源（PlaylistParser 处理）
+  // 递归展开并合并所有频道路径；深度限制 + 已访问集合防自引用死循环。
+
+  static final _htmlTagRe = RegExp(r'<[^>]+>');
+  static final _copyAttrRe =
+      RegExp('data-copy\\s*=\\s*["\']([^"\']+)["\']');
+
+  Future<List<ChannelCategory>> _resolveContent(
+      String content, String url, int depth, Set<String> visited) async {
+    final t = content.trimLeft();
+    final lower = t.toLowerCase();
+    if (lower.startsWith('<')) {
+      if (depth <= 0) return const [];
+      return _resolveHtmlPage(content, depth, visited);
+    }
+    if (t.startsWith('{')) {
+      if (depth <= 0) return const [];
+      return _resolveTvboxConfig(content, depth, visited);
+    }
+    final format = PlaylistParser.detectFormat(content, url);
+    return PlaylistParser.parse(content, format);
+  }
+
+  /// HTML 聚合页：提取所有 data-copy 接口地址，逐个递归解析
+  Future<List<ChannelCategory>> _resolveHtmlPage(
+      String content, int depth, Set<String> visited) async {
+    final results = <List<ChannelCategory>>[];
+    for (final m in _htmlTagRe.allMatches(content)) {
+      final tag = m.group(0)!;
+      if (!tag.contains('data-copy')) continue;
+      final c = _copyAttrRe.firstMatch(tag);
+      if (c == null) continue;
+      final cats = await _resolveUrl(c.group(1)!, depth - 1, visited);
+      if (cats.isNotEmpty) results.add(cats);
+    }
+    return _mergeCategories(results);
+  }
+
+  /// TVBox 配置 JSON（lives）/ 多仓 JSON（urls）：展开子地址递归解析。
+  /// lives 中 type=0 才是直链列表（1/2/3 为代理/jar 类型无法直连）；
+  /// clan:// 等本地协议直接跳过
+  Future<List<ChannelCategory>> _resolveTvboxConfig(
+      String content, int depth, Set<String> visited) async {
+    dynamic json;
+    try {
+      json = jsonDecode(content);
+    } catch (_) {
+      return const [];
+    }
+    if (json is! Map) return const [];
+    final results = <List<ChannelCategory>>[];
+
+    final lives = json['lives'];
+    if (lives is List) {
+      for (final live in lives) {
+        if (live is! Map) continue;
+        if ('${live['type']}' != '0') continue;
+        final u = live['url'];
+        if (u is! String) continue;
+        final cats = await _resolveUrl(u, depth - 1, visited);
+        if (cats.isNotEmpty) results.add(cats);
+      }
+    }
+
+    final urls = json['urls'];
+    if (urls is List) {
+      for (final e in urls) {
+        if (e is! Map) continue;
+        final u = e['url'];
+        if (u is! String) continue;
+        final cats = await _resolveUrl(u, depth - 1, visited);
+        if (cats.isNotEmpty) results.add(cats);
+      }
+    }
+    return _mergeCategories(results);
+  }
+
+  /// 拉取并解析单个子地址（15 秒超时，单个失败不影响其它）
+  Future<List<ChannelCategory>> _resolveUrl(
+      String url, int depth, Set<String> visited) async {
+    final u = url.trim();
+    if (u.isEmpty ||
+        visited.contains(u) ||
+        !(u.startsWith('http://') || u.startsWith('https://'))) {
+      return const [];
+    }
+    visited.add(u);
+    try {
+      final bytes = await _fetchPlaylistBytes(u,
+          timeout: const Duration(seconds: 15));
+      final content = _decodePlaylistBytes(bytes);
+      return await _resolveContent(content, u, depth, visited);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 按分类名合并多路解析结果（同名频道交由 PlaylistParser 的合并键处理）
+  List<ChannelCategory> _mergeCategories(
+      Iterable<List<ChannelCategory>> lists) {
+    final merged = <String, List<Channel>>{};
+    final order = <String>[];
+    for (final list in lists) {
+      for (final c in list) {
+        if (merged.containsKey(c.name)) {
+          merged[c.name]!.addAll(c.channels);
+        } else {
+          merged[c.name] = List<Channel>.from(c.channels);
+          order.add(c.name);
+        }
+      }
+    }
+    return [
+      for (final name in order)
+        ChannelCategory(id: name, name: name, channels: merged[name]!)
+    ];
   }
 
   // ==================== EPG 管理 ====================
