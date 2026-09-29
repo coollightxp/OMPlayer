@@ -212,13 +212,30 @@ jobs:
 
           # flutter_inappwebview_windows 仍使用 /await + <experimental/coroutine>，
           # VS2026 (MSVC 14.51) 已将其升为硬错误；在顶层 CMakeLists 的插件
-          # add_subdirectory 之前注入官方逃生宏（目录级定义传播给所有插件）
+          # add_subdirectory 之前注入官方逃生宏（目录级定义传播给所有插件）。
+          # 不同 Flutter 模板锚点不同（旧: add_subdirectory(flutter)，
+          # 3.29+: add_subdirectory("${FLUTTER_MANAGED_DIR}" flutter)），逐一容错
           $cm = 'windows/CMakeLists.txt'
           $ct = [System.IO.File]::ReadAllText($cm)
-          $anchor = 'add_subdirectory(flutter)'
-          if (-not $ct.Contains($anchor)) { throw 'windows CMakeLists anchor not found' }
-          $ct = $ct.Replace($anchor,
-            "add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)`r`n$anchor")
+          $macro = 'add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)'
+          $anchors = @(
+            'add_subdirectory("${FLUTTER_MANAGED_DIR}" flutter)',
+            'add_subdirectory(flutter)'
+          )
+          $done = $false
+          foreach ($a in $anchors) {
+            if ($ct.Contains($a)) {
+              $ct = $ct.Replace($a, "$macro`r`n$a")
+              $done = $true
+              break
+            }
+          }
+          if (-not $done) {
+            # 兜底：project() 声明之后插入（对后续所有 target 生效）
+            $m = [regex]::Match($ct, '(project\s*\([^\)]*\))')
+            if (-not $m.Success) { throw 'windows CMakeLists: no usable anchor' }
+            $ct = $ct.Substring(0, $m.Groups[1].Index + $m.Groups[1].Length) + "`r`n$macro" + $ct.Substring($m.Groups[1].Index + $m.Groups[1].Length)
+          }
           [System.IO.File]::WriteAllText($cm, $ct, (New-Object System.Text.UTF8Encoding($false)))
           'CMake: injected experimental coroutine silence define'
 
