@@ -696,6 +696,11 @@ class PlayerController extends ChangeNotifier {
 
   /// 打开网页频道（TVBox webview:// 链接，如央视网网站播放器）
   Future<void> _openWebPageChannel(Channel channel) async {
+    // 已在播放同一个网页频道：保持现状（网页已在前台/后台缓冲中），
+    // 不要把前景状态重置回黑屏缓冲、重新走一遍探测流程
+    if (_webPageActive && _currentChannel?.id == channel.id) {
+      return;
+    }
     await _disposeVideoController();
     _currentChannel = channel;
     _sourceIndex = 0;

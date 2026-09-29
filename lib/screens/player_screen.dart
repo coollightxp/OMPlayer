@@ -396,6 +396,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   // 面板改由边缘触发区与网页上的关闭/切换按钮控制）
                   if (!controller.webPageActive) _buildGestureLayer(controller),
 
+                  // 网页前台播放时的双击全屏：JS 侧已屏蔽网页自身 dblclick，
+                  // 这里接管为 App 窗口全屏切换（双击手势不吞单击，网页播放器
+                  // 的单击暂停/播放不受影响）
+                  if (controller.webPageActive &&
+                      controller.webPageForeground &&
+                      controller.isDesktop)
+                    Positioned.fill(
+                      child: _WebDoubleTapFullScreen(
+                        onToggle: controller.toggleFullscreen,
+                      ),
+                    ),
+
                   // 左右边缘点击区（移动端；桌面端用 hover 自动弹出）
                   if (!controller.isDesktop) _buildEdgeTapZones(),
 
@@ -1060,6 +1072,48 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 }
 
+/// 网页频道前台的双击全屏层。
+/// 用 Listener（透明命中，不参与手势竞技场）手动识别双击：单击指针
+/// 事件原样穿透给下方的 WebView（不影响网页播放器的单击暂停/播放），
+/// 只在 300ms 内两次相邻点按时触发 [onToggle] 切换 App 窗口全屏。
+class _WebDoubleTapFullScreen extends StatefulWidget {
+  final VoidCallback onToggle;
+  const _WebDoubleTapFullScreen({required this.onToggle});
+
+  @override
+  State<_WebDoubleTapFullScreen> createState() =>
+      _WebDoubleTapFullScreenState();
+}
+
+class _WebDoubleTapFullScreenState extends State<_WebDoubleTapFullScreen> {
+  DateTime? _lastTap;
+  Offset _lastPos = Offset.zero;
+
+  void _onDown(PointerDownEvent e) {
+    final now = DateTime.now();
+    final last = _lastTap;
+    if (last != null &&
+        now.difference(last).inMilliseconds <= 300 &&
+        (e.position - _lastPos).distance < 40) {
+      _lastTap = null;
+      widget.onToggle();
+      return;
+    }
+    _lastTap = now;
+    _lastPos = e.position;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _onDown,
+      child: const SizedBox.expand(),
+    );
+  }
+}
+
+
 /// 内嵌网页频道控件：充满整个窗口，由网站自身播放器播放
 /// （如央视频网页版）。网页先在【后台】加载缓冲（被 PlayerScreen 的
 /// 黑屏占位盖住），JS 探测到视频有声起播后通过 [onForeground] 通知
@@ -1127,6 +1181,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 (function(){
   if (window.__omBooted) return;
   window.__omBooted = true;
+  // 接管双击：网页自己的双击全屏与 App 窗口全屏冲突，屏蔽网页的
+  // dblclick（捕获阶段），双击全屏由 Flutter 侧统一处理
+  document.addEventListener('dblclick', function(e){
+    e.stopPropagation(); e.preventDefault();
+  }, true);
   function allVideos(root){
     var out = Array.prototype.slice.call(root.querySelectorAll('video'));
     var frames = root.querySelectorAll('iframe');
@@ -1138,11 +1197,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
     return out;
   }
-  function clickPlayButton(){
-    var sels = ['.vjs-big-play-button','.vjs-play-control',
-      '.xgplayer-start-button','.xgplayer-play','.xgplayer-play-btn',
-      '.prism-player .vjs-big-play-button','.tvplayer-play',
-      '[class*="play-button"]','[class*="playBtn"]','[class*="play_button"]'];
+  var clickCooldown = 0;
+  function clickBigPlayButton(){
+    // 只点「暂停时才会显示的大播放按钮」类控件；绝不能点
+    // .vjs-play-control 这类常显切换钮——play() 刚生效又被点成暂停，
+    // 就是「有时还要再点一下才播」的根因
+    var sels = ['.vjs-big-play-button','.xgplayer-start-button',
+      '.xgplayer-start', '.prism-player .vjs-big-play-button',
+      '.tvplayer-play', '.player-start-btn',
+      '[class*="big-play"]','[class*="bigPlay"]','[class*="start-button"]'];
     for (var s=0;s<sels.length;s++){
       var btns = document.querySelectorAll(sels[s]);
       for (var i=0;i<btns.length;i++){
@@ -1150,10 +1213,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         var r = b.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) {
           try { b.click(); } catch(e) {}
+          clickCooldown = 3; // 点完后冷却几拍，让播放器自己起播
+          return;
         }
       }
     }
   }
+  var pausedTicks = 0;
   function kick(){
     var vs = allVideos(document);
     var anyPaused = false;
@@ -1174,7 +1240,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         try { window.flutter_inappwebview.callHandler('omPlaying'); } catch(e) {}
       }
     }
-    if (anyPaused) clickPlayButton();
+    // 连续 3 拍仍 paused（纯 play() 无效）才代点大播放按钮，
+    // 避免与 play() 同一拍双动作把播放又切回暂停
+    if (anyPaused) {
+      pausedTicks++;
+      if (clickCooldown > 0) { clickCooldown--; }
+      else if (pausedTicks >= 3) { clickBigPlayButton(); }
+    } else {
+      pausedTicks = 0;
+    }
   }
   setInterval(kick, 700);
   kick();
@@ -1323,23 +1397,29 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               ],
             ),
           ),
-        // 左上角关闭按钮：仅网页已推到前台后显示，返回普通播放界面
+        // 左上角关闭按钮：仅网页已推到前台后显示，返回普通播放界面。
+        // 图标+文字，避免只有一个 × 用户不知道是干什么的
         if (widget.foreground)
           Positioned(
             top: 12,
             left: 12,
             child: Material(
               color: Colors.black.withOpacity(0.55),
-              shape: const CircleBorder(),
+              borderRadius: BorderRadius.circular(20),
               clipBehavior: Clip.antiAlias,
-              child: Tooltip(
-                message: '关闭网页频道',
-                child: InkWell(
-                  onTap: widget.onExit,
-                  child: const Padding(
-                    padding: EdgeInsets.all(8),
-                    child:
-                        Icon(Icons.close, color: Colors.white, size: 22),
+              child: InkWell(
+                onTap: widget.onExit,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.close, color: Colors.white, size: 18),
+                      SizedBox(width: 5),
+                      Text('关闭网页频道',
+                          style:
+                              TextStyle(color: Colors.white, fontSize: 13)),
+                    ],
                   ),
                 ),
               ),
