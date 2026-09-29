@@ -671,6 +671,7 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     _webPageActive = false;
+    _webPageForeground = false;
     _currentChannel = channel;
     _sourceIndex = 0;
     await _playCurrentSource();
@@ -679,6 +680,19 @@ class PlayerController extends ChangeNotifier {
   /// 是否处于网页频道内嵌模式（PlayerScreen 据此显示内嵌网页控件）
   bool _webPageActive = false;
   bool get webPageActive => _webPageActive;
+
+  /// 网页是否已在【前台】播放（网页在后台缓冲时为 false，视频层保持
+  /// 黑屏占位；网页播放器真正带声音起播后由 JS 回调置 true，
+  /// 网页推到最前、原视频层隐藏）
+  bool _webPageForeground = false;
+  bool get webPageForeground => _webPageForeground;
+
+  /// 网页起播后推到前台（由内嵌网页的 JS 回调触发）
+  void setWebForeground(bool value) {
+    if (_webPageForeground == value) return;
+    _webPageForeground = value;
+    notifyListeners();
+  }
 
   /// 打开网页频道（TVBox webview:// 链接，如央视网网站播放器）
   Future<void> _openWebPageChannel(Channel channel) async {
@@ -690,7 +704,9 @@ class PlayerController extends ChangeNotifier {
     // Windows/Android/macOS/Web：使用窗体内嵌网页控件（信息/节目单/EPG
     // 浮层叠加其上，原视频控件隐藏）；Linux 无内嵌实现，回退系统浏览器
     if (await supportsEmbeddedWeb()) {
+      // 网页先在后台全屏缓冲（视频位保持黑屏），起播后再推到前台
       _webPageActive = true;
+      _webPageForeground = false;
       notifyListeners();
     } else {
       await launchExternal(channel.webPageUrl);
@@ -701,6 +717,7 @@ class PlayerController extends ChangeNotifier {
   void exitWebPage() {
     if (!_webPageActive) return;
     _webPageActive = false;
+    _webPageForeground = false;
     notifyListeners();
   }
 

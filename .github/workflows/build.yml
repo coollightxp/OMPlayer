@@ -147,22 +147,25 @@ jobs:
       # 仓库不提交 windows/ 目录（由 flutter create 现场生成），
       # 因此把两项 runner 级补丁注入生成的 main.cpp：
       # 1) 单实例：命名互斥体，重复启动时激活已有窗口后退出
-      # 2) NumLock 守护：Flutter 引擎初始化会把 NumLock 同步为关闭，
-      #    UI 线程定时器用 GetAsyncKeyState 读物理状态并恢复
-      - name: Patch Windows runner (single instance + NumLock guard)
+      # 2) NumLock 一次性恢复：Flutter 引擎初始化会把 NumLock 同步为
+      #    关闭；启动前记住物理状态，3 秒后在 UI 线程恢复一次即永久
+      #    解除定时器。绝不做持续守护——持续合成翻转会污染全局
+      #    NumLock，导致切换到其它程序后小键盘也是关的
+      - name: Patch Windows runner (single instance + one-shot NumLock restore)
         shell: pwsh
         run: |
           $f = 'windows/runner/main.cpp'
           $t = [System.IO.File]::ReadAllText($f)
           $inject1 = @(
-            '// ===== OMPlayer injected: single instance + NumLock guard =====',
+            '// ===== OMPlayer injected: single instance + one-shot NumLock restore =====',
             'static BOOL g_om_numlock_was_on = FALSE;',
             'static const wchar_t* kOmSingleInstanceMutex = L"Local\\OMPlayer_SingleInstance";',
-            'static VOID CALLBACK OMNumLockTimer(HWND hwnd, UINT, UINT_PTR id, DWORD) {',
-            '  static int s_ticks = 0;',
-            '  if (s_ticks++ > 40) { ::KillTimer(hwnd, id); return; }',
-            '  BOOL on = (::GetAsyncKeyState(VK_NUMLOCK) & 0x0001) != 0;',
-            '  if (g_om_numlock_was_on && !on) {',
+            '// 一次性回调：触发后立刻 KillTimer，之后永不干预 NumLock，',
+            '// 避免后台轮询读到滞后状态而反复翻转、污染全局键盘状态',
+            'static VOID CALLBACK OMNumLockRestore(HWND hwnd, UINT, UINT_PTR id, DWORD) {',
+            '  ::KillTimer(hwnd, id);',
+            '  BOOL on = (::GetKeyState(VK_NUMLOCK) & 0x0001) != 0;',
+            '  if (g_om_numlock_was_on != on) {',
             '    ::keybd_event(VK_NUMLOCK, 0x45, KEYEVENTF_EXTENDEDKEY, 0);',
             '    ::keybd_event(VK_NUMLOCK, 0x45, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);',
             '  }',
@@ -184,19 +187,16 @@ jobs:
             '    }',
             '    return 0;',
             '  }',
-            '  // Save physical NumLock state before engine keyboard sync',
-            '  g_om_numlock_was_on = (::GetAsyncKeyState(VK_NUMLOCK) & 0x0001) != 0;'
+            '  // 引擎键盘同步之前记住物理 NumLock 状态（GetKeyState 会',
+            '  // 以当前全局状态初始化本线程键盘队列）',
+            '  g_om_numlock_was_on = (::GetKeyState(VK_NUMLOCK) & 0x0001) != 0;'
           ) -join "`r`n"
           $inject3 = @(
             '  window.SetQuitOnClose(true);',
             '',
-            '  // OMPlayer: restore NumLock if engine turned it off (~20s guard)',
-            '  if (g_om_numlock_was_on &&',
-            '      (::GetAsyncKeyState(VK_NUMLOCK) & 0x0001) == 0) {',
-            '    ::keybd_event(VK_NUMLOCK, 0x45, KEYEVENTF_EXTENDEDKEY, 0);',
-            '    ::keybd_event(VK_NUMLOCK, 0x45, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);',
-            '  }',
-            '  ::SetTimer(nullptr, 0x4F4D, 500, OMNumLockTimer);'
+            '  // OMPlayer: 引擎初始化后 3 秒一次性恢复 NumLock 到启动前',
+            '  // 状态，回调内自行 KillTimer，之后不再干预用户按键',
+            '  ::SetTimer(nullptr, 0x4F4D, 3000, OMNumLockRestore);'
           ) -join "`r`n"
           $a1 = 'int APIENTRY wWinMain('
           $a2 = '  ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);'

@@ -51,6 +51,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   PlayerController? _controllerRef;
   PlayerState _prevState = PlayerState.idle;
   String? _prevChannelId;
+  bool _prevWebActive = false;
 
   // 鼠标自动隐藏（播放中 3 秒无动作）
   Timer? _cursorHideTimer;
@@ -123,6 +124,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
       });
       _scheduleBottomHide();
       _pokeCursor();
+    }
+
+    // 网页频道切入/切出：切入时像正常起播一样先显示信息面板再自动隐藏
+    if (c.webPageActive != _prevWebActive) {
+      _prevWebActive = c.webPageActive;
+      if (c.webPageActive) {
+        setState(() {
+          _bottomPanelVisible = true;
+          _bottomHovering = false;
+        });
+        _scheduleBottomHide();
+        _pokeCursor();
+      }
     }
   }
 
@@ -293,37 +307,67 @@ class _PlayerScreenState extends State<PlayerScreen> {
           },
           child: Consumer<PlayerController>(
             builder: (context, controller, _) {
-              final panelVisible =
-                  _bottomPanelVisible ||
+              // 网页频道下信息面板按「播放中」逻辑自动隐藏（只看
+              // _bottomPanelVisible）；普通频道维持原逻辑
+              final panelVisible = controller.webPageActive
+                  ? _bottomPanelVisible
+                  : _bottomPanelVisible ||
                       controller.state != PlayerState.playing;
+              final webUrl = controller.webPageActive
+                  ? controller.currentChannel?.webPageUrl ?? ''
+                  : '';
               return Stack(
                 children: [
-                  // 视频播放层
-                  const Positioned.fill(child: VideoPlayerWidget()),
+                  // 最底层：网页频道控件。网页在后台缓冲时也存在于此，
+                  // 被上方黑屏占位盖住；起播后黑屏移走，网页显露到全屏
+                  if (webUrl.isNotEmpty)
+                    Positioned.fill(
+                      child: _WebChannelOverlay(
+                        key: ValueKey(webUrl),
+                        url: webUrl,
+                        foreground: controller.webPageForeground,
+                        onForeground: () =>
+                            controller.setWebForeground(true),
+                        onExit: () => controller.exitWebPage(),
+                      ),
+                    ),
 
-                  // 桌面端亮度调节：屏幕前叠加黑色遮罩（screen_brightness 在多数桌面机无效）
-                  if (controller.isDesktop)
+                  // 视频层：
+                  // - 普通频道：正常视频控件
+                  // - 网页频道后台缓冲中：黑屏占位（网页在其下方缓冲）
+                  // - 网页频道前台播放：空层（让下方网页全屏显露）
+                  Positioned.fill(
+                    child: !controller.webPageActive
+                        ? const VideoPlayerWidget()
+                        : (!controller.webPageForeground
+                            ? Container(
+                                color: Colors.black,
+                                child: const Center(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      CircularProgressIndicator(
+                                          color: Colors.blueAccent),
+                                      SizedBox(height: 12),
+                                      Text('网页频道缓冲中，起播后自动切换...',
+                                          style: TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 14)),
+                                    ],
+                                  ),
+                                ),
+                              )
+                            : const SizedBox.shrink()),
+                  ),
+
+                  // 桌面端亮度调节遮罩：仅普通视频层生效，避免给网页蒙灰
+                  if (controller.isDesktop && !controller.webPageActive)
                     Positioned.fill(
                       child: IgnorePointer(
                         child: Container(
                           color: Colors.black.withOpacity(
                               (1.0 - controller.brightness) * 0.9),
                         ),
-                      ),
-                    ),
-
-                  // 网页频道：内嵌网页控件充满整个窗口（在视频之上，
-                  // OSD/时钟/节目单/EPG/信息面板等浮层之下）。
-                  // 网站自身播放器播放，节目信息直接看网页。
-                  if (controller.webPageActive &&
-                      (controller.currentChannel?.webPageUrl.isNotEmpty ??
-                          false))
-                    Positioned.fill(
-                      child: _WebChannelOverlay(
-                        key: ValueKey(controller.currentChannel!.webPageUrl),
-                        url: controller.currentChannel!.webPageUrl,
-                        title: controller.currentChannel!.name,
-                        onExit: () => controller.exitWebPage(),
                       ),
                     ),
 
@@ -1004,17 +1048,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
 }
 
 /// 内嵌网页频道控件：充满整个窗口，由网站自身播放器播放
-/// （如央视频网页版）。信息面板/节目单/EPG 抽屉由 PlayerScreen
-/// 叠加在本控件之上；左上角提供关闭按钮返回普通播放界面。
+/// （如央视频网页版）。网页先在【后台】加载缓冲（被 PlayerScreen 的
+/// 黑屏占位盖住），JS 探测到视频有声起播后通过 [onForeground] 通知
+/// 父层把网页推到全屏前台；信息面板/节目单/EPG 抽屉由 PlayerScreen
+/// 叠加在本控件之上，前台时左上角提供关闭按钮。
 class _WebChannelOverlay extends StatefulWidget {
   final String url;
-  final String title;
+
+  /// 网页是否已处于前台播放（false=后台缓冲，被黑屏占位覆盖）
+  final bool foreground;
+
+  /// 探测到有声起播，请求父层把网页推到前台
+  final VoidCallback onForeground;
+
+  /// 关闭网页频道，恢复普通视频控件
   final VoidCallback onExit;
 
   const _WebChannelOverlay({
     super.key,
     required this.url,
-    required this.title,
+    required this.foreground,
+    required this.onForeground,
     required this.onExit,
   });
 
@@ -1025,6 +1079,111 @@ class _WebChannelOverlay extends StatefulWidget {
 class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   bool _loaded = false;
   String? _error;
+  InAppWebViewController? _webController;
+
+  /// 后台缓冲期间每秒探测一次页面 <video> 的真实起播状态
+  Timer? _probeTimer;
+
+  /// 注入 CSS：把页面里的 <video> 伪全屏铺满窗口（网站不配合
+  /// requestFullscreen 时的兜底），并黑底、禁滚动
+  static const String _cssJs = r'''
+(function(){
+  try {
+    var old = document.getElementById('__om_fullscreen_style');
+    if (old) old.parentNode.removeChild(old);
+    var s = document.createElement('style');
+    s.id = '__om_fullscreen_style';
+    s.textContent = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
+      + 'video{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
+      + '#__om_web_layer{position:fixed!important;inset:0!important;background:#000!important;z-index:2147483646!important}';
+    (document.head || document.documentElement).appendChild(s);
+  } catch(e) {}
+})();
+''';
+
+  /// 常驻注入：强制解除静音/调大音量/拉起播放，并在首次探测到
+  /// 「有声起播」时通过 handler 通知 Dart
+  static const String _bootJs = r'''
+(function(){
+  if (window.__omBooted) return;
+  window.__omBooted = true;
+  function kick(){
+    var vs = document.querySelectorAll('video');
+    for (var i=0;i<vs.length;i++){
+      var v = vs[i];
+      try {
+        v.muted = false;
+        v.volume = 1;
+        if (v.paused && v.play) {
+          var p = v.play();
+          if (p && p.catch) p.catch(function(){});
+        }
+      } catch(e) {}
+      if (!window.__omPlayingFired && !v.paused && v.readyState >= 3
+          && v.currentTime > 0 && v.videoWidth > 0) {
+        window.__omPlayingFired = true;
+        try { window.flutter_inappwebview.callHandler('omPlaying'); } catch(e) {}
+      }
+    }
+  }
+  setInterval(kick, 500);
+  kick();
+})();
+''';
+
+  /// Dart 侧轮询探测（不依赖 JS bridge 是否可用，双保险）
+  static const String _probeJs = r'''
+(function(){
+  var vs = document.querySelectorAll('video');
+  for (var i=0;i<vs.length;i++){
+    var v = vs[i];
+    try {
+      v.muted = false; v.volume = 1;
+      if (v.paused && v.play) { var p = v.play(); if (p && p.catch) p.catch(function(){}); }
+    } catch(e) {}
+    if (!v.paused && v.readyState >= 3 && v.currentTime > 0 && v.videoWidth > 0) return '1';
+  }
+  return '0';
+})();
+''';
+
+  @override
+  void initState() {
+    super.initState();
+    // 后台缓冲期间持续探测，起播即推前台
+    _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
+  }
+
+  @override
+  void dispose() {
+    _probeTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _inject() async {
+    final c = _webController;
+    if (c == null) return;
+    try {
+      await c.evaluateJavascript(source: _cssJs);
+      await c.evaluateJavascript(source: _bootJs);
+    } catch (_) {
+      // 页面尚未就绪时注入可能失败，轮询探测会在后续重试
+    }
+  }
+
+  Future<void> _probe() async {
+    if (!mounted || widget.foreground) return;
+    final c = _webController;
+    if (c == null) return;
+    // 每次探测顺带确保全屏样式/静音状态（SPA 页面可能被站点脚本改写）
+    try {
+      await c.evaluateJavascript(source: _cssJs);
+      final r = await c.evaluateJavascript(source: _probeJs);
+      if (r?.toString() == '1' && mounted && !widget.foreground) {
+        widget.onForeground();
+      }
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1039,8 +1198,19 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             supportZoom: false,
             transparentBackground: false,
           ),
-          onLoadStop: (_, __) {
+          onWebViewCreated: (controller) {
+            _webController = controller;
+            // JS bridge 通道（与 Dart 轮询互为双保险）
+            controller.addJavaScriptHandler(
+              handlerName: 'omPlaying',
+              callback: (_) {
+                if (mounted && !widget.foreground) widget.onForeground();
+              },
+            );
+          },
+          onLoadStop: (controller, _) async {
             if (mounted) setState(() => _loaded = true);
+            await _inject();
           },
           onReceivedError: (controller, request, error) {
             // 主文档加载失败才提示（子资源失败不影响播放）
@@ -1075,27 +1245,28 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               ],
             ),
           ),
-        // 左上角关闭按钮：浮在网页之上，返回普通播放界面
-        Positioned(
-          top: 12,
-          left: 12,
-          child: Material(
-            color: Colors.black.withOpacity(0.55),
-            shape: const CircleBorder(),
-            clipBehavior: Clip.antiAlias,
-            child: Tooltip(
-              message: '关闭网页频道',
-              child: InkWell(
-                onTap: widget.onExit,
-                child: const Padding(
-                  padding: EdgeInsets.all(8),
-                  child:
-                      Icon(Icons.close, color: Colors.white, size: 22),
+        // 左上角关闭按钮：仅网页已推到前台后显示，返回普通播放界面
+        if (widget.foreground)
+          Positioned(
+            top: 12,
+            left: 12,
+            child: Material(
+              color: Colors.black.withOpacity(0.55),
+              shape: const CircleBorder(),
+              clipBehavior: Clip.antiAlias,
+              child: Tooltip(
+                message: '关闭网页频道',
+                child: InkWell(
+                  onTap: widget.onExit,
+                  child: const Padding(
+                    padding: EdgeInsets.all(8),
+                    child:
+                        Icon(Icons.close, color: Colors.white, size: 22),
+                  ),
                 ),
               ),
             ),
           ),
-        ),
       ],
     );
   }
