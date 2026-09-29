@@ -342,17 +342,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         : (!controller.webPageForeground
                             ? Container(
                                 color: Colors.black,
-                                child: const Center(
+                                child: Center(
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      CircularProgressIndicator(
+                                      const CircularProgressIndicator(
                                           color: Colors.blueAccent),
-                                      SizedBox(height: 12),
-                                      Text('网页频道缓冲中，起播后自动切换...',
+                                      const SizedBox(height: 12),
+                                      const Text('网页频道缓冲中，起播后自动切换...',
                                           style: TextStyle(
                                               color: Colors.white70,
                                               fontSize: 14)),
+                                      const SizedBox(height: 16),
+                                      // 网站不允许自动播放时，允许用户立刻
+                                      // 把网页切到前台手动点播放，不必死等
+                                      TextButton.icon(
+                                        onPressed: () => controller
+                                            .setWebForeground(true),
+                                        icon: const Icon(Icons.open_in_new,
+                                            size: 18,
+                                            color: Colors.white70),
+                                        label: const Text('立即显示网页',
+                                            style: TextStyle(
+                                                color: Colors.white70)),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -1084,7 +1097,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 后台缓冲期间每秒探测一次页面 <video> 的真实起播状态
   Timer? _probeTimer;
 
-  /// 注入 CSS：把页面里的 <video> 伪全屏铺满窗口（网站不配合
+  /// 超时兜底：网站不允许自动播放（需用户手动点播放按钮）时，
+  /// 不能永远黑屏把用户卡死——8 秒后强制把网页推到前台，
+  /// JS 会继续尝试自动播放，用户也可手动点击页面播放器
+  Timer? _forceForegroundTimer;
+
+  /// CSS：把页面里的 <video> 伪全屏铺满窗口（网站不配合
   /// requestFullscreen 时的兜底），并黑底、禁滚动
   static const String _cssJs = r'''
 (function(){
@@ -1102,48 +1120,92 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 ''';
 
   /// 常驻注入：强制解除静音/调大音量/拉起播放，并在首次探测到
-  /// 「有声起播」时通过 handler 通知 Dart
+  /// 「有声起播」时通过 handler 通知 Dart。
+  /// 央视频等站点的播放器可能位于同源 iframe 内，需要递归遍历；
+  /// 部分站点不会自动开播，还要代点常见播放器的大播放按钮。
   static const String _bootJs = r'''
 (function(){
   if (window.__omBooted) return;
   window.__omBooted = true;
+  function allVideos(root){
+    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+    var frames = root.querySelectorAll('iframe');
+    for (var i=0;i<frames.length;i++){
+      try {
+        var d = frames[i].contentDocument;
+        if (d) out = out.concat(allVideos(d));
+      } catch(e) {}
+    }
+    return out;
+  }
+  function clickPlayButton(){
+    var sels = ['.vjs-big-play-button','.vjs-play-control',
+      '.xgplayer-start-button','.xgplayer-play','.xgplayer-play-btn',
+      '.prism-player .vjs-big-play-button','.tvplayer-play',
+      '[class*="play-button"]','[class*="playBtn"]','[class*="play_button"]'];
+    for (var s=0;s<sels.length;s++){
+      var btns = document.querySelectorAll(sels[s]);
+      for (var i=0;i<btns.length;i++){
+        var b = btns[i];
+        var r = b.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          try { b.click(); } catch(e) {}
+        }
+      }
+    }
+  }
   function kick(){
-    var vs = document.querySelectorAll('video');
+    var vs = allVideos(document);
+    var anyPaused = false;
     for (var i=0;i<vs.length;i++){
       var v = vs[i];
       try {
         v.muted = false;
         v.volume = 1;
         if (v.paused && v.play) {
+          anyPaused = true;
           var p = v.play();
           if (p && p.catch) p.catch(function(){});
         }
       } catch(e) {}
-      if (!window.__omPlayingFired && !v.paused && v.readyState >= 3
-          && v.currentTime > 0 && v.videoWidth > 0) {
+      if (!window.__omPlayingFired && !v.paused && v.readyState >= 2
+          && v.currentTime > 0) {
         window.__omPlayingFired = true;
         try { window.flutter_inappwebview.callHandler('omPlaying'); } catch(e) {}
       }
     }
+    if (anyPaused) clickPlayButton();
   }
-  setInterval(kick, 500);
+  setInterval(kick, 700);
   kick();
 })();
 ''';
 
-  /// Dart 侧轮询探测（不依赖 JS bridge 是否可用，双保险）
+  /// Dart 侧轮询探测（不依赖 JS bridge 是否可用，双保险）。
+  /// 递归同源 iframe；返回数字 1/0，规避字符串编解码差异。
   static const String _probeJs = r'''
 (function(){
-  var vs = document.querySelectorAll('video');
+  function allVideos(root){
+    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+    var frames = root.querySelectorAll('iframe');
+    for (var i=0;i<frames.length;i++){
+      try {
+        var d = frames[i].contentDocument;
+        if (d) out = out.concat(allVideos(d));
+      } catch(e) {}
+    }
+    return out;
+  }
+  var vs = allVideos(document);
   for (var i=0;i<vs.length;i++){
     var v = vs[i];
     try {
       v.muted = false; v.volume = 1;
       if (v.paused && v.play) { var p = v.play(); if (p && p.catch) p.catch(function(){}); }
     } catch(e) {}
-    if (!v.paused && v.readyState >= 3 && v.currentTime > 0 && v.videoWidth > 0) return '1';
+    if (!v.paused && v.readyState >= 2 && v.currentTime > 0) return 1;
   }
-  return '0';
+  return 0;
 })();
 ''';
 
@@ -1152,11 +1214,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     super.initState();
     // 后台缓冲期间持续探测，起播即推前台
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
+    // 8 秒仍未自动起播：强制推前台，避免永久黑屏
+    _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted && !widget.foreground) widget.onForeground();
+    });
   }
 
   @override
   void dispose() {
     _probeTimer?.cancel();
+    _forceForegroundTimer?.cancel();
     super.dispose();
   }
 
@@ -1179,10 +1246,21 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     try {
       await c.evaluateJavascript(source: _cssJs);
       final r = await c.evaluateJavascript(source: _probeJs);
-      if (r?.toString() == '1' && mounted && !widget.foreground) {
+      // WebView2 JSON 解码后通常是 int 1，兼容字符串 "1"
+      final playing = r == 1 || r?.toString() == '1';
+      if (playing && mounted && !widget.foreground) {
         widget.onForeground();
       }
     } catch (_) {}
+  }
+
+  @override
+  void didUpdateWidget(covariant _WebChannelOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 已推到前台（探测成功或超时兜底）后不再需要超时定时器
+    if (widget.foreground && !oldWidget.foreground) {
+      _forceForegroundTimer?.cancel();
+    }
   }
 
   @override

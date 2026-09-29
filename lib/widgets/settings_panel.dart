@@ -3,11 +3,39 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../models/epg_source.dart';
 import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../services/player_controller.dart';
+
+/// 选择本地文件。
+/// Windows 上主窗口默认置顶（全屏时强制置顶），而 file_picker 的系统
+/// 文件对话框（IFileDialog）不会自动成为置顶窗口，会被压在主窗口
+/// 后面、任务栏也只闪图标。弹出前临时取消置顶，对话框关闭后恢复。
+Future<PlatformFile?> _pickLocalFileWithTopmostFix() async {
+  bool wasTopmost = false;
+  try {
+    wasTopmost = await windowManager.isAlwaysOnTop();
+    if (wasTopmost) {
+      await windowManager.setAlwaysOnTop(false);
+      // 等窗口管理器应用完层级变更，避免对话框仍被盖住
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+    }
+  } catch (_) {
+    wasTopmost = false;
+  }
+  try {
+    return await FilePicker.pickFile(type: FileType.any);
+  } finally {
+    if (wasTopmost) {
+      try {
+        await windowManager.setAlwaysOnTop(true);
+      } catch (_) {}
+    }
+  }
+}
 
 /// Windows 输入框 IME 保险：在两个输入框之间切换焦点后，Windows 引擎的
 /// 输入法（TSF）连接偶发失效——表现为无法键入字符、程序对按键不响应
@@ -207,9 +235,7 @@ class _PlaylistTabState extends State<_PlaylistTab> {
     // file_picker 12+ 新 API：FilePicker.pickFile 直接返回 PlatformFile?
     // 放开所有文件类型：直播源后缀五花八门（.m3u/.m3u8/.txt/.nzk/
     // .conf/.list/.php 甚至无后缀），加载时按内容自动识别格式
-    final file = await FilePicker.pickFile(
-      type: FileType.any,
-    );
+    final file = await _pickLocalFileWithTopmostFix();
     if (file?.path != null) {
       setState(() {
         _urlController.text = file!.path!;
@@ -292,8 +318,8 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                         icon: const Icon(Icons.folder_open,
                             color: Colors.blueAccent),
                         onPressed: () async {
-                          final f = await FilePicker.pickFile(
-                              type: FileType.any);
+                          final f =
+                              await _pickLocalFileWithTopmostFix();
                           if (f?.path != null) urlCtl.text = f!.path!;
                         },
                       ),
