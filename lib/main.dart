@@ -12,8 +12,11 @@ import 'services/media_capture_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 播放缓冲设置需在注册 MDK 后端前读取（仅启动时应用一次）
+  final prefs = await SharedPreferences.getInstance();
+  final bufferSeconds = prefs.getInt('settings_buffer_seconds') ?? 5;
   // Windows/Linux 注册 MDK 视频播放后端（video_player 官方不支持桌面端）
-  registerFvp();
+  registerFvp(bufferSeconds: bufferSeconds);
 
   // 安卓手机：强制横屏（直播/电视场景，竖屏会留黑边）
   if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
@@ -27,7 +30,6 @@ void main() async {
   if (desktop) {
     await windowManager.ensureInitialized();
 
-    final prefs = await SharedPreferences.getInstance();
     final launchAtStartup =
         prefs.getBool('settings_launch_at_startup') ?? false;
     // 与系统开机启动项保持同步

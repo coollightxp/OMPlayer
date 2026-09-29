@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart';
 import 'package:video_player/video_player.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
@@ -22,7 +21,6 @@ import 'cast_log.dart';
 import 'dlna_service.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
-import 'numlock_service.dart';
 import 'remote_admin_service.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
@@ -32,7 +30,7 @@ import 'web_channel_opener.dart';
 enum PlayerState { idle, loading, playing, paused, error, ended }
 
 /// 播放器控制器 - 使用 ChangeNotifier 进行状态管理
-class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
+class PlayerController extends ChangeNotifier {
   VideoPlayerController? _videoController;
   PlayerSettings _settings = const PlayerSettings();
 
@@ -58,8 +56,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   String get remoteAdminUrl => _remoteAdminUrl;
   bool get remoteAdminRunning => remoteAdminService.isRunning;
 
-  // NumLock 状态守护（仅 Windows 生效）
-  final NumlockService _numlock = NumlockService();
+  // NumLock 守护已移至 Windows runner（见文件末说明）
 
   // 投屏诊断日志路径（设置面板展示给用户反馈问题）
   String _castLogPath = '';
@@ -179,10 +176,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     if (_settings.remoteAdminEnabled) {
       _startRemoteAdmin();
     }
-    if (isDesktop) {
-      WidgetsBinding.instance.addObserver(this);
-      _initNumlockGuard();
-    }
     _initSystemValues();
 
     // 频道加载完毕后，恢复上次退出时播放的频道
@@ -197,6 +190,9 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// 播放成功后记录当前频道，供下次启动恢复
   Future<void> _saveLastChannel() async {
+    // 投屏会话不记录：投屏链接是临时的（如手机推来的抖音直播），
+    // 记录后下次启动会尝试恢复一个已失效的投屏地址
+    if (_isCasting) return;
     final ch = _currentChannel;
     if (ch == null) return;
     try {
@@ -1028,6 +1024,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
   static const _kDefaultVolume = 'settings_default_volume';
   static const _kDefaultBrightness = 'settings_default_brightness';
   static const _kSourceTimeout = 'settings_source_timeout_seconds';
+  static const _kBufferSeconds = 'settings_buffer_seconds';
   static const _kUiScale = 'settings_ui_scale';
   static const _kUiScaleAuto = 'settings_ui_scale_auto';
   static const _kRemoteAdmin = 'settings_remote_admin';
@@ -1048,6 +1045,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
         defaultVolume: p.getDouble(_kDefaultVolume) ?? 0.8,
         defaultBrightness: p.getDouble(_kDefaultBrightness) ?? 0.8,
         sourceTimeoutSeconds: p.getInt(_kSourceTimeout) ?? 5,
+        bufferSeconds: p.getInt(_kBufferSeconds) ?? 5,
         uiScale: p.getDouble(_kUiScale) ?? 1.0,
         uiScaleAuto: p.getBool(_kUiScaleAuto) ?? true,
         remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
@@ -1069,6 +1067,7 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
       await p.setDouble(_kDefaultVolume, _settings.defaultVolume);
       await p.setDouble(_kDefaultBrightness, _settings.defaultBrightness);
       await p.setInt(_kSourceTimeout, _settings.sourceTimeoutSeconds);
+      await p.setInt(_kBufferSeconds, _settings.bufferSeconds);
       await p.setDouble(_kUiScale, _settings.uiScale);
       await p.setBool(_kUiScaleAuto, _settings.uiScaleAuto);
       await p.setBool(_kRemoteAdmin, _settings.remoteAdminEnabled);
@@ -1601,34 +1600,12 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  // ==================== NumLock 状态守护（Windows） ====================
-
-  /// 启动阶段守护 NumLock：Flutter Windows 引擎初始化键盘映射时会把
-  /// NumLock 意外关掉（发生在窗口创建后数秒内）。启动后轮询 15 秒，
-  /// 发现被关立即恢复；窗口重新获得焦点时也检查一次。
-  /// 不做持久化记忆——引擎每次启动都会重新破坏，记住"关闭"反而会把
-  /// 被破坏的状态当成用户选择固化下来。
-  Future<void> _initNumlockGuard() async {
-    final deadline = DateTime.now()
-        .add(const Duration(milliseconds: 15000));
-    while (DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-      _ensureNumlockOn();
-    }
-  }
-
-  void _ensureNumlockOn() {
-    if (_numlock.isOn == false) {
-      _numlock.toggle();
-    }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _ensureNumlockOn();
-    }
-  }
+  // ==================== NumLock 状态守护（Windows runner 层实现） ====================
+  // Flutter Windows 引擎在窗口初始化时会把 NumLock 意外同步为关闭。
+  // 该修复必须在原生 runner 的 UI 线程做（Dart FFI 线程没有消息队列，
+  // GetKeyState 恒返回 0 会误判并主动翻转，反而把 NumLock 关掉）：
+  // CI 构建时由 .github/workflows/build.yml 向 windows/runner/main.cpp
+  // 注入「启动保存状态 + 15 秒定时器恢复」代码，见 Patch Windows runner 步骤。
 
   Future<void> _disposeVideoController() async {
     final c = _videoController;
@@ -1654,9 +1631,6 @@ class PlayerController extends ChangeNotifier with WidgetsBindingObserver {
     _tickTimer?.cancel();
     _castRestoreTimer?.cancel();
     _castEndedTimer?.cancel();
-    if (isDesktop) {
-      WidgetsBinding.instance.removeObserver(this);
-    }
     if (_isRecording && _videoController != null) {
       fvpRecord(_videoController!, to: null);
     }

@@ -283,12 +283,12 @@ class _PlaylistTabState extends State<_PlaylistTab> {
     }
   }
 
-  /// 复制播放列表名称和地址到剪贴板
+  /// 复制播放列表地址到剪贴板
   Future<void> _copyPlaylist(PlaylistSource p) async {
-    await Clipboard.setData(ClipboardData(text: '${p.name}\n${p.url}'));
+    await Clipboard.setData(ClipboardData(text: p.url));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('名称和地址已复制'), duration: Duration(seconds: 1)),
+      const SnackBar(content: Text('地址已复制'), duration: Duration(seconds: 1)),
     );
   }
 
@@ -543,12 +543,12 @@ class _EpgTabState extends State<_EpgTab> {
     }
   }
 
-  /// 复制 EPG 名称和地址到剪贴板
+  /// 复制 EPG 地址到剪贴板
   Future<void> _copyEpg(EpgSource e) async {
-    await Clipboard.setData(ClipboardData(text: '${e.name}\n${e.url}'));
+    await Clipboard.setData(ClipboardData(text: e.url));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('名称和地址已复制'), duration: Duration(seconds: 1)),
+      const SnackBar(content: Text('地址已复制'), duration: Duration(seconds: 1)),
     );
   }
 
@@ -728,6 +728,26 @@ class _PlayerSettingsTab extends StatelessWidget {
               onChanged: (v) => controller.updateSettings(
                   s.copyWith(sourceTimeoutSeconds: v.round())),
               subtitleText: '起播超过该时间未成功，自动尝试下一个源',
+            ),
+            // 播放缓冲：分段选择 5/10/20/30 秒（重启后由 MDK 后端应用）
+            ListTile(
+              leading: const Icon(Icons.slow_motion_video,
+                  color: Colors.white70),
+              title: const Text('播放缓冲'),
+              subtitle: const Text('弱网或直播卡顿可调大，修改后重启生效'),
+              trailing: SegmentedButton<int>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                ),
+                segments: const [5, 10, 20, 30]
+                    .map((v) =>
+                        ButtonSegment(value: v, label: Text('$v 秒')))
+                    .toList(),
+                selected: {s.bufferSeconds},
+                onSelectionChanged: (sel) => controller.updateSettings(
+                    s.copyWith(bufferSeconds: sel.first)),
+              ),
             ),
             _buildUiScaleTile(context, controller, s),
             const SizedBox(height: 16),

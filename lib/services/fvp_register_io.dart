@@ -3,9 +3,13 @@ import 'dart:io' show Platform;
 import 'package:fvp/fvp.dart' as fvp;
 
 /// Windows/Linux 注册 MDK 视频播放后端（video_player 官方不支持桌面端）
-void registerFvp() {
+///
+/// [bufferSeconds] 播放缓冲上限（秒）：弱网/直播抖动时预读更多数据抗卡顿，
+/// 起播缓冲固定取 min(3 秒, 上限)，避免为大缓冲等太久
+void registerFvp({int bufferSeconds = 5}) {
   if (Platform.isWindows || Platform.isLinux) {
-    // 网络直播（微信视频号/抖音等多为 HTTP-FLV/HLS）：
+    final maxMs = bufferSeconds.clamp(5, 30) * 1000;
+    final startMs = maxMs < 3000 ? maxMs : 3000;
     // TCP 连接被运营商/路由器/NAT 中间设备静默掐断时，ffmpeg 默认会无限等待，
     // 表现为画面永久卡住、无错误回调。通过 avio.* 透传 ffmpeg http 协议选项，
     // 让协议层自动重连；rw_timeout 让僵死读在 15 秒后超时并触发重连。
@@ -18,11 +22,9 @@ void registerFvp() {
         'avio.reconnect_on_network_error': '1',
         'avio.reconnect_delay_max': '5',
         'avio.rw_timeout': '15000000', // 微秒，15 秒
-        // 起播最小缓冲 3 秒 + 读包缓冲上限 15 秒（默认仅 4 秒）：
-        // minMs=1s 时起播太急、网络轻微抖动立刻卡顿（开局卡顿明显），
-        // 3s 预读在良好网络下几乎不增加等待，却能显著减少开局/中途缓冲；
-        // 上限 15s 让 CDN 限速/网关掐流时有缓冲窗口，并减少慢速消费被断连
-        'buffer.range': '3000+15000',
+        // 缓冲区间「起播预读 + 上限」（毫秒）：
+        // 上限越大越能吸收网络抖动（可在设置里调 5/10/20/30 秒）
+        'buffer.range': '$startMs+$maxMs',
       },
     });
   }

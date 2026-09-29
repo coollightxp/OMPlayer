@@ -1,8 +1,26 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'services/player_controller.dart';
 import 'screens/player_screen.dart';
+
+/// 各平台选用观感更清晰、圆润的系统无衬线字体：
+/// Windows 用「Microsoft YaHei UI」（比默认回退的雅黑小字号更清晰），
+/// Linux 用 Noto Sans CJK SC；macOS/iOS/Android 沿用系统默认
+/// （SF Pro / 苹方 / Roboto，本身已经足够圆润）
+String? get _platformFontFamily {
+  if (kIsWeb) return null;
+  switch (defaultTargetPlatform) {
+    case TargetPlatform.windows:
+      return 'Microsoft YaHei UI';
+    case TargetPlatform.linux:
+      return 'Noto Sans CJK SC';
+    default:
+      return null;
+  }
+}
 
 class OMPlayerApp extends StatelessWidget {
   const OMPlayerApp({super.key});
@@ -22,6 +40,8 @@ class OMPlayerApp extends StatelessWidget {
               seedColor: Colors.blueAccent,
               brightness: Brightness.dark,
             ),
+            // 全局统一字体族（含图标以外的所有文字）
+            fontFamily: _platformFontFamily,
           ),
           builder: (context, child) {
             final mq = MediaQuery.of(context);

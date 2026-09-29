@@ -36,6 +36,10 @@ class PlayerSettings {
   /// 单个播放源起播等待秒数：超时后自动切换下一个源（默认 5 秒，5 秒一档）
   final int sourceTimeoutSeconds;
 
+  /// 播放缓冲秒数：网络抖动时的预读缓冲上限（5/10/20/30 秒，默认 5 秒）。
+  /// 由 MDK 后端在启动时应用，修改后重启程序生效
+  final int bufferSeconds;
+
   /// 界面字体缩放（1.0 = 系统默认；4K/8K 大屏可调到 1.5~3.0）
   final double uiScale;
 
@@ -58,6 +62,7 @@ class PlayerSettings {
     this.alwaysOnTop = true,
     this.dlnaEnabled = true,
     this.sourceTimeoutSeconds = 5,
+    this.bufferSeconds = 5,
     this.uiScale = 1.0,
     this.uiScaleAuto = true,
     this.remoteAdminEnabled = true,
@@ -76,6 +81,7 @@ class PlayerSettings {
     bool? alwaysOnTop,
     bool? dlnaEnabled,
     int? sourceTimeoutSeconds,
+    int? bufferSeconds,
     double? uiScale,
     bool? uiScaleAuto,
     bool? remoteAdminEnabled,
@@ -94,6 +100,7 @@ class PlayerSettings {
       dlnaEnabled: dlnaEnabled ?? this.dlnaEnabled,
       sourceTimeoutSeconds:
           sourceTimeoutSeconds ?? this.sourceTimeoutSeconds,
+      bufferSeconds: bufferSeconds ?? this.bufferSeconds,
       uiScale: uiScale ?? this.uiScale,
       uiScaleAuto: uiScaleAuto ?? this.uiScaleAuto,
       remoteAdminEnabled: remoteAdminEnabled ?? this.remoteAdminEnabled,

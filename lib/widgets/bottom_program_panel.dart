@@ -48,16 +48,16 @@ class BottomProgramPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 宽屏（电视/桌面）面板内容向中间收，两侧留出更舒展的边距；
-    // 手机窄屏仍使用较小边距避免内容被挤
+    // 宽屏（电视/桌面）：面板做成居中悬浮卡片，两侧留白、底边抬升；
+    // 手机窄屏仍贴近两侧，避免内容被挤
     final screenW = MediaQuery.of(context).size.width;
-    final hPad = screenW > 900 ? 56.0 : 16.0;
+    final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 10.0);
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
-      left: 0,
-      right: 0,
-      bottom: isVisible ? 0 : -240,
+      left: hPad,
+      right: hPad,
+      bottom: isVisible ? (screenW > 900 ? 16 : 8) : -300,
       child: MouseRegion(
         onEnter: (_) => onHoverEnter?.call(),
         onExit: (_) => onHoverExit?.call(),
@@ -67,20 +67,29 @@ class BottomProgramPanel extends StatelessWidget {
           opacity: isVisible ? 1.0 : 0.0,
           child: Container(
           decoration: BoxDecoration(
+            // 悬浮卡片：深色半透明 + 圆角 + 细边框 + 上方渐隐遮罩衔接视频
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [
-                Colors.transparent,
-                Colors.black.withOpacity(0.72),
-                Colors.black.withOpacity(0.92),
+                Colors.black.withOpacity(0.55),
+                Colors.black.withOpacity(0.85),
               ],
             ),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.45),
+                blurRadius: 24,
+                offset: const Offset(0, 8),
+              ),
+            ],
           ),
           child: SafeArea(
             top: false,
             child: Padding(
-              padding: EdgeInsets.fromLTRB(hPad, 18, hPad - 6, 10),
+              padding: const EdgeInsets.fromLTRB(22, 16, 18, 10),
               child: Consumer<PlayerController>(
                 builder: (context, c, _) => Column(
                   mainAxisSize: MainAxisSize.min,
