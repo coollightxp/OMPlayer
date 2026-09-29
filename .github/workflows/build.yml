@@ -63,6 +63,13 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      # flutter_inappwebview_android 1.1.x 自身 build.gradle 仍引用已被新版
+      # AGP 拒绝的 proguard-android.txt，pub get 后就地替换
+      - name: Patch flutter_inappwebview proguard file
+        run: |
+          find "$HOME/.pub-cache" -path "*flutter_inappwebview_android-*/android/build.gradle" -print0 \
+            | xargs -0 -r sed -i "s/proguard-android\.txt/proguard-android-optimize.txt/g"
+
       - name: Build APK
         run: flutter build apk --release --split-per-abi
 
@@ -202,6 +209,18 @@ jobs:
           $t = $t.Replace($a3, $inject3)
           [System.IO.File]::WriteAllText($f, $t, (New-Object System.Text.UTF8Encoding($false)))
           Get-Content $f | Select-String 'OMPlayer' | ForEach-Object { $_.Line.Trim() }
+
+          # flutter_inappwebview_windows 仍使用 /await + <experimental/coroutine>，
+          # VS2026 (MSVC 14.51) 已将其升为硬错误；在顶层 CMakeLists 的插件
+          # add_subdirectory 之前注入官方逃生宏（目录级定义传播给所有插件）
+          $cm = 'windows/CMakeLists.txt'
+          $ct = [System.IO.File]::ReadAllText($cm)
+          $anchor = 'add_subdirectory(flutter)'
+          if (-not $ct.Contains($anchor)) { throw 'windows CMakeLists anchor not found' }
+          $ct = $ct.Replace($anchor,
+            "add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)`r`n$anchor")
+          [System.IO.File]::WriteAllText($cm, $ct, (New-Object System.Text.UTF8Encoding($false)))
+          'CMake: injected experimental coroutine silence define'
 
       - name: Install dependencies
         run: flutter pub get
