@@ -34,14 +34,17 @@ class OMPlayerApp extends StatelessWidget {
         builder: (context, controller, _) => MaterialApp(
           title: 'OMPlayer',
           debugShowCheckedModeBanner: false,
-          theme: ThemeData.dark(useMaterial3: true).copyWith(
+          // 全局统一字体族须在 ThemeData 构造函数传入（copyWith 无此参数）
+          theme: ThemeData(
+            useMaterial3: true,
+            brightness: Brightness.dark,
+            fontFamily: _platformFontFamily,
+          ).copyWith(
             scaffoldBackgroundColor: Colors.black,
             colorScheme: ColorScheme.fromSeed(
               seedColor: Colors.blueAccent,
               brightness: Brightness.dark,
             ),
-            // 全局统一字体族（含图标以外的所有文字）
-            fontFamily: _platformFontFamily,
           ),
           builder: (context, child) {
             final mq = MediaQuery.of(context);
