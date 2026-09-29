@@ -48,6 +48,9 @@ class DlnaService {
   String _name = '';
   int _port = 0;
   String _ip = '127.0.0.1';
+
+  /// 启动时缓存的本机网卡列表（供按对端子网选择 LOCATION IP 使用）
+  List<NetworkInterface> _ifaces = [];
   DlnaHooks? _hooks;
   String? _currentUri;
   String _currentTitle = '';
@@ -106,6 +109,8 @@ class DlnaService {
       return;
     }
     try {
+      _ifaces = await NetworkInterface.list(
+          type: InternetAddressType.IPv4, includeLoopback: false);
       _ip = await _localIp();
       await _startSsdp();
     } catch (_) {}
@@ -272,7 +277,10 @@ class DlnaService {
   void _respondSearch(InternetAddress addr, int port, String st) {
     final socket = _ssdp;
     if (socket == null) return;
-    final location = _location;
+    // 热点/多网卡环境：请求来自哪张网卡的子网，LOCATION 就用哪张网卡的本机 IP，
+    // 否则手机拿到的地址可能选到另一张网卡（如同时连路由器和手机热点），
+    // 导致设备描述/SOAP 请求不可达而投屏失败
+    final location = 'http://${_ipForPeer(addr.address)}:$_port/device.xml';
     final usnBase = 'uuid:$_uuid';
     void send(String stVal, String usn) {
       final resp = 'HTTP/1.1 200 OK\r\n'
@@ -335,6 +343,29 @@ class DlnaService {
   }
 
   String get _location => 'http://$_ip:$_port/device.xml';
+
+  /// 选择与对端 [peer] 同网段的本机 IPv4（同 /24 优先，其次同 /16），
+  /// 找不到再退回全局最优 IP（_ip）。网卡列表用启动时缓存的 _ifaces
+  String _ipForPeer(String peer) {
+    final pp = peer.split('.');
+    if (pp.length != 4) return _ip;
+    String same16 = '';
+    for (final i in _ifaces) {
+      for (final a in i.addresses) {
+        if (a.isLoopback) continue;
+        final ap = a.address.split('.');
+        if (ap.length != 4) continue;
+        if (ap[0] == pp[0] && ap[1] == pp[1] && ap[2] == pp[2]) {
+          return a.address; // 同 /24：最优
+        }
+        if (ap[0] == pp[0] && ap[1] == pp[1] && same16.isEmpty) {
+          same16 = a.address;
+        }
+      }
+    }
+    if (same16.isNotEmpty) return same16;
+    return _ip;
+  }
 
   // ==================== HTTP 服务 ====================
 
@@ -633,6 +664,9 @@ class DlnaService {
             hooks.onPlay(_currentUri!, _currentTitle);
           }
           await _soapResponse(req, service, action, '');
+          // 立即推送一次状态事件：抖音等发送端等待首条事件确认连接，
+          // 只等 1.5 秒的延迟推送会被其判定「投屏失败」（实际已在播放）
+          _fireAvtChange();
           // 播放初始化完成后再推一次 PLAYING（初始化需 1 秒左右）
           Timer(const Duration(milliseconds: 1500), _fireAvtChange);
           return;

@@ -168,6 +168,7 @@ jobs:
             '',
             '  // OMPlayer: allow only one running instance',
             '  HANDLE om_mutex = ::CreateMutexW(nullptr, TRUE, kOmSingleInstanceMutex);',
+            '  (void)om_mutex; // hold for process lifetime; silences C4189 under /WX',
             '  if (::GetLastError() == ERROR_ALREADY_EXISTS) {',
             '    HWND existing = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"omplayer");',
             '    if (existing != nullptr) {',

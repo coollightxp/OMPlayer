@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
@@ -311,6 +312,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
 
+                  // 网页频道：内嵌网页控件充满整个窗口（在视频之上，
+                  // OSD/时钟/节目单/EPG/信息面板等浮层之下）。
+                  // 网站自身播放器播放，节目信息直接看网页。
+                  if (controller.webPageActive &&
+                      (controller.currentChannel?.webPageUrl.isNotEmpty ??
+                          false))
+                    Positioned.fill(
+                      child: _WebChannelOverlay(
+                        key: ValueKey(controller.currentChannel!.webPageUrl),
+                        url: controller.currentChannel!.webPageUrl,
+                        title: controller.currentChannel!.name,
+                        onExit: () => controller.exitWebPage(),
+                      ),
+                    ),
+
                   // 切台 OSD（左上角序号/台名/节目名）
                   // 放在手势层与各面板【之下】：面板滑出时盖住它，
                   // 避免 OSD 卡片挡住频道面板顶部的返回按钮
@@ -319,8 +335,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   // 右上角系统时间：在视频画面之上、所有弹出面板之下
                   if (controller.settings.showClock) _buildClock(),
 
-                  // 手势检测层
-                  _buildGestureLayer(controller),
+                  // 手势检测层（网页模式下跳过：全屏手势会拦截网页点击，
+                  // 面板改由边缘触发区与网页上的关闭/切换按钮控制）
+                  if (!controller.webPageActive) _buildGestureLayer(controller),
 
                   // 左右边缘点击区（移动端；桌面端用 hover 自动弹出）
                   if (!controller.isDesktop) _buildEdgeTapZones(),
@@ -983,5 +1000,103 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _ensureShortcutFocus();
       }
     });
+  }
+}
+
+/// 内嵌网页频道控件：充满整个窗口，由网站自身播放器播放
+/// （如央视频网页版）。信息面板/节目单/EPG 抽屉由 PlayerScreen
+/// 叠加在本控件之上；左上角提供关闭按钮返回普通播放界面。
+class _WebChannelOverlay extends StatefulWidget {
+  final String url;
+  final String title;
+  final VoidCallback onExit;
+
+  const _WebChannelOverlay({
+    super.key,
+    required this.url,
+    required this.title,
+    required this.onExit,
+  });
+
+  @override
+  State<_WebChannelOverlay> createState() => _WebChannelOverlayState();
+}
+
+class _WebChannelOverlayState extends State<_WebChannelOverlay> {
+  bool _loaded = false;
+  String? _error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        InAppWebView(
+          initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+          initialSettings: InAppWebViewSettings(
+            // 网页播放器（如央视频）自动开播，无需用户先点击网页
+            mediaPlaybackRequiresUserGesture: false,
+            supportZoom: false,
+            transparentBackground: false,
+          ),
+          onLoadStop: (_, __) {
+            if (mounted) setState(() => _loaded = true);
+          },
+          onReceivedError: (controller, request, error) {
+            // 主文档加载失败才提示（子资源失败不影响播放）
+            if (request.isForMainFrame ?? false) {
+              if (mounted) {
+                setState(() => _error = error.description);
+              }
+            }
+          },
+        ),
+        if (!_loaded && _error == null)
+          const Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 12),
+                Text('正在打开网页频道...',
+                    style: TextStyle(color: Colors.white70)),
+              ],
+            ),
+          ),
+        if (_error != null)
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.link_off, color: Colors.white54, size: 40),
+                const SizedBox(height: 8),
+                Text('网页打开失败：$_error',
+                    style: const TextStyle(color: Colors.white70)),
+              ],
+            ),
+          ),
+        // 左上角关闭按钮：浮在网页之上，返回普通播放界面
+        Positioned(
+          top: 12,
+          left: 12,
+          child: Material(
+            color: Colors.black.withOpacity(0.55),
+            shape: const CircleBorder(),
+            clipBehavior: Clip.antiAlias,
+            child: Tooltip(
+              message: '关闭网页频道',
+              child: InkWell(
+                onTap: widget.onExit,
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child:
+                      Icon(Icons.close, color: Colors.white, size: 22),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }

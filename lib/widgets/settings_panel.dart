@@ -9,6 +9,51 @@ import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../services/player_controller.dart';
 
+/// Windows 输入框 IME 保险：在两个输入框之间切换焦点后，Windows 引擎的
+/// 输入法（TSF）连接偶发失效——表现为无法键入字符、程序对按键不响应
+/// （系统相关，部分系统没有；其他 Flutter 程序同样存在）。
+/// 点击时先卸载焦点再延时补挂，强制重建 IME 连接，规避该引擎缺陷。
+class _ImeSafeTextField extends StatefulWidget {
+  final TextEditingController controller;
+  final InputDecoration? decoration;
+  final TextStyle? style;
+
+  const _ImeSafeTextField({
+    required this.controller,
+    this.decoration,
+    this.style,
+  });
+
+  @override
+  State<_ImeSafeTextField> createState() => _ImeSafeTextFieldState();
+}
+
+class _ImeSafeTextFieldState extends State<_ImeSafeTextField> {
+  late final FocusNode _focus = FocusNode();
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: widget.controller,
+      focusNode: _focus,
+      style: widget.style,
+      decoration: widget.decoration,
+      onTap: () {
+        _focus.unfocus();
+        Future.delayed(const Duration(milliseconds: 30), () {
+          if (mounted && !_focus.hasFocus) _focus.requestFocus();
+        });
+      },
+    );
+  }
+}
+
 /// 设置面板 - 从底部弹出的设置菜单
 /// 包含三个标签页：播放列表、EPG、播放器设置
 class SettingsPanel extends StatefulWidget {
@@ -226,7 +271,7 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                   onSelectionChanged: (s) => setDialog(() => type = s.first),
                 ),
                 const SizedBox(height: 10),
-                TextField(
+                _ImeSafeTextField(
                   controller: nameCtl,
                   style: const TextStyle(color: Colors.white),
                   decoration: _inputDecoration('列表名称'),
@@ -235,7 +280,7 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                 Row(
                   children: [
                     Expanded(
-                      child: TextField(
+                      child: _ImeSafeTextField(
                         controller: urlCtl,
                         style: const TextStyle(color: Colors.white),
                         decoration: _inputDecoration(
@@ -327,7 +372,7 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  TextField(
+                  _ImeSafeTextField(
                     controller: _nameController,
                     style: const TextStyle(color: Colors.white),
                     decoration: _inputDecoration('列表名称（如：我的电视）'),
@@ -336,7 +381,7 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                   Row(
                     children: [
                       Expanded(
-                        child: TextField(
+                        child: _ImeSafeTextField(
                           controller: _urlController,
                           style: const TextStyle(color: Colors.white),
                           decoration: _inputDecoration(
@@ -508,13 +553,13 @@ class _EpgTabState extends State<_EpgTab> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
+            _ImeSafeTextField(
               controller: nameCtl,
               style: const TextStyle(color: Colors.white),
               decoration: _inputDecoration('EPG 名称'),
             ),
             const SizedBox(height: 8),
-            TextField(
+            _ImeSafeTextField(
               controller: urlCtl,
               style: const TextStyle(color: Colors.white),
               decoration: _inputDecoration('XMLTV EPG 地址 URL'),
@@ -565,13 +610,13 @@ class _EpgTabState extends State<_EpgTab> {
               padding: const EdgeInsets.all(12),
               child: Column(
                 children: [
-                  TextField(
+                  _ImeSafeTextField(
                     controller: _nameController,
                     style: const TextStyle(color: Colors.white),
                     decoration: _inputDecoration('EPG 名称（如：央视节目单）'),
                   ),
                   const SizedBox(height: 8),
-                  TextField(
+                  _ImeSafeTextField(
                     controller: _urlController,
                     style: const TextStyle(color: Colors.white),
                     decoration:

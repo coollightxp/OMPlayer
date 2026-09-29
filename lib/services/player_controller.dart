@@ -24,7 +24,7 @@ import 'native_capture.dart';
 import 'remote_admin_service.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
-import 'web_channel_opener.dart';
+import 'web_launch.dart';
 
 /// 播放器状态
 enum PlayerState { idle, loading, playing, paused, error, ended }
@@ -664,27 +664,44 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放指定频道（从第一个源开始，失败自动尝试下一个源）
   Future<void> playChannel(Channel channel) async {
-    // 网页频道（webview:// 包装的网站）：停掉视频，打开内置网页
-    // 由网站自身的播放器播放
+    // 网页频道（webview:// 包装的网站）：停掉视频，切到内嵌网页控件，
+    // 由网站自身的播放器播放；节目单/信息面板浮层继续显示在其上
     if (channel.isWebPage) {
       await _openWebPageChannel(channel);
       return;
     }
+    _webPageActive = false;
     _currentChannel = channel;
     _sourceIndex = 0;
     await _playCurrentSource();
   }
+
+  /// 是否处于网页频道内嵌模式（PlayerScreen 据此显示内嵌网页控件）
+  bool _webPageActive = false;
+  bool get webPageActive => _webPageActive;
 
   /// 打开网页频道（TVBox webview:// 链接，如央视网网站播放器）
   Future<void> _openWebPageChannel(Channel channel) async {
     await _disposeVideoController();
     _currentChannel = channel;
     _sourceIndex = 0;
-    // 网页由独立 WebView2 窗口播放，播放器保持空闲，关闭网页窗口后返回
     _state = PlayerState.idle;
     await _saveLastChannel();
+    // Windows/Android/macOS/Web：使用窗体内嵌网页控件（信息/节目单/EPG
+    // 浮层叠加其上，原视频控件隐藏）；Linux 无内嵌实现，回退系统浏览器
+    if (await supportsEmbeddedWeb()) {
+      _webPageActive = true;
+      notifyListeners();
+    } else {
+      await launchExternal(channel.webPageUrl);
+    }
+  }
+
+  /// 退出网页频道内嵌模式（隐藏网页控件，回到普通播放界面）
+  void exitWebPage() {
+    if (!_webPageActive) return;
+    _webPageActive = false;
     notifyListeners();
-    await openWebChannel(channel.webPageUrl, channel.name);
   }
 
   /// 切换到上一个播放源
