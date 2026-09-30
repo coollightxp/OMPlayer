@@ -10,7 +10,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../services/player_controller.dart';
 import '../services/web_launch.dart';
-import '../services/web_runtime.dart';
+import '../services/win_hotkeys.dart';
 import '../services/window_drag.dart';
 import '../widgets/bottom_program_panel.dart';
 import '../widgets/gesture_indicator_overlay.dart';
@@ -84,6 +84,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   // 导致数字键/快捷键失灵，需要在交互后把焦点抢回来。
   final FocusNode _rootFocusNode = FocusNode();
 
+  /// Windows 低级键盘钩子桥：WebView2 吞焦点时数字选台仍可用
+  final WinHotkeys _winHotkeys = WinHotkeys();
+
   @override
   void initState() {
     super.initState();
@@ -91,6 +94,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     // 全局硬件键盘监听：不依赖 Flutter 焦点，任何控件持有焦点、面板
     // 关闭后都能收到按键；中文输入法状态下硬件 KeyDown 照样送达。
     HardwareKeyboard.instance.addHandler(_onGlobalKeyEvent);
+    // Windows：低级键盘钩子转发数字键（网页 HWND 吞焦点时也有效）
+    _winHotkeys.setDigitHandler(_onNumberKey);
     // 桌面端拦截窗口关闭：网页频道的 WebView2 若随引擎一起析构，
     // 部分系统会在退出瞬间抛 0xc000000d。先让网页控件销毁再关窗。
     if (!kIsWeb &&
@@ -300,6 +305,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onGlobalKeyEvent);
+    _winHotkeys.setDigitHandler(null);
     if (!kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.windows ||
             defaultTargetPlatform == TargetPlatform.linux ||
@@ -565,6 +571,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     isOpen: _settingsOpen,
                     onClose: () {
                       setState(() => _settingsOpen = false);
+                      // 关闭后恢复低级钩子对数字键的选台拦截
+                      _winHotkeys.setCapture(true);
                       WidgetsBinding.instance.addPostFrameCallback(
                           (_) => _ensureShortcutFocus());
                     },
@@ -1000,6 +1008,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       // 打开设置时隐藏悬停标题栏
       if (_settingsOpen) _topBarVisible = false;
     });
+    // 设置面板有输入框：打开时放行数字键给输入框，关闭后恢复选台拦截
+    _winHotkeys.setCapture(!_settingsOpen);
   }
 
   /// 桌面端快捷键：空格 播放/暂停，F/F11 全屏，M 静音，
@@ -1231,6 +1241,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   bool _loaded = false;
   String? _error;
   bool _runtimeMissing = false;
+  /// WebView 是否报告过任何加载进度（有进度即证明 WebView2 运行时正常）
+  bool _sawProgress = false;
   InAppWebViewController? _webController;
 
   /// 后台缓冲期间每秒探测一次页面 <video> 的真实起播状态
@@ -1240,6 +1252,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 不能永远黑屏把用户卡死——8 秒后强制把网页推到前台，
   /// JS 会继续尝试自动播放，用户也可手动点击页面播放器
   Timer? _forceForegroundTimer;
+
+  /// 15 秒内 WebView 毫无加载进度：判定为缺少 WebView2 运行时
+  Timer? _runtimeTimer;
 
   /// CSS：把页面里的 <video> 伪全屏铺满窗口（网站不配合
   /// requestFullscreen 时的兜底），黑底、禁滚动、禁止拖选文字
@@ -1355,26 +1370,54 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return out;
   }
   var clickCooldown = 0;
-  function clickBigPlayButton(){
-    // 只点「暂停时才会显示的大播放按钮」类控件；绝不能点
-    // .vjs-play-control 这类常显切换钮——play() 刚生效又被点成暂停，
-    // 就是「有时还要再点一下才播」的根因
-    var sels = ['.vjs-big-play-button','.xgplayer-start-button',
-      '.xgplayer-start', '.prism-player .vjs-big-play-button',
-      '.tvplayer-play', '.player-start-btn',
-      '[class*="big-play"]','[class*="bigPlay"]','[class*="start-button"]'];
+  var videoClickCooldown = 0;
+  // 在文档（含同源 iframe）内收集匹配选择器的可见元素
+  function collectAll(root, sels, out){
     for (var s=0;s<sels.length;s++){
-      var btns = document.querySelectorAll(sels[s]);
-      for (var i=0;i<btns.length;i++){
-        var b = btns[i];
-        var r = b.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
-          try { b.click(); } catch(e) {}
-          clickCooldown = 3; // 点完后冷却几拍，让播放器自己起播
-          return;
-        }
+      try {
+        var found = root.querySelectorAll(sels[s]);
+        for (var i=0;i<found.length;i++) out.push(found[i]);
+      } catch(e){}
+    }
+    var frames = root.querySelectorAll('iframe');
+    for (var i=0;i<frames.length;i++){
+      try {
+        var d = frames[i].contentDocument;
+        if (d) collectAll(d, sels, out);
+      } catch(e){}
+    }
+  }
+  function clickBigPlayButton(){
+    // 只点「暂停时才覆盖在画面上的大播放钮/封面」；绝不能点
+    // .vjs-play-control 这类底部常显切换钮——play() 刚生效又被点成暂停，
+    // 就是「有时还要再点一下才播」的根因。央视/地方台常用播放器都覆盖。
+    var sels = [
+      '.vjs-big-play-button','.vjs-poster',
+      '.xgplayer-start','.xgplayer-start-button','.xgplayer-poster',
+      '.prism-player .vjs-big-play-button','.vcp-bigplay',
+      '.dplayer-play-icon','.art-play-btn','.art-video-poster',
+      '.tvplayer-play','.player-start-btn','.tv-player-start',
+      '[class*="big-play"]','[class*="bigPlay"]','[class*="start-button"]',
+      '[class*="player-start"]','[class*="cover-play"]','[class*="video-cover"]',
+      '[class*="poster"]'
+    ];
+    var els = [];
+    collectAll(document, sels, els);
+    for (var i=0;i<els.length;i++){
+      var b = els[i];
+      // 排除底部控制条里的常显小切换钮
+      var cls = (b.className && b.className.toString) ? b.className.toString() : '';
+      if (/control|bar|small/i.test(cls)) continue;
+      var r;
+      try { r = b.getBoundingClientRect(); } catch(e) { continue; }
+      // 大播放钮/封面都有一定面积；过滤隐藏元素和控制条小图标
+      if (r.width >= 48 && r.height >= 48) {
+        try { b.click(); } catch(e) {}
+        clickCooldown = 3; // 点完冷却几拍，让播放器自己起播
+        return true;
       }
     }
+    return false;
   }
   var pausedTicks = 0;
   function bindMedia(v){
@@ -1404,12 +1447,23 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         fire('omPlaying');
       }
     }
-    // 连续 3 拍仍 paused（纯 play() 无效）才代点大播放按钮，
+    // 连续 2 拍仍 paused（纯 play() 无效）即代点大播放按钮，
     // 避免与 play() 同一拍双动作把播放又切回暂停
     if (anyPaused) {
       pausedTicks++;
       if (clickCooldown > 0) { clickCooldown--; }
-      else if (pausedTicks >= 3) { clickBigPlayButton(); }
+      else if (pausedTicks >= 2) {
+        if (clickBigPlayButton()) return;
+      }
+      // 找不到任何大播放钮：连续 6 拍仍暂停，直接对视频区点一下
+      // （很多自研播放器点画面=播放），之后冷却避免反复 toggle
+      if (videoClickCooldown > 0) { videoClickCooldown--; }
+      else if (pausedTicks >= 6) {
+        for (var j=0;j<vs.length;j++){
+          try { if (vs[j].paused) vs[j].click(); } catch(e){}
+        }
+        videoClickCooldown = 5;
+      }
     } else {
       pausedTicks = 0;
     }
@@ -1456,21 +1510,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
       if (mounted && !widget.foreground) widget.onForeground();
     });
-    _checkRuntime();
-  }
-
-  /// 检测 WebView2 运行时（部分精简版/家庭版 Windows 未预装）。
-  /// 6.1.5 没有跨平台的版本查询 API（仅有 Android 专用接口），
-  /// Windows 侧改查注册表；检测不到时给出下载提示，而不是永远转圈。
-  Future<void> _checkRuntime() async {
-    try {
-      final ok = await detectEmbeddedWebRuntime();
-      if (mounted && !ok) {
+    // 运行时缺失判定（乐观策略）：注册表/版本查询在不同系统上都不可靠
+    // （实测已装 WebView2 的家庭版也会误报）。只要 WebView 能报告任何
+    // 加载进度，就证明运行时正常；15 秒内毫无进展才提示安装。
+    _runtimeTimer = Timer(const Duration(seconds: 15), () {
+      if (mounted && !_sawProgress && _error == null) {
         setState(() => _runtimeMissing = true);
       }
-    } catch (_) {
-      // 检测异常时不阻塞使用（多数机器都已预装运行时）
-    }
+    });
   }
 
   @override
@@ -1478,6 +1525,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     widget.onBridgeDetached();
     _probeTimer?.cancel();
     _forceForegroundTimer?.cancel();
+    _runtimeTimer?.cancel();
     super.dispose();
   }
 
@@ -1568,10 +1616,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             );
           },
           onLoadStop: (controller, _) async {
+            _sawProgress = true;
             if (mounted) setState(() => _loaded = true);
             await _inject();
           },
           onProgressChanged: (controller, progress) {
+            // 能收到任何进度都说明 WebView2 运行时工作正常
+            if (progress > 0) _sawProgress = true;
             // 部分页面 onLoadStop 触发较晚，加载完成即收起等待层
             if (progress >= 100 && mounted && !_loaded) {
               setState(() => _loaded = true);

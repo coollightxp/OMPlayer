@@ -145,13 +145,19 @@ jobs:
         run: flutter create . --platforms=windows --project-name omplayer
 
       # 仓库不提交 windows/ 目录（由 flutter create 现场生成），
-      # 因此把两项 runner 级补丁注入生成的 main.cpp：
+      # 因此把 runner 级补丁注入生成的模板文件：
+      # main.cpp:
       # 1) 单实例：命名互斥体，重复启动时激活已有窗口后退出
       # 2) NumLock 一次性恢复：Flutter 引擎初始化会把 NumLock 同步为
       #    关闭；启动前记住物理状态，3 秒后在 UI 线程恢复一次即永久
       #    解除定时器。绝不做持续守护——持续合成翻转会污染全局
       #    NumLock，导致切换到其它程序后小键盘也是关的
-      - name: Patch Windows runner (single instance + one-shot NumLock restore)
+      # 3) WebView2 自动播放浏览器参数（无用户手势也可带声音起播）
+      # flutter_window.cpp:
+      # 4) WH_KEYBOARD_LL 低级键盘钩子 + MethodChannel：WebView2 获得
+      #    焦点后吞掉全部按键，Flutter 收不到数字键；钩子在本进程前台
+      #    时把 0-9/小键盘数字转发给 Dart 选台（设置面板打开时放行）
+      - name: Patch Windows runner (single instance + NumLock + WebView2 autoplay + digit hotkey hook)
         shell: pwsh
         run: |
           $f = 'windows/runner/main.cpp'
@@ -174,6 +180,11 @@ jobs:
             'int APIENTRY wWinMain('
           ) -join "`r`n"
           $inject2 = @(
+            '  // OMPlayer: 允许内嵌 WebView2 无用户手势自动播放（带声音）。',
+            '  // 必须在任何 WebView2 环境创建前设置，进程级生效',
+            '  ::SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",',
+            '      L"--autoplay-policy=no-user-gesture-required");',
+            '',
             '  ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);',
             '',
             '  // OMPlayer: allow only one running instance',
@@ -209,6 +220,99 @@ jobs:
           $t = $t.Replace($a3, $inject3)
           [System.IO.File]::WriteAllText($f, $t, (New-Object System.Text.UTF8Encoding($false)))
           Get-Content $f | Select-String 'OMPlayer' | ForEach-Object { $_.Line.Trim() }
+
+          # ===== flutter_window.cpp：数字键低级键盘钩子 + MethodChannel =====
+          $fw = 'windows/runner/flutter_window.cpp'
+          $wt = [System.IO.File]::ReadAllText($fw)
+          $wIncAnchor = '#include "flutter/generated_plugin_registrant.h"'
+          $wRegAnchor = 'RegisterPlugins(flutter_controller_->engine());'
+          if (-not $wt.Contains($wIncAnchor) -or -not $wt.Contains($wRegAnchor)) {
+            throw 'flutter_window.cpp anchor not found, Flutter template may have changed'
+          }
+          $wInc = @(
+            '#include "flutter/generated_plugin_registrant.h"',
+            '// ===== OMPlayer injected: low-level digit hotkeys =====',
+            '// WebView2 is a separate HWND: once it has keyboard focus Flutter',
+            '// never receives WM_KEYDOWN, so digit zapping (top row and numpad)',
+            '// dies. A WH_KEYBOARD_LL hook forwards digit keys to Dart while this',
+            '// process is foreground, and swallows the message.',
+            '#include <windows.h>',
+            '#include <flutter/binary_messenger_impl.h>',
+            '#include <flutter/encodable_value.h>',
+            '#include <flutter/method_channel.h>',
+            '#include <flutter/method_result.h>',
+            '#include <flutter/standard_method_codec.h>',
+            '#include <cstdint>',
+            '#include <memory>',
+            'namespace {',
+            'std::unique_ptr<flutter::BinaryMessengerImpl> g_om_messenger;',
+            'std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>',
+            '    g_om_hotkey_channel;',
+            '// TRUE = intercept digits for zapping; Dart sets FALSE while a text',
+            '// field (settings panel) is open.',
+            'volatile BOOL g_om_capture_digits = TRUE;',
+            'LRESULT CALLBACK OMLowLevelKeyboardProc(int n_code, WPARAM w_param,',
+            '                                         LPARAM l_param) {',
+            '  if (n_code == HC_ACTION &&',
+            '      (w_param == WM_KEYDOWN || w_param == WM_SYSKEYDOWN)) {',
+            '    const KBDLLHOOKSTRUCT* kb =',
+            '        reinterpret_cast<const KBDLLHOOKSTRUCT*>(l_param);',
+            '    int digit = -1;',
+            '    if (kb->vkCode >= 0x30 && kb->vkCode <= 0x39) {',
+            '      digit = static_cast<int>(kb->vkCode - 0x30);',
+            '    } else if (kb->vkCode >= VK_NUMPAD0 && kb->vkCode <= VK_NUMPAD9) {',
+            '      digit = static_cast<int>(kb->vkCode - VK_NUMPAD0);',
+            '    }',
+            '    if (digit >= 0 && g_om_capture_digits && g_om_hotkey_channel) {',
+            '      const bool has_modifier =',
+            '          (::GetKeyState(VK_SHIFT) & 0x8000) != 0 ||',
+            '          (::GetKeyState(VK_CONTROL) & 0x8000) != 0 ||',
+            '          (::GetKeyState(VK_MENU) & 0x8000) != 0;',
+            '      DWORD foreground_pid = 0;',
+            '      ::GetWindowThreadProcessId(::GetForegroundWindow(), &foreground_pid);',
+            '      if (!has_modifier && foreground_pid == ::GetCurrentProcessId()) {',
+            '        g_om_hotkey_channel->InvokeMethod(',
+            '            "digit",',
+            '            std::make_unique<flutter::EncodableValue>(',
+            '                static_cast<int32_t>(digit)));',
+            '        return 1;  // swallow: do not deliver to Flutter/WebView',
+            '      }',
+            '    }',
+            '  }',
+            '  return ::CallNextHookEx(nullptr, n_code, w_param, l_param);',
+            '}',
+            '}  // namespace',
+            '// ===== end injected code ====='
+          ) -join "`r`n"
+          $wReg = @(
+            'RegisterPlugins(flutter_controller_->engine());',
+            '  // OMPlayer: digit hotkey channel (Dart side: omplayer/win_hotkeys)',
+            '  g_om_messenger = std::make_unique<flutter::BinaryMessengerImpl>(',
+            '      flutter_controller_->engine()->messenger());',
+            '  g_om_hotkey_channel =',
+            '      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(',
+            '          g_om_messenger.get(), "omplayer/win_hotkeys",',
+            '          &flutter::StandardMethodCodec::GetInstance());',
+            '  g_om_hotkey_channel->SetMethodCallHandler(',
+            '      [](const flutter::MethodCall<flutter::EncodableValue>& call,',
+            '         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>',
+            '             result) {',
+            '        if (call.method_name() == "setCapture") {',
+            '          const flutter::EncodableValue* args = call.arguments();',
+            '          if (args != nullptr && std::holds_alternative<bool>(*args)) {',
+            '            g_om_capture_digits = std::get<bool>(*args) ? TRUE : FALSE;',
+            '          }',
+            '          result->Success();',
+            '        } else {',
+            '          result->NotImplemented();',
+            '        }',
+            '      });',
+            '  ::SetWindowsHookExW(WH_KEYBOARD_LL, &OMLowLevelKeyboardProc,',
+            '                      ::GetModuleHandleW(nullptr), 0);'
+          ) -join "`r`n"
+          $wt = $wt.Replace($wIncAnchor, $wInc).Replace($wRegAnchor, $wReg)
+          [System.IO.File]::WriteAllText($fw, $wt, (New-Object System.Text.UTF8Encoding($false)))
+          'flutter_window.cpp: injected digit hotkey WH_KEYBOARD_LL hook'
 
           # flutter_inappwebview_windows 仍使用 /await + <experimental/coroutine>，
           # VS2026 (MSVC 14.51) 已将其升为硬错误；在顶层 CMakeLists 的插件
