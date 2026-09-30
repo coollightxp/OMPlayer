@@ -20,6 +20,7 @@ import '../models/reservation.dart';
 import 'auto_launch.dart';
 import 'cast_log.dart';
 import 'dlna_service.dart';
+import 'win_hotkeys.dart';
 import 'fvp_register.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
@@ -731,7 +732,8 @@ class PlayerController extends ChangeNotifier {
     try {
       if (anyPlaying) { v.pause(); }
       else {
-        v.muted = false; v.volume = 1;
+        // 只解除静音，音量尊重用户在 App 内的设置（不再强制拉满）
+        v.muted = false;
         var p = v.play(); if (p && p.catch) p.catch(function(){});
       }
     } catch(e) {}
@@ -748,6 +750,10 @@ class PlayerController extends ChangeNotifier {
     _webEval = eval;
     _webScreenshot = screenshot;
     _webPlaying = true;
+    // 网页前台播放时鼠标静止 3 秒隐藏光标（原生实现，CSS 管不到跨域 iframe）
+    WinHotkeys().setCursorHide(true);
+    // 把当前音量同步给页面 video（kick 起播锁定后不再改写音量）
+    _applyWebVolume();
   }
 
   /// 注销网页控制桥（WebView 销毁前）
@@ -755,6 +761,7 @@ class PlayerController extends ChangeNotifier {
     _webEval = null;
     _webScreenshot = null;
     _webPlaying = false;
+    WinHotkeys().setCursorHide(false);
   }
 
   /// 网页内播放/暂停状态回传
@@ -768,6 +775,9 @@ class PlayerController extends ChangeNotifier {
   void setWebForeground(bool value) {
     if (_webPageForeground == value) return;
     _webPageForeground = value;
+    // 起播成功：把 App 音量写入页面 video（attachWebBridge 时页面
+    // 可能还没有 video 元素，这里才是真正生效的时机）
+    if (value) _applyWebVolume();
     notifyListeners();
   }
 
@@ -802,6 +812,7 @@ class PlayerController extends ChangeNotifier {
     _resetWebRecording();
     _webPageActive = false;
     _webPageForeground = false;
+    WinHotkeys().setCursorHide(false);
     notifyListeners();
   }
 
@@ -1082,10 +1093,30 @@ class PlayerController extends ChangeNotifier {
     _volume = value.clamp(0.0, 1.0);
     // 音量被外部调大时自动解除静音标记
     if (_volume > 0.01) _isMuted = false;
-    try {
-      await VolumeController.instance.setVolume(_volume);
-    } catch (_) {}
+    if (_webPageActive) {
+      // 网页频道：只写页面 video 音量。系统音量与 WebView2 子进程
+      // 音频叠加会造成双重衰减；且不动系统音量，不影响其它程序
+      _applyWebVolume();
+    } else {
+      try {
+        await VolumeController.instance.setVolume(_volume);
+      } catch (_) {}
+    }
     notifyListeners();
+  }
+
+  /// 把当前音量/静音状态写入页面内所有 video（递归同源 iframe）
+  void _applyWebVolume() {
+    final eval = _webEval;
+    if (eval == null) return;
+    final v = _volume.toStringAsFixed(3);
+    final m = _volume <= 0.01 ? 'true' : 'false';
+    eval('(function(){function av(root){var out=Array.prototype.slice.call('
+        'root.querySelectorAll("video"));var f=root.querySelectorAll("iframe");'
+        'for(var i=0;i<f.length;i++){try{var d=f[i].contentDocument;'
+        'if(d)out=out.concat(av(d));}catch(e){}}return out;}'
+        'var vs=av(document);for(var i=0;i<vs.length;i++){'
+        'try{vs[i].volume=$v;vs[i].muted=$m;}catch(e){}}})();');
   }
 
   /// 静音/恢复（M 键）

@@ -94,8 +94,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     // 全局硬件键盘监听：不依赖 Flutter 焦点，任何控件持有焦点、面板
     // 关闭后都能收到按键；中文输入法状态下硬件 KeyDown 照样送达。
     HardwareKeyboard.instance.addHandler(_onGlobalKeyEvent);
-    // Windows：低级键盘钩子转发数字键（网页 HWND 吞焦点时也有效）
+    // Windows：低级键盘钩子转发数字键与动作键（网页 HWND 吞焦点时也有效）
     _winHotkeys.setDigitHandler(_onNumberKey);
+    _winHotkeys.setActionHandler(_onNativeAction);
     // 桌面端拦截窗口关闭：网页频道的 WebView2 若随引擎一起析构，
     // 部分系统会在退出瞬间抛 0xc000000d。先让网页控件销毁再关窗。
     if (!kIsWeb &&
@@ -306,6 +307,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onGlobalKeyEvent);
     _winHotkeys.setDigitHandler(null);
+    _winHotkeys.setActionHandler(null);
     if (!kIsWeb &&
         (defaultTargetPlatform == TargetPlatform.windows ||
             defaultTargetPlatform == TargetPlatform.linux ||
@@ -433,8 +435,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                             : const SizedBox.shrink()),
                   ),
 
-                  // 桌面端亮度调节遮罩：仅普通视频层生效，避免给网页蒙灰
-                  if (controller.isDesktop && !controller.webPageActive)
+                  // 桌面端亮度调节遮罩：普通/网页播放统一生效
+                  //（Flutter 遮罩盖在网页之上；网页截图走 WebView 自身
+                  // 捕获，不含此遮罩，与普通模式截图原始帧行为一致）
+                  if (controller.isDesktop)
                     Positioned.fill(
                       child: IgnorePointer(
                         child: Container(
@@ -1084,6 +1088,39 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
   }
 
+  /// 原生钩子转发的动作键（网页持有焦点时 HardwareKeyboard 收不到，
+  /// 由 WH_KEYBOARD_LL 经 omplayer/win_hotkeys 通道送达）
+  void _onNativeAction(String action) {
+    if (!mounted || _settingsOpen) return;
+    final controller = context.read<PlayerController>();
+    switch (action) {
+      case 'space':
+        controller.togglePlayPause();
+      case 'left':
+        _onArrow('prevSource');
+      case 'right':
+        _onArrow('nextSource');
+      case 'up':
+        _onArrow('prevChannel');
+      case 'down':
+        _onArrow('nextChannel');
+      case 'esc':
+        controller.exitFullscreenIfNeeded();
+      case 'm':
+        _onShortcut('mute');
+      case 'f':
+        _onShortcut('fullscreen');
+      case 'r':
+        _onShortcut('record');
+      case 'c':
+        _onShortcut('channels');
+      case 'e':
+        _onShortcut('epg');
+      case 's':
+        _onShortcut('settings');
+    }
+  }
+
   Future<void> _takeScreenshot() async {
     final controller = context.read<PlayerController>();
     final path = await controller.takeScreenshot();
@@ -1478,6 +1515,25 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return false;
   }
   var pausedTicks = 0;
+  var playedTicks = 0;
+  // 已稳定起播后锁定：不再自动 play/代点，用户手动暂停不会被拉起
+  var started = false;
+  var lastUrl = location.href;
+  var noVideoTicks = 0;
+  // reload 会清空 JS 上下文，计数存 sessionStorage（按页面路径分开，
+  // 换频道自动归零，同一页面最多重载 2 次，防无限刷新循环）
+  var reloadKey = '__omRel_' + location.pathname;
+  function getReloads(){
+    try { return parseInt(sessionStorage.getItem(reloadKey) || '0'); }
+    catch(e) { return 0; }
+  }
+  function bumpReloads(){
+    try { sessionStorage.setItem(reloadKey, String(getReloads() + 1)); }
+    catch(e) {}
+  }
+  var reloads = getReloads();
+  var lastCT = -1;
+  var frozenTicks = 0;
   function bindMedia(v){
     if (v.__omMediaBound) return;
     v.__omMediaBound = true;
@@ -1485,18 +1541,46 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     v.addEventListener('pause', function(){ fire('omPlay', 0); });
   }
   function kick(){
+    if (location.href !== lastUrl) {
+      // SPA 换页：重置起播状态，重新自动唤起
+      lastUrl = location.href;
+      started = false; playedTicks = 0; pausedTicks = 0;
+      noVideoTicks = 0; lastCT = -1; frozenTicks = 0;
+      reloadKey = '__omRel_' + location.pathname;
+      reloads = getReloads();
+    }
     var vs = allVideos(document);
+    if (vs.length === 0) {
+      // 长时间没有视频元素：页面可能没正常加载，刷新重试（每页最多 2 次）
+      noVideoTicks++;
+      if (noVideoTicks >= 17 && reloads < 2) {
+        bumpReloads(); reloads = getReloads(); noVideoTicks = 0;
+        try { location.reload(); } catch(e) {}
+      }
+      return;
+    }
+    noVideoTicks = 0;
     var anyPaused = false;
+    var advancing = false;
+    var main = null;
     for (var i=0;i<vs.length;i++){
       var v = vs[i];
       try {
         bindMedia(v);
-        v.muted = false;
-        v.volume = 1;
-        if (v.paused && v.play) {
-          anyPaused = true;
-          var p = v.play();
-          if (p && p.catch) p.catch(function(){});
+        if (!started) {
+          // 起播前保证有声；起播后音量交给 App（网页模式音量由
+          // PlayerController 直接写 video.volume，这里不再每拍覆盖）
+          v.muted = false;
+          if (v.volume <= 0.01) v.volume = 1;
+          if (v.paused && v.play) {
+            anyPaused = true;
+            var p = v.play();
+            if (p && p.catch) p.catch(function(){});
+          }
+        }
+        if (!v.paused && v.readyState >= 2 && v.currentTime > 0) {
+          advancing = true;
+          if (main === null) main = v;
         }
       } catch(e) {}
       if (!window.__omPlayingFired && !v.paused && v.readyState >= 2
@@ -1505,6 +1589,20 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         fire('omPlaying');
       }
     }
+    if (advancing) { playedTicks++; if (playedTicks >= 4) started = true; }
+    else playedTicks = 0;
+    // 起播后卡死看门狗：处于播放态但画面时间约 10 秒不动 → 刷新重载
+    if (started && main !== null) {
+      if (main.currentTime === lastCT) {
+        frozenTicks++;
+        if (frozenTicks >= 14 && reloads < 2) {
+          bumpReloads(); reloads = getReloads(); frozenTicks = 0;
+          try { location.reload(); } catch(e) {}
+        }
+      } else { frozenTicks = 0; lastCT = main.currentTime; }
+    }
+    // 锁定后用户的手动暂停生效，不再自动拉起
+    if (started) return;
     // 连续 2 拍仍 paused（纯 play() 无效）即代点大播放按钮，
     // 避免与 play() 同一拍双动作把播放又切回暂停
     if (anyPaused) {
