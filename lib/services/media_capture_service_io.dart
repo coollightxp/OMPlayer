@@ -55,6 +55,11 @@ class MediaCaptureService {
     return path;
   }
 
+  /// 追加字节到文件末尾（网页录制分块写入）
+  Future<void> appendBytes(String path, Uint8List bytes) async {
+    await File(path).writeAsBytes(bytes, mode: FileMode.append, flush: true);
+  }
+
   /// 将 fvp snapshot 返回的 RGBA 数据编码为 PNG
   Future<Uint8List> rgbaToPng(
       Uint8List rgba, int width, int height) async {

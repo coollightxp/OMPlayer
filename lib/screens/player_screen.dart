@@ -600,6 +600,37 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     label: '音量 ${(controller.volume * 100).round()}%',
                   ),
 
+                  // 录制指示器（网页/原生均显示）
+                  if (controller.isRecording)
+                    Positioned(
+                      top: 48,
+                      left: 16,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Colors.red,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            controller.webPageActive
+                                ? 'REC · ${_formatBytes(controller.webRecordingBytes)}'
+                                : 'REC',
+                            style: const TextStyle(
+                              color: Colors.red,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
                   // 顶部悬停标题栏（桌面端，置于最顶层，
                   // 避免被右上角时钟/切台 OSD 遮挡导致点不到）
                   // 频道抽屉 / EPG / 设置打开时不显示，以免挡住它们
@@ -1068,22 +1099,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   Future<void> _toggleRecording(PlayerController controller) async {
     if (!controller.isDesktop) return;
-    // 网页频道拿不到网站的媒体流，WebView 无法录制
-    if (controller.webPageActive) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('网页频道不支持录制，普通直播频道可用该功能'),
-          duration: Duration(seconds: 2),
-        ),
-      );
-      return;
-    }
     if (controller.isRecording) {
       final path = await controller.stopRecording();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('录制已停止，保存至: ${path ?? "未知"}'),
+            content: Text(path != null
+                ? '录制已停止，保存至: $path'
+                : '录制已停止（未捕获到视频数据）'),
             duration: const Duration(seconds: 3),
           ),
         );
@@ -1094,13 +1117,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(ok
-                ? '开始录制，视频保存到程序所在文件夹的 recordings 子文件夹'
-                : '录制失败'),
+                ? (controller.webPageActive
+                    ? '开始录制网页视频，保存到程序所在文件夹的 recordings 子文件夹'
+                    : '开始录制，视频保存到程序所在文件夹的 recordings 子文件夹')
+                : (controller.lastError ?? '录制失败')),
             duration: const Duration(seconds: 2),
           ),
         );
       }
     }
+  }
+
+  /// 录制指示器的字节数格式化（网页录制显示实时落盘大小）
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '${bytes}B';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)}KB';
+    }
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)}MB';
   }
 
   /// 底部面板 hover 取消隐藏
@@ -1607,6 +1641,25 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
                       args.first.toString() == '1' ||
                           args.first.toString() == '1.0');
                 }
+              },
+            );
+            // 网页录制：MediaRecorder 分块（base64）与结束通知
+            controller.addJavaScriptHandler(
+              handlerName: 'omRecChunk',
+              callback: (args) {
+                if (args.isNotEmpty) {
+                  context
+                      .read<PlayerController>()
+                      .appendWebRecordingChunk(args.first.toString());
+                }
+                return null;
+              },
+            );
+            controller.addJavaScriptHandler(
+              handlerName: 'omRecEnd',
+              callback: (args) {
+                context.read<PlayerController>().finishWebRecording();
+                return null;
               },
             );
             // 注册控制桥：执行 JS（播放/暂停）与网页截图

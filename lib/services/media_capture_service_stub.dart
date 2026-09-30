@@ -11,6 +11,8 @@ class MediaCaptureService {
 
   Future<String> saveBytes(String path, Uint8List bytes) async => path;
 
+  Future<void> appendBytes(String path, Uint8List bytes) async {}
+
   Future<Uint8List> rgbaToPng(
       Uint8List rgba, int width, int height) async {
     throw UnsupportedError('截图仅支持桌面端');

@@ -108,9 +108,13 @@ class PlayerController extends ChangeNotifier {
   String? _lastError;
   bool _isFullscreen = false;
 
-  // 录制状态（fvp 原生录制）
+  // 录制状态（fvp 原生录制 / 网页 MediaRecorder 录制）
   bool _isRecording = false;
   String? _recordPath;
+
+  // 网页录制：MediaRecorder 分块（base64）经 JS bridge 追加写入 .webm
+  int _webRecBytes = 0;
+  Completer<void>? _webRecDone;
 
   // 播放进度定时刷新（进度条/倒计时）
   Timer? _tickTimer;
@@ -126,6 +130,9 @@ class PlayerController extends ChangeNotifier {
   bool get isLoadingEpg => _isLoadingEpg;
   String? get lastError => _lastError;
   bool get isRecording => _isRecording;
+
+  /// 网页录制已落盘字节数（录制指示器显示）
+  int get webRecordingBytes => _webRecBytes;
   bool get isDesktop => !kIsWeb && MediaCaptureService.isDesktop;
   bool get isFullscreen => _isFullscreen;
   bool get isCasting => _isCasting;
@@ -771,6 +778,7 @@ class PlayerController extends ChangeNotifier {
     if (_webPageActive && _currentChannel?.id == channel.id) {
       return;
     }
+    _resetWebRecording();
     await _disposeVideoController();
     _currentChannel = channel;
     _sourceIndex = 0;
@@ -791,9 +799,20 @@ class PlayerController extends ChangeNotifier {
   /// 退出网页频道内嵌模式（隐藏网页控件，回到普通播放界面）
   void exitWebPage() {
     if (!_webPageActive) return;
+    _resetWebRecording();
     _webPageActive = false;
     _webPageForeground = false;
     notifyListeners();
+  }
+
+  /// 换台/退出网页时复位网页录制状态（旧 WebView 销毁后 JS 上下文
+  /// 随之消失，无法再取回末尾分块，已落盘部分保留为可用文件）
+  void _resetWebRecording() {
+    if (!_isRecording || !_webPageActive) return;
+    _isRecording = false;
+    _recordPath = null;
+    _webRecDone = null;
+    _webRecBytes = 0;
   }
 
   /// 切换到上一个播放源
@@ -1586,9 +1605,10 @@ class PlayerController extends ChangeNotifier {
   // ==================== 录制与截图（fvp/MDK 原生，桌面端） ====================
 
   /// 开始录制当前画面到固定文件夹，返回是否成功。
-  /// 网页频道无法录制（WebView2 不开放网页媒体流），直接返回 false。
+  /// 普通频道走 fvp/MDK 原生录制；网页频道用 MediaRecorder 录制
+  /// 播放中的 <video>（captureStream），分块经 JS bridge 落盘为 .webm。
   Future<bool> startRecording() async {
-    if (_webPageActive) return false;
+    if (_webPageActive) return _startWebRecording();
     final vc = _videoController;
     if (_currentChannel == null || vc == null || !vc.value.isInitialized ||
         !isDesktop || _isRecording) {
@@ -1612,6 +1632,7 @@ class PlayerController extends ChangeNotifier {
   /// 停止录制，返回文件路径
   Future<String?> stopRecording() async {
     if (!_isRecording) return null;
+    if (_webPageActive) return _stopWebRecording();
     final vc = _videoController;
     try {
       if (vc != null) fvpRecord(vc, to: null);
@@ -1623,6 +1644,160 @@ class PlayerController extends ChangeNotifier {
     _recordPath = null;
     notifyListeners();
     return path;
+  }
+
+  // ---- 网页频道录制（MediaRecorder） ----
+
+  /// 开始网页录制 JS：捕获正在播放的 video 流并启动 MediaRecorder。
+  /// 分块（base64）经 omRecChunk 回传，结束经 omRecEnd 通知。
+  static const _webRecStartJs = r'''
+(function(){
+  try {
+    if (window.__omRec) return 'busy';
+    function allVideos(root){
+      var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+      var frames = root.querySelectorAll('iframe');
+      for (var i=0;i<frames.length;i++){
+        try { var d = frames[i].contentDocument;
+              if (d) out = out.concat(allVideos(d)); } catch(e) {}
+      }
+      return out;
+    }
+    var vs = allVideos(document);
+    var target = null;
+    for (var i=0;i<vs.length;i++){
+      if (!vs[i].paused && !vs[i].ended && vs[i].readyState >= 2) {
+        target = vs[i]; break;
+      }
+    }
+    if (!target && vs.length > 0) target = vs[0];
+    if (!target) return 'novideo';
+    var capture = target.captureStream || target.mozCaptureStream;
+    if (!capture) return 'nocapture';
+    var stream = capture.call(target);
+    var mime = '';
+    var cands = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+    for (var m=0;m<cands.length;m++){
+      try { if (MediaRecorder.isTypeSupported(cands[m])) { mime = cands[m]; break; } } catch(e){}
+    }
+    var rec = mime ? new MediaRecorder(stream, {mimeType: mime})
+                   : new MediaRecorder(stream);
+    window.__omRec = rec;
+    window.__omRecChain = Promise.resolve();
+    rec.ondataavailable = function(e){
+      if (!e.data || !e.data.size) return;
+      var blob = e.data;
+      window.__omRecChain = window.__omRecChain.then(function(){
+        return new Promise(function(resolve){
+          var fr = new FileReader();
+          fr.onload = function(){
+            try {
+              var s = (fr.result || '').toString();
+              var i = s.indexOf('base64,');
+              if (i >= 0) {
+                window.flutter_inappwebview.callHandler('omRecChunk', s.substring(i+7));
+              }
+            } catch(err) {}
+            resolve();
+          };
+          fr.onerror = function(){ resolve(); };
+          fr.readAsDataURL(blob);
+        });
+      });
+    };
+    rec.start(1000);
+    return 'ok';
+  } catch(e) { return 'err'; }
+})();
+''';
+
+  /// 停止网页录制 JS：停止 MediaRecorder，所有分块回传完成后
+  /// 发 omRecEnd 通知 Dart 收尾。
+  static const _webRecStopJs = r'''
+(function(){
+  try {
+    var rec = window.__omRec;
+    if (!rec) return 'none';
+    window.__omRec = null;
+    rec.onstop = function(){
+      var chain = window.__omRecChain || Promise.resolve();
+      chain.then(function(){
+        try { window.flutter_inappwebview.callHandler('omRecEnd', 1); } catch(e) {}
+      });
+    };
+    rec.stop();
+    return 'ok';
+  } catch(e) {
+    try { window.flutter_inappwebview.callHandler('omRecEnd', 1); } catch(_) {}
+    return 'err';
+  }
+})();
+''';
+
+  /// 网页录制启动（由 startRecording 在网页频道时调用）
+  Future<bool> _startWebRecording() async {
+    final eval = _webEval;
+    if (eval == null || !isDesktop || _isRecording) return false;
+    try {
+      _recordPath = await captureService.buildFilePath(
+          'recordings', _currentChannel?.name ?? 'web', 'webm');
+      _webRecBytes = 0;
+      final r = await eval(_webRecStartJs);
+      if (r?.toString() != 'ok') {
+        _recordPath = null;
+        _lastError = r?.toString() == 'novideo'
+            ? '网页中未找到可录制的视频'
+            : '网页不支持视频录制';
+        return false;
+      }
+      _webRecDone = Completer<void>();
+      _isRecording = true;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _lastError = '网页录制启动失败: $e';
+      _recordPath = null;
+      return false;
+    }
+  }
+
+  /// 网页录制停止：通知网页停止 MediaRecorder，等末尾分块全部落盘
+  Future<String?> _stopWebRecording() async {
+    final eval = _webEval;
+    final done = _webRecDone;
+    try {
+      await eval?.call(_webRecStopJs);
+      if (done != null) {
+        await done.future.timeout(const Duration(seconds: 5),
+            onTimeout: () {});
+      }
+    } catch (_) {}
+    final path = _webRecBytes > 0 ? _recordPath : null;
+    _isRecording = false;
+    _recordPath = null;
+    _webRecDone = null;
+    _webRecBytes = 0;
+    notifyListeners();
+    return path;
+  }
+
+  /// JS bridge 回传的录制分块（base64），追加写入录制文件
+  Future<void> appendWebRecordingChunk(String b64) async {
+    final path = _recordPath;
+    if (!_isRecording || path == null || b64.isEmpty) return;
+    try {
+      final bytes = base64Decode(b64);
+      await captureService.appendBytes(path, bytes);
+      _webRecBytes += bytes.length;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// JS bridge 通知录制流已结束（最后分块已回传）
+  void finishWebRecording() {
+    if (_webRecDone != null && !_webRecDone!.isCompleted) {
+      _webRecDone!.complete();
+    }
   }
 
   /// 截取当前视频帧保存为 PNG（固定文件夹）。
@@ -1774,6 +1949,7 @@ class PlayerController extends ChangeNotifier {
     _tickTimer?.cancel();
     _castRestoreTimer?.cancel();
     _castEndedTimer?.cancel();
+    _resetWebRecording();
     if (_isRecording && _videoController != null) {
       fvpRecord(_videoController!, to: null);
     }
