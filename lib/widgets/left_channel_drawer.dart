@@ -333,15 +333,22 @@ class _ChannelTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // 频道序号（与数字选台一致）
+            // 频道序号（与数字选台一致）。宽度容下 4 位序号，
+            // 强制单行，超长时等比缩小，避免被折成两行
             SizedBox(
-              width: 30,
-              child: Text(
-                number.toString().padLeft(2, '0'),
-                style: TextStyle(
-                  color: isSelected ? Colors.blueAccent : Colors.white38,
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
+              width: 42,
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  number.toString().padLeft(2, '0'),
+                  maxLines: 1,
+                  softWrap: false,
+                  style: TextStyle(
+                    color: isSelected ? Colors.blueAccent : Colors.white38,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),

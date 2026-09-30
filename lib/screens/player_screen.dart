@@ -5,8 +5,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../services/player_controller.dart';
+import '../services/web_launch.dart';
 import '../services/window_drag.dart';
 import '../widgets/bottom_program_panel.dart';
 import '../widgets/gesture_indicator_overlay.dart';
@@ -24,7 +26,7 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   // 面板显隐状态
   bool _leftDrawerOpen = false;
   bool _rightEpgOpen = false;
@@ -87,6 +89,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // 全局硬件键盘监听：不依赖 Flutter 焦点，任何控件持有焦点、面板
     // 关闭后都能收到按键；中文输入法状态下硬件 KeyDown 照样送达。
     HardwareKeyboard.instance.addHandler(_onGlobalKeyEvent);
+    // 桌面端拦截窗口关闭：网页频道的 WebView2 若随引擎一起析构，
+    // 部分系统会在退出瞬间抛 0xc000000d。先让网页控件销毁再关窗。
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.linux ||
+            defaultTargetPlatform == TargetPlatform.macOS)) {
+      windowManager.addListener(this);
+      windowManager.setPreventClose(true);
+    }
+  }
+
+  @override
+  void onWindowClose() async {
+    final c = _controllerRef;
+    try {
+      if (c != null && c.webPageActive) {
+        c.exitWebPage();
+        // 等一帧让 WebView 平台视图完成原生销毁，规避退出崩溃
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+      }
+      await windowManager.setPreventClose(false);
+      await windowManager.destroy();
+    } catch (_) {
+      await windowManager.setPreventClose(false);
+      await windowManager.destroy();
+    }
   }
 
   @override
@@ -167,6 +195,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
         setState(() => _numBuffer = '');
       }
     });
+  }
+
+  /// 网页频道内由 JS 转发来的按键（焦点在 WebView 时 Flutter
+  /// 收不到键盘消息）：d0-d9 数字选台，fullscreen 切换全屏
+  void _onWebKey(String key) {
+    if (_settingsOpen) return;
+    if (key.startsWith('d')) {
+      final n = int.tryParse(key.substring(1));
+      if (n != null) _onNumberKey(n);
+    } else if (key == 'fullscreen') {
+      context.read<PlayerController>().toggleFullscreen();
+    } else if (key == 'exitfullscreen') {
+      context.read<PlayerController>().exitFullscreenIfNeeded();
+    }
   }
 
   // 数字键（主键盘 + 小键盘）
@@ -256,6 +298,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onGlobalKeyEvent);
+    if (!kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.windows ||
+            defaultTargetPlatform == TargetPlatform.linux ||
+            defaultTargetPlatform == TargetPlatform.macOS)) {
+      windowManager.removeListener(this);
+    }
     _cursorHideTimer?.cancel();
     _drawerHideTimer?.cancel();
     _osdTimer?.cancel();
@@ -328,7 +376,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         foreground: controller.webPageForeground,
                         onForeground: () =>
                             controller.setWebForeground(true),
-                        onExit: () => controller.exitWebPage(),
+                        onWebKey: _onWebKey,
+                        onPlayStateChanged: controller.setWebPlaying,
+                        onWebMouseMove: _pokeCursor,
+                        onBridgeAttached: controller.attachWebBridge,
+                        onBridgeDetached: controller.detachWebBridge,
                       ),
                     ),
 
@@ -1004,6 +1056,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _toggleRecording(PlayerController controller) async {
     if (!controller.isDesktop) return;
+    // 网页频道拿不到网站的媒体流，WebView 无法录制
+    if (controller.webPageActive) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('网页频道不支持录制，普通直播频道可用该功能'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
     if (controller.isRecording) {
       final path = await controller.stopRecording();
       if (mounted) {
@@ -1118,7 +1180,7 @@ class _WebDoubleTapFullScreenState extends State<_WebDoubleTapFullScreen> {
 /// （如央视频网页版）。网页先在【后台】加载缓冲（被 PlayerScreen 的
 /// 黑屏占位盖住），JS 探测到视频有声起播后通过 [onForeground] 通知
 /// 父层把网页推到全屏前台；信息面板/节目单/EPG 抽屉由 PlayerScreen
-/// 叠加在本控件之上，前台时左上角提供关闭按钮。
+/// 叠加在本控件之上。退出网页请从左侧频道列表选普通频道。
 class _WebChannelOverlay extends StatefulWidget {
   final String url;
 
@@ -1128,15 +1190,35 @@ class _WebChannelOverlay extends StatefulWidget {
   /// 探测到有声起播，请求父层把网页推到前台
   final VoidCallback onForeground;
 
-  /// 关闭网页频道，恢复普通视频控件
-  final VoidCallback onExit;
+  /// 网页内按键（焦点在 WebView 中时 Flutter 收不到键盘消息，
+  /// 由 JS 转发）：'d0'..'d9' 数字选台，'fullscreen' 全屏切换
+  final ValueChanged<String> onWebKey;
+
+  /// 网页播放/暂停状态变化（底部面板按钮图标）
+  final ValueChanged<bool> onPlayStateChanged;
+
+  /// 网页内鼠标移动（自动隐藏/呼出系统鼠标）
+  final VoidCallback onWebMouseMove;
+
+  /// WebView 创建后注册控制桥（执行 JS / 截图）
+  final void Function({
+    required Future<dynamic> Function(String) eval,
+    required Future<List<int>?> Function() screenshot,
+  }) onBridgeAttached;
+
+  /// WebView 销毁前注销控制桥
+  final VoidCallback onBridgeDetached;
 
   const _WebChannelOverlay({
     super.key,
     required this.url,
     required this.foreground,
     required this.onForeground,
-    required this.onExit,
+    required this.onWebKey,
+    required this.onPlayStateChanged,
+    required this.onWebMouseMove,
+    required this.onBridgeAttached,
+    required this.onBridgeDetached,
   });
 
   @override
@@ -1146,6 +1228,7 @@ class _WebChannelOverlay extends StatefulWidget {
 class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   bool _loaded = false;
   String? _error;
+  bool _runtimeMissing = false;
   InAppWebViewController? _webController;
 
   /// 后台缓冲期间每秒探测一次页面 <video> 的真实起播状态
@@ -1157,7 +1240,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   Timer? _forceForegroundTimer;
 
   /// CSS：把页面里的 <video> 伪全屏铺满窗口（网站不配合
-  /// requestFullscreen 时的兜底），并黑底、禁滚动
+  /// requestFullscreen 时的兜底），黑底、禁滚动、禁止拖选文字
   static const String _cssJs = r'''
 (function(){
   try {
@@ -1166,35 +1249,107 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var s = document.createElement('style');
     s.id = '__om_fullscreen_style';
     s.textContent = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
+      + '*{-webkit-user-select:none!important;user-select:none!important}'
+      + 'input,textarea{-webkit-user-select:text!important;user-select:text!important}'
       + 'video{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
+      + 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}'
       + '#__om_web_layer{position:fixed!important;inset:0!important;background:#000!important;z-index:2147483646!important}';
     (document.head || document.documentElement).appendChild(s);
   } catch(e) {}
 })();
 ''';
 
-  /// 常驻注入：强制解除静音/调大音量/拉起播放，并在首次探测到
-  /// 「有声起播」时通过 handler 通知 Dart。
-  /// 央视频等站点的播放器可能位于同源 iframe 内，需要递归遍历；
-  /// 部分站点不会自动开播，还要代点常见播放器的大播放按钮。
+  /// 常驻注入：强制解除静音/调大音量/拉起播放，探测起播；
+  /// 转发鼠标移动 / 数字键与全屏键 / play-pause 状态到 Dart；
+  /// 屏蔽网页自身双击全屏（由 Flutter 统一处理）。
+  /// 央视频等站点的播放器可能位于同源 iframe 内，需要递归遍历。
   static const String _bootJs = r'''
 (function(){
   if (window.__omBooted) return;
   window.__omBooted = true;
-  // 接管双击：网页自己的双击全屏与 App 窗口全屏冲突，屏蔽网页的
-  // dblclick（捕获阶段），双击全屏由 Flutter 侧统一处理
+  function fire(name, arg){
+    try { window.flutter_inappwebview.callHandler(name, arg); } catch(e) {}
+  }
+  // 网页自己的双击全屏与 App 窗口全屏冲突，屏蔽之
   document.addEventListener('dblclick', function(e){
     e.stopPropagation(); e.preventDefault();
   }, true);
-  function allVideos(root){
-    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+
+  // ===== 鼠标 / 键盘 桥接（含同源 iframe）=====
+  // 鼠标静止 3 秒后在网页内隐藏系统光标（WebView 是独立 HWND，
+  // Flutter 的 MouseRegion 管不到页面上的光标，必须在页面内隐藏）
+  var hideCursorTimer = null;
+  var hookedDocs = [];
+  function setCursorHidden(h){
+    for (var i=0;i<hookedDocs.length;i++){
+      try {
+        if (h) hookedDocs[i].documentElement.classList.add('__om_hide_cursor');
+        else hookedDocs[i].documentElement.classList.remove('__om_hide_cursor');
+      } catch(e){}
+    }
+  }
+  function showCursor(){
+    setCursorHidden(false);
+    if (hideCursorTimer) clearTimeout(hideCursorTimer);
+    hideCursorTimer = setTimeout(function(){ setCursorHidden(true); }, 3000);
+  }
+  var lastMM = 0;
+  function onMouseMove(){
+    var n = Date.now();
+    if (n - lastMM < 300) return;
+    lastMM = n;
+    showCursor();
+    fire('omMouse');
+  }
+  function onKeyDown(e){
+    var t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+        || t.isContentEditable)) return;
+    var k = e.key;
+    if (k >= '0' && k <= '9') {
+      fire('omKey', 'd' + k);
+      e.preventDefault();
+    } else if (k === 'F11' || k === 'f' || k === 'F') {
+      fire('omKey', 'fullscreen');
+      e.preventDefault();
+    } else if (k === 'Escape') {
+      // Escape 只请求“退出”全屏：非全屏时 Dart 侧忽略，
+      // 也不拦网页自身对 Escape 的处理
+      fire('omKey', 'exitfullscreen');
+    }
+  }
+  function hookDoc(d){
+    if (!d || d.__omHooked) return;
+    d.__omHooked = true;
+    hookedDocs.push(d);
+    d.addEventListener('mousemove', onMouseMove, true);
+    d.addEventListener('keydown', onKeyDown, true);
+    // 同源 iframe 有自己的文档树，主文档的 CSS 选择器管不到其内部，
+    // 向其中也注入隐藏光标样式
+    try {
+      var ss = d.createElement('style');
+      ss.textContent = 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}';
+      (d.head || d.documentElement).appendChild(ss);
+    } catch(e){}
+  }
+  hookDoc(document);
+  showCursor();
+
+  function eachFrameDoc(root, fn){
     var frames = root.querySelectorAll('iframe');
     for (var i=0;i<frames.length;i++){
       try {
         var d = frames[i].contentDocument;
-        if (d) out = out.concat(allVideos(d));
+        if (d) { hookDoc(d); fn(d); eachFrameDoc(d, fn); }
       } catch(e) {}
     }
+  }
+
+  function allVideos(root){
+    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+    eachFrameDoc(document, function(d){
+      out = out.concat(Array.prototype.slice.call(d.querySelectorAll('video')));
+    });
     return out;
   }
   var clickCooldown = 0;
@@ -1220,12 +1375,19 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
   }
   var pausedTicks = 0;
+  function bindMedia(v){
+    if (v.__omMediaBound) return;
+    v.__omMediaBound = true;
+    v.addEventListener('play', function(){ fire('omPlay', 1); });
+    v.addEventListener('pause', function(){ fire('omPlay', 0); });
+  }
   function kick(){
     var vs = allVideos(document);
     var anyPaused = false;
     for (var i=0;i<vs.length;i++){
       var v = vs[i];
       try {
+        bindMedia(v);
         v.muted = false;
         v.volume = 1;
         if (v.paused && v.play) {
@@ -1237,7 +1399,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       if (!window.__omPlayingFired && !v.paused && v.readyState >= 2
           && v.currentTime > 0) {
         window.__omPlayingFired = true;
-        try { window.flutter_inappwebview.callHandler('omPlaying'); } catch(e) {}
+        fire('omPlaying');
       }
     }
     // 连续 3 拍仍 paused（纯 play() 无效）才代点大播放按钮，
@@ -1292,10 +1454,25 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
       if (mounted && !widget.foreground) widget.onForeground();
     });
+    _checkRuntime();
+  }
+
+  /// 检测 WebView2 运行时（部分精简版/家庭版 Windows 未预装）。
+  /// 检测不到时给出下载提示，而不是永远转圈。
+  Future<void> _checkRuntime() async {
+    try {
+      final v = await InAppWebViewController.getCurrentWebViewVersion();
+      if (mounted && (v == null || v.toString().trim().isEmpty)) {
+        setState(() => _runtimeMissing = true);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _runtimeMissing = true);
+    }
   }
 
   @override
   void dispose() {
+    widget.onBridgeDetached();
     _probeTimer?.cancel();
     _forceForegroundTimer?.cancel();
     super.dispose();
@@ -1352,17 +1529,50 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           ),
           onWebViewCreated: (controller) {
             _webController = controller;
-            // JS bridge 通道（与 Dart 轮询互为双保险）
+            // JS bridge 通道
             controller.addJavaScriptHandler(
               handlerName: 'omPlaying',
               callback: (_) {
                 if (mounted && !widget.foreground) widget.onForeground();
               },
             );
+            controller.addJavaScriptHandler(
+              handlerName: 'omKey',
+              callback: (args) {
+                if (args.isNotEmpty) {
+                  widget.onWebKey(args.first.toString());
+                }
+              },
+            );
+            controller.addJavaScriptHandler(
+              handlerName: 'omMouse',
+              callback: (_) => widget.onWebMouseMove(),
+            );
+            controller.addJavaScriptHandler(
+              handlerName: 'omPlay',
+              callback: (args) {
+                if (args.isNotEmpty) {
+                  widget.onPlayStateChanged(
+                      args.first.toString() == '1' ||
+                          args.first.toString() == '1.0');
+                }
+              },
+            );
+            // 注册控制桥：执行 JS（播放/暂停）与网页截图
+            widget.onBridgeAttached(
+              eval: (js) => controller.evaluateJavascript(source: js),
+              screenshot: () async => await controller.takeScreenshot(),
+            );
           },
           onLoadStop: (controller, _) async {
             if (mounted) setState(() => _loaded = true);
             await _inject();
+          },
+          onProgressChanged: (controller, progress) {
+            // 部分页面 onLoadStop 触发较晚，加载完成即收起等待层
+            if (progress >= 100 && mounted && !_loaded) {
+              setState(() => _loaded = true);
+            }
           },
           onReceivedError: (controller, request, error) {
             // 主文档加载失败才提示（子资源失败不影响播放）
@@ -1373,7 +1583,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             }
           },
         ),
-        if (!_loaded && _error == null)
+        // 等待层：仅后台缓冲期间显示（推到前台后即使页面慢也露出来，
+        // 避免「正在打开网页频道」永久转圈把用户锁死）
+        if (!_loaded && _error == null && !_runtimeMissing && !widget.foreground)
           const Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1385,7 +1597,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               ],
             ),
           ),
-        if (_error != null)
+        if (_error != null && !_runtimeMissing)
           Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1397,31 +1609,36 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               ],
             ),
           ),
-        // 左上角关闭按钮：仅网页已推到前台后显示，返回普通播放界面。
-        // 图标+文字，避免只有一个 × 用户不知道是干什么的
-        if (widget.foreground)
-          Positioned(
-            top: 12,
-            left: 12,
-            child: Material(
-              color: Colors.black.withOpacity(0.55),
-              borderRadius: BorderRadius.circular(20),
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: widget.onExit,
-                child: const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.close, color: Colors.white, size: 18),
-                      SizedBox(width: 5),
-                      Text('关闭网页频道',
-                          style:
-                              TextStyle(color: Colors.white, fontSize: 13)),
-                    ],
+        // 未安装/版本过旧的 WebView2 运行时（部分 Win10 家庭版）
+        if (_runtimeMissing)
+          Center(
+            child: Container(
+              margin: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.8),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.web_asset,
+                      color: Colors.amber, size: 40),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '未检测到 WebView2 运行环境\n网页频道需要 Microsoft Edge WebView2 Runtime',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white, fontSize: 14),
                   ),
-                ),
+                  const SizedBox(height: 14),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.download, size: 18),
+                    label: const Text('下载并安装 WebView2'),
+                    onPressed: () => launchExternal(
+                        'https://developer.microsoft.com/microsoft-edge/webview2/'),
+                  ),
+                ],
               ),
             ),
           ),

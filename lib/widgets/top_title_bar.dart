@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../services/player_controller.dart';
 import '../services/window_drag.dart';
 
 /// 顶部悬停标题栏：平时隐藏，鼠标移到顶部出现。
@@ -36,6 +38,11 @@ class TopTitleBar extends StatelessWidget {
                 behavior: HitTestBehavior.opaque,
                 onPanStart: (_) => startWindowDrag(),
                 onDoubleTap: () async {
+                  // 全屏状态下双击标题栏先退出全屏（同步控制器状态）
+                  if (context.mounted &&
+                      await context.read<PlayerController>().exitFullscreenIfNeeded()) {
+                    return;
+                  }
                   if (await windowManager.isMaximized()) {
                     await windowManager.unmaximize();
                   } else {
@@ -58,6 +65,13 @@ class TopTitleBar extends StatelessWidget {
                         () => windowManager.minimize()),
                     _winButton(Icons.crop_square, '最大化/还原',
                         () async {
+                      // 全屏状态下先退出全屏（同步控制器状态），否则在
+                      // 系统全屏层上做 maximize 视觉无变化，像按钮坏了
+                      if (await context
+                          .read<PlayerController>()
+                          .exitFullscreenIfNeeded()) {
+                        return;
+                      }
                       if (await windowManager.isMaximized()) {
                         await windowManager.unmaximize();
                       } else {

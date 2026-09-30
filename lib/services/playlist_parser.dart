@@ -140,9 +140,11 @@ class PlaylistParser {
           // 但大多数源每条都有 group-title，这里在消费后清掉
           pendingGroup = null;
         } else {
+          final fallbackName =
+              Uri.tryParse(url)?.pathSegments.lastOrNull ?? url;
           channels.add(Channel(
-            id: _genId(url),
-            name: Uri.tryParse(url)?.pathSegments.lastOrNull ?? url,
+            id: _genId(url, fallbackName),
+            name: fallbackName,
             streamUrls: [url],
             categoryId: '未分类',
             groupTitle: '未分类',
@@ -183,7 +185,7 @@ class PlaylistParser {
       final ua = (attrs['http-user-agent'] ?? '').trim();
 
       return Channel(
-        id: _genId(url),
+        id: _genId(url, name),
         name: name,
         streamUrls: [url],
         logoUrl: logo,
@@ -228,7 +230,7 @@ class PlaylistParser {
           final gluedUrl = _asStreamUrl(m.group(2)!);
           if (gluedName.isNotEmpty && gluedUrl != null) {
             channels.add(Channel(
-              id: _genId(gluedUrl),
+              id: _genId(gluedUrl, gluedName),
               name: gluedName,
               streamUrls: [gluedUrl],
               categoryId: currentGroup,
@@ -255,7 +257,7 @@ class PlaylistParser {
           final urls3 = _splitSources(tail);
           if (urls3.isNotEmpty) {
             channels.add(Channel(
-              id: _genId(urls3.first),
+              id: _genId(urls3.first, mid),
               name: mid,
               streamUrls: urls3,
               categoryId: name,
@@ -270,7 +272,7 @@ class PlaylistParser {
       if (urls.isEmpty) continue;
 
       channels.add(Channel(
-        id: _genId(urls.first),
+        id: _genId(urls.first, name),
         name: name,
         streamUrls: urls,
         categoryId: currentGroup,
@@ -340,8 +342,11 @@ class PlaylistParser {
         .replaceAll(RegExp(r'[\s\-_（）()\[\]]'), '');
   }
 
-  static String _genId(String url) {
-    return 'ch_${url.hashCode.abs()}';
+  /// 频道 id：URL + 名称双重哈希。
+  /// 只用 URL 时，同一网站地址下不同名的网页频道（webview://）
+  /// 会得到相同 id，导致列表里一大片同时显示选中态。
+  static String _genId(String url, String name) {
+    return 'ch_${name.hashCode.abs()}_${url.hashCode.abs()}';
   }
 }
 

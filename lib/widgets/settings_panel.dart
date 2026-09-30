@@ -800,12 +800,12 @@ class _PlayerSettingsTab extends StatelessWidget {
                   s.copyWith(sourceTimeoutSeconds: v.round())),
               subtitleText: '起播超过该时间未成功，自动尝试下一个源',
             ),
-            // 播放缓冲：分段选择 5/10/20/30 秒（重启后由 MDK 后端应用）
+            // 播放缓冲：分段选择 5/10/20/30 秒（换台时由 MDK 后端应用）
             ListTile(
               leading: const Icon(Icons.slow_motion_video,
                   color: Colors.white70),
               title: const Text('播放缓冲'),
-              subtitle: const Text('弱网或直播卡顿可调大，修改后重启生效'),
+              subtitle: const Text('弱网或直播卡顿可调大，换台后生效'),
               trailing: SegmentedButton<int>(
                 showSelectedIcon: false,
                 style: const ButtonStyle(

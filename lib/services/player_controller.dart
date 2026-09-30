@@ -19,6 +19,7 @@ import '../models/reservation.dart';
 import 'auto_launch.dart';
 import 'cast_log.dart';
 import 'dlna_service.dart';
+import 'fvp_register.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
 import 'remote_admin_service.dart';
@@ -129,7 +130,8 @@ class PlayerController extends ChangeNotifier {
   bool get isCasting => _isCasting;
   bool get isMuted => _isMuted;
 
-  bool get isPlaying => _state == PlayerState.playing;
+  bool get isPlaying =>
+      _webPageActive ? _webPlaying : _state == PlayerState.playing;
   bool get isInitialized =>
       _videoController != null && _videoController!.value.isInitialized;
 
@@ -687,6 +689,73 @@ class PlayerController extends ChangeNotifier {
   bool _webPageForeground = false;
   bool get webPageForeground => _webPageForeground;
 
+  /// 网页内视频是否处于播放态（由网页 play/pause 事件回传，
+  /// 供底部面板播放按钮显示正确图标）
+  bool _webPlaying = false;
+
+  /// ===== 网页频道控制桥（由内嵌 WebView 注册/注销）=====
+  /// 执行 JS 并返回结果
+  Future<dynamic> Function(String)? _webEval;
+
+  /// 截取网页画面，返回 PNG 字节
+  Future<List<int>?> Function()? _webScreenshot;
+
+  /// 网页内播放/暂停切换 JS（递归同源 iframe）。
+  /// 返回 '1' 表示切换后暂停，'0' 表示播放中。
+  static const _webToggleJs = r'''
+(function(){
+  function allVideos(root){
+    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+    var frames = root.querySelectorAll('iframe');
+    for (var i=0;i<frames.length;i++){
+      try { var d = frames[i].contentDocument;
+            if (d) out = out.concat(allVideos(d)); } catch(e) {}
+    }
+    return out;
+  }
+  var vs = allVideos(document);
+  var anyPlaying = false;
+  for (var i=0;i<vs.length;i++){
+    if (!vs[i].paused) { anyPlaying = true; break; }
+  }
+  for (var i=0;i<vs.length;i++){
+    var v = vs[i];
+    try {
+      if (anyPlaying) { v.pause(); }
+      else {
+        v.muted = false; v.volume = 1;
+        var p = v.play(); if (p && p.catch) p.catch(function(){});
+      }
+    } catch(e) {}
+  }
+  return anyPlaying ? '1' : '0';
+})();
+''';
+
+  /// 注册网页控制桥（WebView 创建后）
+  void attachWebBridge({
+    required Future<dynamic> Function(String) eval,
+    required Future<List<int>?> Function() screenshot,
+  }) {
+    _webEval = eval;
+    _webScreenshot = screenshot;
+    _webPlaying = true;
+  }
+
+  /// 注销网页控制桥（WebView 销毁前）
+  void detachWebBridge() {
+    _webEval = null;
+    _webScreenshot = null;
+    _webPlaying = false;
+  }
+
+  /// 网页内播放/暂停状态回传
+  void setWebPlaying(bool playing) {
+    if (_webPlaying == playing) return;
+    _webPlaying = playing;
+    notifyListeners();
+  }
+
   /// 网页起播后推到前台（由内嵌网页的 JS 回调触发）
   void setWebForeground(bool value) {
     if (_webPageForeground == value) return;
@@ -802,6 +871,10 @@ class PlayerController extends ChangeNotifier {
     final gen = ++_playGeneration;
     _state = PlayerState.loading;
     notifyListeners();
+
+    // 缓冲设置即时生效：每次起播前按当前设置重新注册 fvp 选项，
+    // 不必重启程序（registerWith 的全局选项对之后创建的播放器生效）
+    registerFvp(bufferSeconds: _settings.bufferSeconds);
 
     await _disposeVideoController();
 
@@ -960,6 +1033,17 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放/暂停切换
   Future<void> togglePlayPause() async {
+    // 网页频道：通过 JS 控制页面内 <video>（含同源 iframe）
+    if (_webPageActive) {
+      final eval = _webEval;
+      if (eval == null) return;
+      try {
+        final r = await eval(_webToggleJs);
+        // 返回 '1' = 切换后已暂停，'0' = 播放中
+        setWebPlaying(r?.toString() != '1');
+      } catch (_) {}
+      return;
+    }
     if (_videoController == null || !_videoController!.value.isInitialized) {
       return;
     }
@@ -1500,8 +1584,10 @@ class PlayerController extends ChangeNotifier {
 
   // ==================== 录制与截图（fvp/MDK 原生，桌面端） ====================
 
-  /// 开始录制当前画面到固定文件夹，返回是否成功
+  /// 开始录制当前画面到固定文件夹，返回是否成功。
+  /// 网页频道无法录制（WebView2 不开放网页媒体流），直接返回 false。
   Future<bool> startRecording() async {
+    if (_webPageActive) return false;
     final vc = _videoController;
     if (_currentChannel == null || vc == null || !vc.value.isInitialized ||
         !isDesktop || _isRecording) {
@@ -1538,8 +1624,25 @@ class PlayerController extends ChangeNotifier {
     return path;
   }
 
-  /// 截取当前视频帧保存为 PNG（固定文件夹）
+  /// 截取当前视频帧保存为 PNG（固定文件夹）。
+  /// 网页频道走 WebView 截图桥，返回的就是 PNG 字节，直接落盘。
   Future<String?> takeScreenshot() async {
+    if (_webPageActive) {
+      final shot = _webScreenshot;
+      if (shot == null) return null;
+      try {
+        final bytes = await shot();
+        if (bytes == null || bytes.isEmpty) return null;
+        final name = _currentChannel?.name ?? 'web_screenshot';
+        final path =
+            await captureService.buildFilePath('screenshots', name, 'png');
+        await captureService.saveBytes(path, bytes);
+        return path;
+      } catch (e) {
+        _lastError = '网页截图失败: $e';
+        return null;
+      }
+    }
     final vc = _videoController;
     if (vc == null || !vc.value.isInitialized) return null;
     try {
