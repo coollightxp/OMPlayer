@@ -1330,15 +1330,39 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   // 鼠标静止 3 秒后在网页内隐藏系统光标（WebView 是独立 HWND，
   // Flutter 的 MouseRegion 管不到页面上的光标，必须在页面内隐藏）
   var hideCursorTimer = null;
+  var cursorHidden = false;
   var hookedDocs = [];
+  function allElsCursor(h, doc){
+    try {
+      doc.documentElement.style.cursor = h ? 'none' : '';
+      var vids = doc.querySelectorAll('video');
+      for (var i=0;i<vids.length;i++) vids[i].style.cursor = h ? 'none' : '';
+    } catch(e){}
+  }
   function setCursorHidden(h){
+    cursorHidden = h;
     for (var i=0;i<hookedDocs.length;i++){
       try {
-        if (h) hookedDocs[i].documentElement.classList.add('__om_hide_cursor');
-        else hookedDocs[i].documentElement.classList.remove('__om_hide_cursor');
+        var root = hookedDocs[i].documentElement;
+        if (h) root.classList.add('__om_hide_cursor');
+        else root.classList.remove('__om_hide_cursor');
+        allElsCursor(h, hookedDocs[i]);
       } catch(e){}
     }
   }
+  // 播放器常在播放时用 JS 反复写 cursor 样式，定时重新应用隐藏状态
+  setInterval(function(){
+    if (cursorHidden) {
+      for (var i=0;i<hookedDocs.length;i++){
+        try {
+          var root = hookedDocs[i].documentElement;
+          if (!root.classList.contains('__om_hide_cursor'))
+            root.classList.add('__om_hide_cursor');
+          allElsCursor(true, hookedDocs[i]);
+        } catch(e){}
+      }
+    }
+  }, 500);
   function showCursor(){
     setCursorHidden(false);
     if (hideCursorTimer) clearTimeout(hideCursorTimer);

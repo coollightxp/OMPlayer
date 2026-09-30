@@ -1676,7 +1676,15 @@ class PlayerController extends ChangeNotifier {
     if (!capture) return 'nocapture';
     var stream = capture.call(target);
     var mime = '';
-    var cands = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+    // 优先 mp4（与 fvp 原生录制格式一致），WebView2/Edge 支持 H.264
+    var cands = [
+      'video/mp4;codecs=h264,aac',
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ];
     for (var m=0;m<cands.length;m++){
       try { if (MediaRecorder.isTypeSupported(cands[m])) { mime = cands[m]; break; } } catch(e){}
     }
@@ -1706,7 +1714,8 @@ class PlayerController extends ChangeNotifier {
       });
     };
     rec.start(1000);
-    return 'ok';
+    var ext = (mime && mime.indexOf('mp4') >= 0) ? 'mp4' : 'webm';
+    return 'ok:' + ext;
   } catch(e) { return 'err'; }
 })();
 ''';
@@ -1739,17 +1748,19 @@ class PlayerController extends ChangeNotifier {
     final eval = _webEval;
     if (eval == null || !isDesktop || _isRecording) return false;
     try {
-      _recordPath = await captureService.buildFilePath(
-          'recordings', _currentChannel?.name ?? 'web', 'webm');
       _webRecBytes = 0;
       final r = await eval(_webRecStartJs);
-      if (r?.toString() != 'ok') {
-        _recordPath = null;
-        _lastError = r?.toString() == 'novideo'
+      final rs = r?.toString() ?? '';
+      if (!rs.startsWith('ok')) {
+        _lastError = rs == 'novideo'
             ? '网页中未找到可录制的视频'
             : '网页不支持视频录制';
         return false;
       }
+      // JS 返回实际容器格式（mp4 优先，回退 webm）
+      final ext = rs.substring(3) == 'mp4' ? 'mp4' : 'webm';
+      _recordPath = await captureService.buildFilePath(
+          'recordings', _currentChannel?.name ?? 'web', ext);
       _webRecDone = Completer<void>();
       _isRecording = true;
       notifyListeners();
