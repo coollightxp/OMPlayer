@@ -23,12 +23,11 @@ class WinHotkeys {
     }
     if (_handlerSet) return;
     _handlerSet = true;
-    // 显式声明返回 Future<String?>：async 闭包直接 return null 会被
-    // 推断为 Future<Null>，与通道类型不匹配（Dart 编译错误）
-    Future<String?> onMessage(String? msg) async {
+    // setMessageHandler 要求 Future<String>（非空），回复空串即可
+    Future<String> onMessage(String? msg) async {
       final n = int.tryParse(msg ?? '');
       if (n != null && n >= 0 && n <= 9) onDigit(n);
-      return null;
+      return '';
     }
 
     _channel.setMessageHandler(onMessage);
