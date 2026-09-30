@@ -1,5 +1,6 @@
 import 'dart:async';
-
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -9,6 +10,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../services/player_controller.dart';
 import '../services/web_launch.dart';
+import '../services/web_runtime.dart';
 import '../services/window_drag.dart';
 import '../widgets/bottom_program_panel.dart';
 import '../widgets/gesture_indicator_overlay.dart';
@@ -1458,15 +1460,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
 
   /// 检测 WebView2 运行时（部分精简版/家庭版 Windows 未预装）。
-  /// 检测不到时给出下载提示，而不是永远转圈。
+  /// 6.1.5 没有跨平台的版本查询 API（仅有 Android 专用接口），
+  /// Windows 侧改查注册表；检测不到时给出下载提示，而不是永远转圈。
   Future<void> _checkRuntime() async {
     try {
-      final v = await InAppWebViewController.getCurrentWebViewVersion();
-      if (mounted && (v == null || v.toString().trim().isEmpty)) {
+      final ok = await detectEmbeddedWebRuntime();
+      if (mounted && !ok) {
         setState(() => _runtimeMissing = true);
       }
     } catch (_) {
-      if (mounted) setState(() => _runtimeMissing = true);
+      // 检测异常时不阻塞使用（多数机器都已预装运行时）
     }
   }
 

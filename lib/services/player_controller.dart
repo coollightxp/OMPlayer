@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:video_player/video_player.dart';
@@ -1636,7 +1637,7 @@ class PlayerController extends ChangeNotifier {
         final name = _currentChannel?.name ?? 'web_screenshot';
         final path =
             await captureService.buildFilePath('screenshots', name, 'png');
-        await captureService.saveBytes(path, bytes);
+        await captureService.saveBytes(path, Uint8List.fromList(bytes));
         return path;
       } catch (e) {
         _lastError = '网页截图失败: $e';
