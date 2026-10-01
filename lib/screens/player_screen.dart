@@ -1528,6 +1528,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   var playedTicks = 0;
   // 已稳定起播后锁定：不再自动 play/代点，用户手动暂停不会被拉起
   var started = false;
+  var stallTicks = 0;
   var lastUrl = location.href;
   var noVideoTicks = 0;
   // reload 会清空 JS 上下文，计数存 sessionStorage（按页面路径分开，
@@ -1544,24 +1545,33 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   var reloads = getReloads();
   var lastCT = -1;
   var frozenTicks = 0;
-  function bindMedia(v){
-    if (v.__omMediaBound) return;
-    v.__omMediaBound = true;
-    v.addEventListener('play', function(){ fire('omPlay', 1); });
-    v.addEventListener('pause', function(){ fire('omPlay', 0); });
+  var lastReported = -1;
+  // 主视频 = 可见面积最大的 video。页面常带有隐藏的预览/广告播放器，
+  // 它们的 play/pause 状态会干扰判定（曾导致"点播放反而暂停主视频"），
+  // 一律忽略，只看主视频
+  function mainVideo(vs){
+    var best = null, bestA = 0;
+    for (var i=0;i<vs.length;i++){
+      var r;
+      try { r = vs[i].getBoundingClientRect(); } catch(e) { continue; }
+      var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
+      if (a > bestA) { bestA = a; best = vs[i]; }
+    }
+    return best;
   }
   function kick(){
     if (location.href !== lastUrl) {
       // SPA 换页：重置起播状态，重新自动唤起
       lastUrl = location.href;
-      started = false; playedTicks = 0; pausedTicks = 0;
+      started = false; playedTicks = 0; pausedTicks = 0; stallTicks = 0;
       noVideoTicks = 0; lastCT = -1; frozenTicks = 0;
       reloadKey = '__omRel_' + location.pathname;
       reloads = getReloads();
     }
     var vs = allVideos(document);
-    if (vs.length === 0) {
-      // 长时间没有视频元素：页面可能没正常加载，刷新重试（每页最多 2 次）
+    var main = mainVideo(vs);
+    if (main === null) {
+      // 长时间没有可见视频：页面可能没正常加载，刷新重试（每页最多 2 次）
       noVideoTicks++;
       if (noVideoTicks >= 17 && reloads < 2) {
         bumpReloads(); reloads = getReloads(); noVideoTicks = 0;
@@ -1570,36 +1580,30 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       return;
     }
     noVideoTicks = 0;
-    var anyPaused = false;
+    // 播放状态上报（供 App 面板图标与判定），只报主视频，去重
+    var st = !main.paused ? 1 : 0;
+    if (st !== lastReported) { lastReported = st; fire('omPlay', st); }
     var advancing = false;
-    var main = null;
-    for (var i=0;i<vs.length;i++){
-      var v = vs[i];
-      try {
-        bindMedia(v);
-        if (!started) {
-          // 起播前保证有声；起播后音量交给 App（网页模式音量由
-          // PlayerController 直接写 video.volume，这里不再每拍覆盖）
-          v.muted = false;
-          if (v.volume <= 0.01) v.volume = 1;
-          if (v.paused && v.play) {
-            anyPaused = true;
-            var p = v.play();
-            if (p && p.catch) p.catch(function(){});
-          }
+    try {
+      if (!started) {
+        // 起播前保证有声；起播后音量交给 App（网页模式音量由
+        // PlayerController 直接写 video.volume，这里不再每拍覆盖）
+        main.muted = false;
+        if (main.volume <= 0.01) main.volume = 1;
+        if (main.paused && main.play) {
+          var p = main.play();
+          if (p && p.catch) p.catch(function(){});
         }
-        if (!v.paused && v.readyState >= 2 && v.currentTime > 0) {
-          advancing = true;
-          if (main === null) main = v;
-        }
-      } catch(e) {}
-      if (!window.__omPlayingFired && !v.paused && v.readyState >= 2
-          && v.currentTime > 0) {
-        window.__omPlayingFired = true;
-        fire('omPlaying');
       }
+      if (!main.paused && main.readyState >= 2 && main.currentTime > 0) {
+        advancing = true;
+      }
+    } catch(e) {}
+    if (!window.__omPlayingFired && advancing) {
+      window.__omPlayingFired = true;
+      fire('omPlaying');
     }
-    if (advancing) { playedTicks++; if (playedTicks >= 4) started = true; }
+    if (advancing) { playedTicks++; if (playedTicks >= 4) { started = true; stallTicks = 0; } }
     else playedTicks = 0;
     // 起播后卡死看门狗：时间约 10 秒不动且缓冲不足（readyState<3）才
     // 判定卡死刷新。直播播放器的 currentTime 可能几乎不动甚至不变，
@@ -1613,23 +1617,28 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         }
       } else { frozenTicks = 0; lastCT = main.currentTime; }
     }
+    // 停滞恢复：锁定后主视频被持续暂停约 30 秒（网络卡停/节目切换
+    // 被网站播放器自动暂停），解除锁定重新自动唤起；用户手动暂停
+    // 30 秒内不受影响
+    if (started && main.paused) {
+      stallTicks++;
+      if (stallTicks >= 43) { started = false; stallTicks = 0; pausedTicks = 0; }
+    } else if (!main.paused) { stallTicks = 0; }
     // 锁定后用户的手动暂停生效，不再自动拉起
     if (started) return;
     // 连续 2 拍仍 paused（纯 play() 无效）即代点大播放按钮，
     // 避免与 play() 同一拍双动作把播放又切回暂停
-    if (anyPaused) {
+    if (main.paused) {
       pausedTicks++;
       if (clickCooldown > 0) { clickCooldown--; }
       else if (pausedTicks >= 2) {
         if (clickBigPlayButton()) return;
       }
-      // 找不到任何大播放钮：连续 6 拍仍暂停，直接对视频区点一下
+      // 找不到任何大播放钮：连续 6 拍仍暂停，直接对主视频画面点一下
       // （很多自研播放器点画面=播放），之后冷却避免反复 toggle
       if (videoClickCooldown > 0) { videoClickCooldown--; }
       else if (pausedTicks >= 6) {
-        for (var j=0;j<vs.length;j++){
-          try { if (vs[j].paused) vs[j].click(); } catch(e){}
-        }
+        try { main.click(); } catch(e){}
         videoClickCooldown = 5;
       }
     } else {
@@ -1642,7 +1651,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 ''';
 
   /// Dart 侧轮询探测（不依赖 JS bridge 是否可用，双保险）。
-  /// 递归同源 iframe；返回数字 1/0，规避字符串编解码差异。
+  /// 递归同源 iframe；只认可见面积最大的主视频（隐藏预览/广告播放器
+  /// 会导致"主视频没播却被判定已起播"）；返回数字 1/0，规避字符串编解码差异。
   static const String _probeJs = r'''
 (function(){
   function allVideos(root){
@@ -1657,14 +1667,19 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return out;
   }
   var vs = allVideos(document);
+  var best = null, bestA = 0;
   for (var i=0;i<vs.length;i++){
-    var v = vs[i];
-    try {
-      v.muted = false; v.volume = 1;
-      if (v.paused && v.play) { var p = v.play(); if (p && p.catch) p.catch(function(){}); }
-    } catch(e) {}
-    if (!v.paused && v.readyState >= 2 && v.currentTime > 0) return 1;
+    var r;
+    try { r = vs[i].getBoundingClientRect(); } catch(e) { continue; }
+    var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
+    if (a > bestA) { bestA = a; best = vs[i]; }
   }
+  if (!best) return 0;
+  try {
+    best.muted = false; best.volume = 1;
+    if (best.paused && best.play) { var p = best.play(); if (p && p.catch) p.catch(function(){}); }
+    if (!best.paused && best.readyState >= 2 && best.currentTime > 0) return 1;
+  } catch(e) {}
   return 0;
 })();
 ''';

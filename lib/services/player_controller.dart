@@ -709,8 +709,10 @@ class PlayerController extends ChangeNotifier {
   /// 截取网页画面，返回 PNG 字节
   Future<List<int>?> Function()? _webScreenshot;
 
-  /// 网页内播放/暂停切换 JS（递归同源 iframe）。
-  /// 返回 '1' 表示切换后暂停，'0' 表示播放中。
+  /// 网页内播放/暂停切换 JS（递归同源 iframe，只操作可见面积最大的
+  /// 主视频——页面常带隐藏预览/广告播放器，"任一个在播就全暂停"会
+  /// 把主视频误停）。
+  /// 返回 '1' 表示切换后暂停，'0' 表示播放中，'2' 表示没找到可见视频。
   static const _webToggleJs = r'''
 (function(){
   function allVideos(root){
@@ -723,22 +725,24 @@ class PlayerController extends ChangeNotifier {
     return out;
   }
   var vs = allVideos(document);
-  var anyPlaying = false;
+  var best = null, bestA = 0;
   for (var i=0;i<vs.length;i++){
-    if (!vs[i].paused) { anyPlaying = true; break; }
+    var r;
+    try { r = vs[i].getBoundingClientRect(); } catch(e) { continue; }
+    var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
+    if (a > bestA) { bestA = a; best = vs[i]; }
   }
-  for (var i=0;i<vs.length;i++){
-    var v = vs[i];
-    try {
-      if (anyPlaying) { v.pause(); }
-      else {
-        // 只解除静音，音量尊重用户在 App 内的设置（不再强制拉满）
-        v.muted = false;
-        var p = v.play(); if (p && p.catch) p.catch(function(){});
-      }
-    } catch(e) {}
-  }
-  return anyPlaying ? '1' : '0';
+  if (!best) return '2';
+  try {
+    if (best.paused) {
+      // 只解除静音，音量尊重用户在 App 内的设置（不再强制拉满）
+      best.muted = false;
+      var p = best.play(); if (p && p.catch) p.catch(function(){});
+      return '0';
+    }
+    best.pause();
+    return '1';
+  } catch(e) { return '2'; }
 })();
 ''';
 
@@ -1064,14 +1068,15 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放/暂停切换
   Future<void> togglePlayPause() async {
-    // 网页频道：通过 JS 控制页面内 <video>（含同源 iframe）
+    // 网页频道：通过 JS 控制页面内主 <video>（含同源 iframe）
     if (_webPageActive) {
       final eval = _webEval;
       if (eval == null) return;
       try {
         final r = await eval(_webToggleJs);
-        // 返回 '1' = 切换后已暂停，'0' = 播放中
-        setWebPlaying(r?.toString() != '1');
+        // '1' = 切换后已暂停，'0' = 播放中，'2' = 无可见视频（忽略）
+        final s = r?.toString();
+        if (s == '0' || s == '1') setWebPlaying(s == '0');
       } catch (_) {}
       return;
     }
@@ -1695,13 +1700,27 @@ class PlayerController extends ChangeNotifier {
       return out;
     }
     var vs = allVideos(document);
-    var target = null;
+    // 录制目标 = 主视频（可见面积最大）；优先选在播的，隐藏预览/
+    // 广告播放器不参与，避免录到错误画面
+    function areaOf(v){
+      try {
+        var r = v.getBoundingClientRect();
+        return (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
+      } catch(e) { return 0; }
+    }
+    var target = null, bestA = 0;
     for (var i=0;i<vs.length;i++){
-      if (!vs[i].paused && !vs[i].ended && vs[i].readyState >= 2) {
-        target = vs[i]; break;
+      if (vs[i].paused || vs[i].ended || vs[i].readyState < 2) continue;
+      var a = areaOf(vs[i]);
+      if (a > bestA) { bestA = a; target = vs[i]; }
+    }
+    if (!target) {
+      bestA = 0;
+      for (var j=0;j<vs.length;j++){
+        var a2 = areaOf(vs[j]);
+        if (a2 > bestA) { bestA = a2; target = vs[j]; }
       }
     }
-    if (!target && vs.length > 0) target = vs[0];
     if (!target) return 'novideo';
     var capture = target.captureStream || target.mozCaptureStream;
     if (!capture) return 'nocapture';
