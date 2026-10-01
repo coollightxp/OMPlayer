@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert' show jsonEncode;
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
@@ -19,6 +21,26 @@ import '../widgets/right_epg_panel.dart';
 import '../widgets/settings_panel.dart';
 import '../widgets/top_title_bar.dart';
 import '../widgets/video_player_widget.dart';
+
+// #region debug-point Z:reporter
+/// 调试证据上报（web-channel-stuck 会话专用）：POST 到本机 Debug Server，
+/// 失败静默忽略，不影响任何业务逻辑
+void _dbg(String hypothesisId, String location, String msg,
+    [Map<String, Object?>? data]) {
+  http
+      .post(Uri.parse('http://127.0.0.1:7777/event'),
+          body: jsonEncode({
+            'sessionId': 'web-channel-stuck',
+            'runId': 'pre-fix',
+            'hypothesisId': hypothesisId,
+            'location': location,
+            'msg': '[DEBUG] $msg',
+            'data': data ?? const <String, Object?>{},
+            'ts': DateTime.now().millisecondsSinceEpoch,
+          }))
+      .catchError((_) => http.Response('', 500));
+}
+// #endregion
 
 /// 主播放器界面
 class PlayerScreen extends StatefulWidget {
@@ -1337,6 +1359,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 15 秒内 WebView 毫无加载进度：判定为缺少 WebView2 运行时
   Timer? _runtimeTimer;
 
+  // #region debug-point E:heartbeat
+  /// 调试：独立于起播探测的诊断心跳（2s），推前台后仍持续上报页面
+  /// 视频状态快照，兼作 UI 线程存活证据；_dbgProgBucket 用于进度日志降频
+  Timer? _diagTimer;
+  int _dbgProgBucket = -1;
+  // #endregion
+
   /// CSS：把页面里的 <video> 伪全屏铺满窗口（网站不配合
   /// requestFullscreen 时的兜底），黑底、禁滚动、禁止拖选文字
   static const String _cssJs = r'''
@@ -1684,6 +1713,45 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 })();
 ''';
 
+  // #region debug-point C:diag-js
+  /// 调试：页面视频状态快照（纯只读，无副作用），结果由 Dart 侧上报
+  static const String _diagJs = r'''
+(function(){
+  function allVideos(root){
+    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+    var frames = root.querySelectorAll('iframe');
+    for (var i=0;i<frames.length;i++){
+      try { var d = frames[i].contentDocument;
+            if (d) out = out.concat(allVideos(d)); } catch(e) {}
+    }
+    return out;
+  }
+  try {
+    var vs = allVideos(document);
+    var best = null, bestA = 0;
+    for (var i=0;i<vs.length;i++){
+      var r;
+      try { r = vs[i].getBoundingClientRect(); } catch(e) { continue; }
+      var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
+      if (a > bestA) { bestA = a; best = vs[i]; }
+    }
+    var o = {v: vs.length, drs: document.readyState,
+             href: String(location.href).slice(0, 100)};
+    try {
+      o.rc = sessionStorage.getItem('__omRel_' + location.pathname) || '0';
+    } catch(e) {}
+    if (best) {
+      var br = best.getBoundingClientRect();
+      o.m = {p: best.paused ? 1 : 0, rs: best.readyState,
+             ct: Math.round(best.currentTime * 10) / 10,
+             w: Math.round(br.width), h: Math.round(br.height)};
+    }
+    return JSON.stringify(o);
+  } catch(e) { return JSON.stringify({err: String(e)}); }
+})();
+''';
+  // #endregion
+
   @override
   void initState() {
     super.initState();
@@ -1691,6 +1759,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
     // 8 秒仍未自动起播：强制推前台，避免永久黑屏
     _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
+      // #region debug-point D:force-fg-fired
+      _dbg('D', 'overlay:forceFgTimer', 'force foreground timer fired',
+          {'fg': widget.foreground});
+      // #endregion
       if (mounted && !widget.foreground) widget.onForeground();
     });
     // 运行时缺失判定（乐观策略）：注册表/版本查询在不同系统上都不可靠
@@ -1701,6 +1773,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         setState(() => _runtimeMissing = true);
       }
     });
+    // #region debug-point D/E:init
+    _dbg('D', 'overlay:init', 'timers armed', {'url': widget.url});
+    _diagTimer =
+        Timer.periodic(const Duration(seconds: 2), (_) => _diagReport());
+    // #endregion
   }
 
   @override
@@ -1709,8 +1786,34 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _probeTimer?.cancel();
     _forceForegroundTimer?.cancel();
     _runtimeTimer?.cancel();
+    // #region debug-point E:heartbeat
+    _diagTimer?.cancel();
+    // #endregion
     super.dispose();
   }
+
+  // #region debug-point A/C:diag-report
+  /// 调试：每 2 秒抓一次页面视频状态快照上报（推前台后也继续，便于
+  /// 观察点击播放后的状态变化）；eval 失败/超时本身就是渲染进程
+  /// 卡死（假设 A）的关键证据
+  Future<void> _diagReport() async {
+    if (!mounted) return;
+    final c = _webController;
+    if (c == null) {
+      _dbg('A', 'overlay:_diagReport', 'no web controller',
+          {'fg': widget.foreground});
+      return;
+    }
+    try {
+      final d = await c.evaluateJavascript(source: _diagJs);
+      _dbg('C', 'overlay:_diagReport', 'page video snapshot',
+          {'fg': widget.foreground, 'd': '$d'});
+    } catch (e) {
+      _dbg('A', 'overlay:_diagReport', 'eval failed',
+          {'fg': widget.foreground, 'e': '$e'});
+    }
+  }
+  // #endregion
 
   Future<void> _inject() async {
     final c = _webController;
@@ -1731,12 +1834,19 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     try {
       await c.evaluateJavascript(source: _cssJs);
       final r = await c.evaluateJavascript(source: _probeJs);
+      // #region debug-point C:probe-result
+      _dbg('C', 'overlay:_probe', 'probe result', {'r': '$r'});
+      // #endregion
       // WebView2 JSON 解码后通常是 int 1，兼容字符串 "1"
       final playing = r == 1 || r?.toString() == '1';
       if (playing && mounted && !widget.foreground) {
         widget.onForeground();
       }
-    } catch (_) {}
+    } catch (e) {
+      // #region debug-point A:probe-eval-fail
+      _dbg('A', 'overlay:_probe', 'probe eval failed', {'e': '$e'});
+      // #endregion
+    }
   }
 
   @override
@@ -1763,6 +1873,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           ),
           onWebViewCreated: (controller) {
             _webController = controller;
+            // #region debug-point A:webview-created
+            _dbg('A', 'overlay:onWebViewCreated', 'webview created');
+            // #endregion
             // JS bridge 通道
             controller.addJavaScriptHandler(
               handlerName: 'omPlaying',
@@ -1820,11 +1933,21 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           onLoadStop: (controller, _) async {
             _sawProgress = true;
             if (mounted) setState(() => _loaded = true);
+            // #region debug-point B:load-stop
+            _dbg('B', 'overlay:onLoadStop', 'load stop');
+            // #endregion
             await _inject();
           },
           onProgressChanged: (controller, progress) {
             // 能收到任何进度都说明 WebView2 运行时工作正常
             if (progress > 0) _sawProgress = true;
+            // #region debug-point B:progress
+            if (progress ~/ 10 != _dbgProgBucket) {
+              _dbgProgBucket = progress ~/ 10;
+              _dbg('B', 'overlay:onProgressChanged', 'load progress',
+                  {'p': progress});
+            }
+            // #endregion
             // 部分页面 onLoadStop 触发较晚，加载完成即收起等待层
             if (progress >= 100 && mounted && !_loaded) {
               setState(() => _loaded = true);
@@ -1833,6 +1956,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           onReceivedError: (controller, request, error) {
             // 主文档加载失败才提示（子资源失败不影响播放）
             if (request.isForMainFrame ?? false) {
+              // #region debug-point B:load-error
+              _dbg('B', 'overlay:onReceivedError', 'main frame load error', {
+                'url': '${request.url}',
+                'type': '${error.type}',
+                'desc': error.description,
+              });
+              // #endregion
               if (mounted) {
                 setState(() => _error = error.description);
               }
