@@ -1412,19 +1412,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function fire(name, arg){
     try { window.flutter_inappwebview.callHandler(name, arg); } catch(e) {}
   }
-  // ===== 强制用户激活态（绕过网站自动播放检测）=====
-  // 央视频等站点更新后会检查 navigator.userActivation.isActive，
-  // 即使 WebView2 已允许无手势自动播放，站点也可能拒绝。
-  // 伪造始终激活态，让站点的播放器状态机放行。
-  try {
-    var fakeActivation = { isActive: true, hasBeenActive: true };
-    Object.defineProperty(Navigator.prototype, 'userActivation', {
-      get: function(){ return fakeActivation; },
-      configurable: true
-    });
-  } catch(e) {}
-  // 修复 iframe 自动播放：给所有 iframe 加 allow="autoplay"，
-  // 移除限制自动播放的 sandbox 限制
+  // 修复 iframe 自动播放：给所有 iframe 加 allow="autoplay"
   function fixIframes(doc){
     try {
       var frames = doc.querySelectorAll('iframe');
@@ -1434,21 +1422,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         if (allow.indexOf('autoplay') === -1) {
           f.setAttribute('allow', (allow ? allow + '; ' : '') + 'autoplay; fullscreen; encrypted-media');
         }
-        // 移除 sandbox 中对自动播放的限制
-        var sb = f.getAttribute('sandbox');
-        if (sb) {
-          var parts = sb.split(/\s+/).filter(function(p){
-            return p && p !== 'allow-scripts' ? true : true;
-          });
-          // allow-scripts 是必须的，确保加上
-          if (parts.indexOf('allow-scripts') === -1) parts.push('allow-scripts');
-          if (parts.indexOf('allow-same-origin') === -1) parts.push('allow-same-origin');
-          f.setAttribute('sandbox', parts.join(' '));
-        }
       }
     } catch(e) {}
   }
-  // 定时修复动态创建的 iframe
   setInterval(function(){ fixIframes(document); }, 1000);
   fixIframes(document);
   // 网页自己的双击全屏与 App 窗口全屏冲突，屏蔽之
@@ -1601,32 +1577,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     v.__omMediaBound = true;
     v.addEventListener('play', function(){ fire('omPlay', 1); });
     v.addEventListener('pause', function(){ fire('omPlay', 0); });
-    // 监听 volumechange，网站一静音就立刻恢复
-    v.addEventListener('volumechange', function(){
-      if (window.__omUserPaused) return;
-      try {
-        if (v.muted) v.muted = false;
-        var wv = window.__omVol;
-        if (typeof wv === 'number' && Math.abs(v.volume - wv) > 0.01)
-          v.volume = wv;
-      } catch(e) {}
-    });
-  }
-  // 尝试通过 VideoJS API 播放（央视频等站点用 VideoJS 封装）
-  function playViaVideoJS(){
-    try {
-      if (window.videojs && videojs.getAllPlayers) {
-        var ps = videojs.getAllPlayers();
-        for (var i=0;i<ps.length;i++){
-          try {
-            ps[i].muted(false);
-            ps[i].play();
-          } catch(e) {}
-        }
-        return ps.length > 0;
-      }
-    } catch(e) {}
-    return false;
   }
   function kick(){
     if (location.href !== lastUrl) {
@@ -1645,8 +1595,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         v.muted = false;
         var wv = window.__omVol;
         v.volume = (typeof wv === 'number') ? wv : 1;
-        // 确保 autoplay 属性开启
-        try { v.autoplay = true; } catch(e) {}
         if (!v.paused) anyPlaying = true;
         if (!up && v.paused && v.play) {
           anyPaused = true;
@@ -1667,14 +1615,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
     if (anyPaused && !up) {
       pausedTicks++;
-      // 第 1 拍：尝试 VideoJS API
-      if (pausedTicks === 1) { playViaVideoJS(); }
       if (clickCooldown > 0) { clickCooldown--; }
       else if (pausedTicks >= 2) {
         if (clickBigPlayButton()) return;
       }
       if (videoClickCooldown > 0) { videoClickCooldown--; }
-      else if (pausedTicks >= 4) {
+      else if (pausedTicks >= 6) {
         for (var j=0;j<vs.length;j++){
           try { if (vs[j].paused) vs[j].click(); } catch(e){}
         }

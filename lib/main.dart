@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
@@ -10,8 +12,39 @@ import 'services/auto_launch.dart';
 import 'services/fvp_register.dart';
 import 'services/media_capture_service.dart';
 
+/// 清理 WebView2 磁盘缓存（仅 Windows）。
+/// 只删 Cache / Code Cache / GPUCache / Service Worker 等可重建的缓存子目录，
+/// 保留 Cookies / Local Storage（网站记住用户交互/同意状态，自动播放需要）。
+/// 长期使用后缓存膨胀会导致网页频道打开越来越慢、停在旧画面。
+void cleanWebView2Cache() {
+  if (!Platform.isWindows) return;
+  try {
+    final exeDir = File(Platform.resolvedExecutable).parent;
+    final exeName = Platform.resolvedExecutable
+        .split(Platform.pathSeparator)
+        .last
+        .replaceAll('.exe', '');
+    final wvDir = Directory('${exeDir.path}${Platform.pathSeparator}'
+        '${exeName}.WebView2');
+    if (!wvDir.existsSync()) return;
+    final targets = ['Cache', 'Code Cache', 'GPUCache', 'Service Worker'];
+    for (final name in targets) {
+      final d = Directory('${wvDir.path}${Platform.pathSeparator}$name');
+      if (d.existsSync()) {
+        try {
+          d.deleteSync(recursive: true);
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 启动前清理 WebView2 缓存，避免旧缓存导致网页频道加载慢/卡旧画面
+  cleanWebView2Cache();
+
   // 播放缓冲设置需在注册 MDK 后端前读取（仅启动时应用一次）
   final prefs = await SharedPreferences.getInstance();
   final bufferSeconds = prefs.getInt('settings_buffer_seconds') ?? 5;
