@@ -456,9 +456,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 右上角系统时间：在视频画面之上、所有弹出面板之下
                   if (controller.settings.showClock) _buildClock(),
 
-                  // 手势检测层（网页模式下跳过：全屏手势会拦截网页点击，
-                  // 面板改由边缘触发区与网页上的关闭/切换按钮控制）
-                  if (!controller.webPageActive) _buildGestureLayer(controller),
+                  // 手势检测层：普通模式全功能；网页模式仅保留左右两侧
+                  // 垂直滑动（亮度/音量），中间区域完全穿透不拦截网页点击，
+                  // 面板由边缘触发区弹出
+                  _buildGestureLayer(controller,
+                      webMode: controller.webPageActive),
 
                   // 网页前台播放时的双击全屏：JS 侧已屏蔽网页自身 dblclick，
                   // 这里接管为 App 窗口全屏切换（双击手势不吞单击，网页播放器
@@ -926,13 +928,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   // ==================== 手势层 ====================
 
-  Widget _buildGestureLayer(PlayerController controller) {
+  Widget _buildGestureLayer(PlayerController controller,
+      {bool webMode = false}) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         return Row(
           children: [
             // 左侧：亮度调节 + 左边缘滑出抽屉
+            //（网页模式下无 child 的 GestureDetector 命中行为为 translucent，
+            // 滑动归 App、点击穿透给网页）
             Expanded(
               child: GestureDetector(
                 onVerticalDragStart: (details) {
@@ -962,18 +967,23 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                 },
               ),
             ),
-            // 中间：点击切换面板，双击播放暂停（桌面端双击全屏，按住拖动窗口）
+            // 中间：点击切换面板，双击播放暂停（桌面端双击全屏，按住拖动窗口）。
+            // 网页模式下完全穿透：点击/滑动全部交给网页播放器，
+            // 面板改由底部边缘 hover 弹出，双击全屏由 _WebDoubleTapFullScreen 接管
             Expanded(
-              child: GestureDetector(
-                onTap: _toggleBottomPanel,
-                onDoubleTap: controller.isDesktop
-                    ? controller.toggleFullscreen
-                    : controller.togglePlayPause,
-                // 全屏状态下绝不能拖动窗口，否则窗口会掉到最底层、点击穿透
-                onPanStart: (controller.isDesktop && !controller.isFullscreen)
-                    ? (_) => startWindowDrag()
-                    : null,
-              ),
+              child: webMode
+                  ? const SizedBox.expand()
+                  : GestureDetector(
+                      onTap: _toggleBottomPanel,
+                      onDoubleTap: controller.isDesktop
+                          ? controller.toggleFullscreen
+                          : controller.togglePlayPause,
+                      // 全屏状态下绝不能拖动窗口，否则窗口会掉到最底层、点击穿透
+                      onPanStart:
+                          (controller.isDesktop && !controller.isFullscreen)
+                              ? (_) => startWindowDrag()
+                              : null,
+                    ),
             ),
             // 右侧：音量调节 + 右边缘滑出 EPG
             Expanded(
@@ -1591,9 +1601,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
     if (advancing) { playedTicks++; if (playedTicks >= 4) started = true; }
     else playedTicks = 0;
-    // 起播后卡死看门狗：处于播放态但画面时间约 10 秒不动 → 刷新重载
+    // 起播后卡死看门狗：时间约 10 秒不动且缓冲不足（readyState<3）才
+    // 判定卡死刷新。直播播放器的 currentTime 可能几乎不动甚至不变，
+    // 但 readyState 维持在 3-4，属正常播放，绝不能误触发 reload
     if (started && main !== null) {
-      if (main.currentTime === lastCT) {
+      if (main.currentTime === lastCT && main.readyState < 3) {
         frozenTicks++;
         if (frozenTicks >= 14 && reloads < 2) {
           bumpReloads(); reloads = getReloads(); frozenTicks = 0;
