@@ -302,6 +302,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (_cursorHidden) setState(() => _cursorHidden = false);
     _cursorHideTimer?.cancel();
     final controller = context.read<PlayerController>();
+    // 网页频道：通知网页重置光标隐藏定时器
+    // （数字键切频道等 Flutter 侧交互不会触发网页 JS 事件）
+    if (controller.webPageActive && controller.webController != null) {
+      try {
+        controller.webController
+            .evaluateJavascript(source: 'window.__omShowCursor && window.__omShowCursor()');
+      } catch (_) {}
+    }
     if (!controller.isPlaying) return;
     _cursorHideTimer = Timer(const Duration(seconds: 3), () {
       if (mounted &&
@@ -1472,6 +1480,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (hideCursorTimer) clearTimeout(hideCursorTimer);
     hideCursorTimer = setTimeout(function(){ setCursorHidden(true); }, 3000);
   }
+  // 暴露给 Dart 侧：数字键切频道等 Flutter 侧交互时调用，
+  // 否则网页收不到事件，光标不会自动隐藏
+  window.__omShowCursor = showCursor;
   var lastMM = 0;
   function onMouseMove(){
     var n = Date.now();
@@ -1844,6 +1855,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           ),
           onWebViewCreated: (controller) async {
             _webController = controller;
+            // 把 controller 存到 PlayerController，供 Dart 侧调用网页 JS
+            context.read<PlayerController>().webController = controller;
             // #region debug-point A:webview-created
             _dbg('A', 'overlay:onWebViewCreated', 'webview created');
             // #endregion

@@ -708,6 +708,9 @@ class PlayerController extends ChangeNotifier {
   bool _webPageActive = false;
   bool get webPageActive => _webPageActive;
 
+  /// 网页频道的 WebView 控制器（Dart 侧调用网页 JS 用，如重置光标隐藏定时器）
+  dynamic webController;
+
   /// 网页是否已在【前台】播放（网页在后台缓冲时为 false，视频层保持
   /// 黑屏占位；网页播放器真正带声音起播后由 JS 回调置 true，
   /// 网页推到最前、原视频层隐藏）

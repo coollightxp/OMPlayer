@@ -10,9 +10,10 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 ///   --autoplay-policy=no-user-gesture-required  允许无手势自动播放
 WebViewEnvironment? webViewEnvironment;
 
-/// 清理 WebView2 磁盘缓存（仅 Windows）。
-/// 只删 Cache / Code Cache / GPUCache / Service Worker 等可重建的缓存子目录，
-/// 保留 Cookies / Local Storage（网站记住用户交互/同意状态，自动播放需要）。
+/// 清理 WebView2 磁盘数据（仅 Windows）。
+/// 删除可重建的缓存/状态子目录，保留 Cookies（网站记住用户交互/同意状态，
+/// 自动播放需要）。切换频道时调用，避免旧频道的 Service Worker / LocalStorage
+/// 等残留导致新频道黑屏、长时间不播放。
 void cleanWebView2Cache() {
   if (!Platform.isWindows) return;
   try {
@@ -24,7 +25,18 @@ void cleanWebView2Cache() {
     final wvDir = Directory('${exeDir.path}${Platform.pathSeparator}'
         '${exeName}.WebView2');
     if (!wvDir.existsSync()) return;
-    final targets = ['Cache', 'Code Cache', 'GPUCache', 'Service Worker'];
+    // 可安全删除的子目录：缓存 + 站点存储（不含 Cookies）
+    final targets = [
+      'Cache',
+      'Code Cache',
+      'GPUCache',
+      'Service Worker',
+      'Local Storage',
+      'Session Storage',
+      'IndexedDB',
+      'File System',
+      'CacheStorage',
+    ];
     for (final name in targets) {
       final d = Directory('${wvDir.path}${Platform.pathSeparator}$name');
       if (d.existsSync()) {
