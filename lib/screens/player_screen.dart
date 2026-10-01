@@ -1370,14 +1370,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 递归注入到主文档和所有同源 iframe。
   static const String _cssJs = r'''
 (function(){
+  // v1.0.60 风格：主视频始终铺满全屏盖住网站 UI，不依赖 __om_playing。
+  // 非主视频隐藏。网站的导航/加载遮罩/节目单全部被视频盖住，天然无灰层。
   var CSS_TEXT = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
       + '*{-webkit-user-select:none!important;user-select:none!important}'
       + 'input,textarea{-webkit-user-select:text!important;user-select:text!important}'
-      // 起播锁定后：隐藏页面所有元素，只留主视频可见。
-      // 用 * 选择器而非 body，避免网站 body 上的 visibility:visible 覆盖
-      + 'html.__om_playing *{visibility:hidden!important}'
-      + 'html.__om_playing video.__om_main{visibility:visible!important;position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important;opacity:1!important;filter:none!important}'
-      + 'html.__om_playing video:not(.__om_main){display:none!important}'
+      + 'video.__om_main{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important;opacity:1!important;filter:none!important}'
+      + 'video:not(.__om_main){display:none!important}'
       + 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}'
       + '#__om_web_layer{position:fixed!important;inset:0!important;background:#000!important;z-index:2147483646!important}';
   function inject(d){
@@ -1793,13 +1792,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       return out;
     } catch(e) { return ' | vjs-fail ' + String(e).slice(0, 80); }
   }
-  // 起播锁定后一次性安装：声音拦截（对抗网站反复静音）+ 导航拦截
-  // （防止点击网站链接跳出当前播放页）
+  // 起播锁定后一次性安装：声音恢复 + 导航拦截
   function setupPlayingOverrides(video){
     if (!video || window.__omOverrides) return;
     window.__omOverrides = true;
-    // 1) 声音拦截：网站可能通过 volumechange 事件或直接写 muted=true
-    //    来反复静音。监听 volumechange 立即拉回，并劫持 muted setter
+    // 声音：监听 volumechange 立即拉回静音；移除 muted 属性
     try {
       video.addEventListener('volumechange', function(){
         try {
@@ -1808,26 +1805,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           if (typeof wv === 'number' && video.volume !== wv) video.volume = wv;
         } catch(e) {}
       }, true);
-      // 劫持原型链上的 muted：任何 HTMLMediaElement 的 muted=true 写入
-      // 都被忽略，getter 始终返回 false。比单元素劫持更彻底
-      try {
-        var proto = HTMLMediaElement.prototype;
-        var realMuted = Object.getOwnPropertyDescriptor(proto, 'muted');
-        if (realMuted && realMuted.set && !proto.__omMutedHooked) {
-          Object.defineProperty(proto, 'muted', {
-            get: function(){ return false; },
-            set: function(v){
-              if (!v) { try { realMuted.set.call(this, false); } catch(e){} }
-            },
-            configurable: true
-          });
-          proto.__omMutedHooked = true;
-        }
-      } catch(e) {}
-      // 移除 muted 属性，防止 defaultMuted 生效
       try { video.removeAttribute('muted'); } catch(e) {}
+      try { video.muted = false; } catch(e) {}
     } catch(e) {}
-    // 2) 导航拦截：起播后点击 <a> / 提交表单都不离开当前页
+    // 导航拦截：起播后点击 <a> / 提交表单都不离开当前页
     try {
       document.addEventListener('click', function(e){
         var t = e.target;
@@ -1913,10 +1894,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var advancing = false;
     try {
       if (!started) {
-        // 起播前尊重站点的【静音自动播放】启动策略（央视频初始
-        // muted=true）：只调 play()，绝不强行 unmute——带声 play()
-        // 被站点拒绝后它会把视频重新暂停。等锁定起播后再解除静音
+        // v1.0.60 风格：不尊重站点静音自动播放策略，直接解除静音再 play。
+        // 用户已通过 App 打开频道（有用户手势），带声 autoplay 不受限。
         if (main.paused && main.play) {
+          try { main.muted = false; } catch(e) {}
+          try { main.removeAttribute('muted'); } catch(e) {}
+          var wv = window.__omVol;
+          if (typeof wv === 'number') { try { main.volume = wv; } catch(e){} }
           var pp = main.play();
           if (pp && pp.catch) pp.catch(function(err){
             try {
