@@ -302,13 +302,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (_cursorHidden) setState(() => _cursorHidden = false);
     _cursorHideTimer?.cancel();
     final controller = context.read<PlayerController>();
-    // 网页频道：通知网页重置光标隐藏定时器
-    // （数字键切频道等 Flutter 侧交互不会触发网页 JS 事件）
-    if (controller.webPageActive && controller.webController != null) {
-      try {
-        controller.webController
-            .evaluateJavascript(source: 'window.__omShowCursor && window.__omShowCursor()');
-      } catch (_) {}
+    // 网页频道：让 WebView 重新获得焦点 + 重置光标隐藏定时器
+    // （点击节目列表/数字键切频道后焦点在 Flutter 侧，网页收不到事件）
+    if (controller.webPageActive) {
+      controller.webFocusNode?.requestFocus();
+      if (controller.webController != null) {
+        try {
+          controller.webController
+              .evaluateJavascript(source: 'window.__omShowCursor && window.__omShowCursor()');
+        } catch (_) {}
+      }
     }
     if (!controller.isPlaying) return;
     _cursorHideTimer = Timer(const Duration(seconds: 3), () {
@@ -357,8 +360,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 把焦点收回根节点，保证硬件快捷键/数字选台随时可响应。
   /// 设置面板打开时不抢焦点（里面有输入框）。
+  /// 网页频道时不抢焦点（WebView 需要焦点才能正常播放和响应事件）。
   void _ensureShortcutFocus() {
     if (_settingsOpen) return;
+    if (context.read<PlayerController>().webPageActive) return;
     if (_rootFocusNode.hasPrimaryFocus) return;
     _rootFocusNode.requestFocus();
   }
@@ -1356,6 +1361,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// WebView 是否报告过任何加载进度（有进度即证明 WebView2 运行时正常）
   bool _sawProgress = false;
   InAppWebViewController? _webController;
+  /// WebView 焦点：网页频道播放时需要让 WebView 获得焦点，
+  /// 否则点击节目列表/数字键切频道后焦点留在 Flutter 侧，
+  /// 网页事件不触发、光标不自动隐藏、播放可能异常
+  final FocusNode _webFocusNode = FocusNode();
 
   /// 后台缓冲期间每秒探测一次页面 <video> 的真实起播状态
   Timer? _probeTimer;
@@ -1729,6 +1738,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   @override
   void initState() {
     super.initState();
+    // 把 WebView 的 FocusNode 存到 PlayerController，
+    // 供 PlayerScreen 在用户交互后请求 WebView 焦点
+    context.read<PlayerController>().webFocusNode = _webFocusNode;
     // 每次打开网页频道前清理 WebView2 缓存，避免旧频道的 Service Worker
     // 或残留状态导致新频道黑屏/长时间不播放
     cleanWebView2Cache();
@@ -1763,6 +1775,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _probeTimer?.cancel();
     _forceForegroundTimer?.cancel();
     _runtimeTimer?.cancel();
+    _webFocusNode.dispose();
     // #region debug-point E:heartbeat
     _diagTimer?.cancel();
     // #endregion
@@ -1840,9 +1853,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        InAppWebView(
-          webViewEnvironment: webViewEnvironment,
-          initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+        Focus(
+          focusNode: _webFocusNode,
+          child: InAppWebView(
+            webViewEnvironment: webViewEnvironment,
+            initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           initialSettings: InAppWebViewSettings(
             // 网页播放器（如央视频）自动开播，无需用户先点击网页
             mediaPlaybackRequiresUserGesture: false,
@@ -1857,6 +1872,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             _webController = controller;
             // 把 controller 存到 PlayerController，供 Dart 侧调用网页 JS
             context.read<PlayerController>().webController = controller;
+            // 让 WebView 获得焦点：否则点击节目列表/数字键切频道后
+            // 焦点留在 Flutter 侧，网页事件不触发
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _webFocusNode.requestFocus();
+            });
             // #region debug-point A:webview-created
             _dbg('A', 'overlay:onWebViewCreated', 'webview created');
             // #endregion
@@ -1864,6 +1884,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             controller.addJavaScriptHandler(
               handlerName: 'omPlaying',
               callback: (_) {
+                // 视频起播：让 WebView 获得焦点，确保网页事件正常
+                if (mounted) _webFocusNode.requestFocus();
                 if (mounted && !widget.foreground) widget.onForeground();
               },
             );
@@ -1967,6 +1989,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               }
             }
           },
+        ),
         ),
         // 等待层：仅后台缓冲期间显示（推到前台后即使页面慢也露出来，
         // 避免「正在打开网页频道」永久转圈把用户锁死）

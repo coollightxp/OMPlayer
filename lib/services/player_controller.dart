@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
 import 'package:screen_brightness/screen_brightness.dart';
@@ -710,6 +711,9 @@ class PlayerController extends ChangeNotifier {
 
   /// 网页频道的 WebView 控制器（Dart 侧调用网页 JS 用，如重置光标隐藏定时器）
   dynamic webController;
+
+  /// 网页频道的 FocusNode（用户交互后请求 WebView 焦点用）
+  FocusNode? webFocusNode;
 
   /// 网页是否已在【前台】播放（网页在后台缓冲时为 false，视频层保持
   /// 黑屏占位；网页播放器真正带声音起播后由 JS 回调置 true，
