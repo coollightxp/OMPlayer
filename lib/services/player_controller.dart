@@ -39,7 +39,7 @@ void _dbg(String hypothesisId, String location, String msg,
       .post(Uri.parse('http://127.0.0.1:7777/event'),
           body: jsonEncode({
             'sessionId': 'web-channel-stuck',
-            'runId': 'pre-fix',
+            'runId': 'post-fix',
             'hypothesisId': hypothesisId,
             'location': location,
             'msg': '[DEBUG] $msg',
@@ -733,6 +733,8 @@ class PlayerController extends ChangeNotifier {
   /// 网页内播放/暂停切换 JS（递归同源 iframe，只操作可见面积最大的
   /// 主视频——页面常带隐藏预览/广告播放器，"任一个在播就全暂停"会
   /// 把主视频误停）。
+  /// 暂停时先代点站点自身的大播放钮（央视频 CMG 等播放器只认自身
+  /// 按钮激活，纯 video.play() 会被立即暂停），再兜底 play()。
   /// 返回 '1' 表示切换后暂停，'0' 表示播放中，'2' 表示没找到可见视频。
   static const _webToggleJs = r'''
 (function(){
@@ -745,6 +747,52 @@ class PlayerController extends ChangeNotifier {
     }
     return out;
   }
+  function collectDocs(root, out){
+    out.push(root);
+    var frames = root.querySelectorAll('iframe');
+    for (var i=0;i<frames.length;i++){
+      try { var d = frames[i].contentDocument;
+            if (d) collectDocs(d, out); } catch(e) {}
+    }
+  }
+  function looksClickable(n){
+    if (!n || n.nodeType !== 1) return false;
+    var tg = (n.tagName || '').toLowerCase();
+    if (tg === 'button' || (n.getAttribute &&
+        n.getAttribute('role') === 'button')) return true;
+    var c = ((n.className && n.className.toString)
+        ? n.className.toString() : '') + ' ' + (n.id || '');
+    return /play|start|poster|cover|bigplay|big-play/i.test(c);
+  }
+  // 在视口中心附近寻找被视频盖住的站点大播放钮并点击
+  function proxySiteButton(){
+    var docs = [];
+    collectDocs(document, docs);
+    for (var di=0; di<docs.length; di++){
+      var d = docs[di];
+      var w = d.defaultView.innerWidth || 1, h = d.defaultView.innerHeight || 1;
+      var pts = [[w/2,h/2],[w/2,h/2-70],[w/2,h/2+70],
+                 [w/2-100,h/2],[w/2+100,h/2]];
+      var vids = d.querySelectorAll('video');
+      for (var k=0;k<pts.length;k++){
+        for (var vi=0;vi<vids.length;vi++)
+          vids[vi].style.setProperty('pointer-events','none','important');
+        var el = null;
+        try { el = d.elementFromPoint(pts[k][0], pts[k][1]); } catch(e){}
+        for (var vi=0;vi<vids.length;vi++){
+          try { vids[vi].style.removeProperty('pointer-events'); } catch(e){}
+        }
+        var n = el, dep = 0;
+        while (n && dep < 6){
+          if (looksClickable(n)){
+            try { n.click(); } catch(e){}
+            return;
+          }
+          n = n.parentNode; dep++;
+        }
+      }
+    }
+  }
   var vs = allVideos(document);
   var best = null, bestA = 0;
   for (var i=0;i<vs.length;i++){
@@ -756,6 +804,7 @@ class PlayerController extends ChangeNotifier {
   if (!best) return '2';
   try {
     if (best.paused) {
+      try { proxySiteButton(); } catch(e) {}
       // 只解除静音，音量尊重用户在 App 内的设置（不再强制拉满）
       best.muted = false;
       var p = best.play(); if (p && p.catch) p.catch(function(){});

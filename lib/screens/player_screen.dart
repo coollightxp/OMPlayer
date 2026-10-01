@@ -31,7 +31,7 @@ void _dbg(String hypothesisId, String location, String msg,
       .post(Uri.parse('http://127.0.0.1:7777/event'),
           body: jsonEncode({
             'sessionId': 'web-channel-stuck',
-            'runId': 'pre-fix',
+            'runId': 'post-fix',
             'hypothesisId': hypothesisId,
             'location': location,
             'msg': '[DEBUG] $msg',
@@ -1378,7 +1378,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     s.textContent = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
       + '*{-webkit-user-select:none!important;user-select:none!important}'
       + 'input,textarea{-webkit-user-select:text!important;user-select:text!important}'
-      + 'video{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
+      // 起播【之后】才把 video 拉满全屏。起播前强制 fixed+z-index 最大
+      // 会把站点自己的大播放钮/封面压在视频下方：央视频(CMG)等站点的
+      // 播放器状态机只接受自身按钮激活，程序化 play() 会被立即暂停，
+      // 表现为永久灰屏、点屏幕/播放钮都没反应（v1.0.64 日志证实）
+      + 'html.__om_playing video{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
       + 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}'
       + '#__om_web_layer{position:fixed!important;inset:0!important;background:#000!important;z-index:2147483646!important}';
     (document.head || document.documentElement).appendChild(s);
@@ -1475,6 +1479,26 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     hookedDocs.push(d);
     d.addEventListener('mousemove', onMouseMove, true);
     d.addEventListener('keydown', onKeyDown, true);
+    // 起播前：用户的真实点击（带 user activation）若落在 <video> 上
+    // （播放钮可能被视频层盖住），临时让 video 不参与命中，找到其下方
+    // 站点真正的大播放钮，在同一激活窗口内派发 click——站点 play()
+    // 因此被允许带声起播。找不到可点目标时完全不干预原事件。
+    d.addEventListener('click', function(e){
+      if (started) return;
+      var t = e.target;
+      if (!t || t.tagName !== 'VIDEO') return;
+      try {
+        var target = findRealClickTarget(d, e.clientX, e.clientY);
+        if (target) {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            target.dispatchEvent(new d.defaultView.MouseEvent('click',
+                {bubbles:true, cancelable:true, view:d.defaultView}));
+          } catch(err) { try { target.click(); } catch(e2){} }
+        }
+      } catch(err){}
+    }, true);
     // 同源 iframe 有自己的文档树，主文档的 CSS 选择器管不到其内部，
     // 向其中也注入隐藏光标样式
     try {
@@ -1482,6 +1506,50 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       ss.textContent = 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}';
       (d.head || d.documentElement).appendChild(ss);
     } catch(e){}
+  }
+  // 在 (x,y) 附近找到被视频盖住的站点播放按钮（含同文档内小范围搜索）
+  function findRealClickTarget(doc, x, y){
+    function looksClickable(n){
+      if (!n || n.nodeType !== 1) return false;
+      var tg = (n.tagName || '').toLowerCase();
+      if (tg === 'button' || (n.getAttribute &&
+          n.getAttribute('role') === 'button')) return true;
+      var c = ((n.className && n.className.toString)
+          ? n.className.toString() : '') + ' ' + (n.id || '');
+      if (/play|start|poster|cover|bigplay|big-play/i.test(c)) return true;
+      var cs = null;
+      try { cs = doc.defaultView.getComputedStyle(n); } catch(e) {}
+      if (cs && cs.cursor === 'pointer') return true;
+      return false;
+    }
+    function pickAt(px, py){
+      var vids = doc.querySelectorAll('video');
+      for (var i=0;i<vids.length;i++)
+        vids[i].style.setProperty('pointer-events','none','important');
+      var el = null;
+      try { el = doc.elementFromPoint(px, py); } catch(e){}
+      for (var i=0;i<vids.length;i++){
+        try { vids[i].style.removeProperty('pointer-events'); } catch(e){}
+      }
+      var n = el, depth = 0;
+      while (n && depth < 6){
+        if (looksClickable(n)) return n;
+        n = n.parentNode; depth++;
+      }
+      return null;
+    }
+    var hit = pickAt(x, y);
+    if (hit) return hit;
+    var w = doc.defaultView.innerWidth || 1, hh = doc.defaultView.innerHeight || 1;
+    var offsets = [[0,-70],[0,70],[-100,0],[100,0],
+                   [0,-140],[0,140],[-180,0],[180,0]];
+    for (var k=0;k<offsets.length;k++){
+      var px = x + offsets[k][0], py = y + offsets[k][1];
+      if (px < 0 || py < 0 || px > w || py > hh) continue;
+      hit = pickAt(px, py);
+      if (hit) return hit;
+    }
+    return null;
   }
   hookDoc(document);
   showCursor();
@@ -1653,6 +1721,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       stallTicks++;
       if (stallTicks >= 43) { started = false; stallTicks = 0; pausedTicks = 0; }
     } else if (!main.paused) { stallTicks = 0; }
+    // 同步全屏 CSS 开关：起播锁定后才把视频拉满（含同源 iframe）
+    for (var ci = 0; ci < hookedDocs.length; ci++) {
+      try {
+        hookedDocs[ci].documentElement.classList
+            .toggle('__om_playing', started);
+      } catch(e) {}
+    }
     // 锁定后用户的手动暂停生效，不再自动拉起
     if (started) return;
     // 连续 2 拍仍 paused（纯 play() 无效）即代点大播放按钮，
