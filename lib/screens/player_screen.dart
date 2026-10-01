@@ -1818,15 +1818,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var up = !!window.__omUserPaused;
     var anyPaused = false;
     var anyPlaying = false;
-    // VideoJS 等封装播放器：通过其 API 解除静音，避免被内部状态机覆盖
-    try {
-      if (window.videojs && videojs.getAllPlayers) {
-        var ps = videojs.getAllPlayers();
-        for (var pi=0; pi<ps.length; pi++){
-          try { ps[pi].muted(false); ps[pi].volume(1); } catch(e){}
+    // VideoJS 等封装播放器：走其 API 播放+解除静音。
+    // 网站播放器内部状态机可能覆盖 raw video.play()，必须用 player.play()
+    if (!up) {
+      try {
+        if (window.videojs && videojs.getAllPlayers) {
+          var ps = videojs.getAllPlayers();
+          for (var pi=0; pi<ps.length; pi++){
+            try { ps[pi].muted(false); ps[pi].volume(1); ps[pi].play(); } catch(e){}
+          }
         }
-      }
-    } catch(e) {}
+      } catch(e) {}
+    }
     for (var i=0;i<vs.length;i++){
       var v = vs[i];
       try {
