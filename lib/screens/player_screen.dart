@@ -1414,7 +1414,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             lastSent = n;
             var st = '';
             try { st = (new Error().stack || '').split('\n').slice(1,4).join(' | '); } catch(e){}
-            fire('omDbg', 'call.'+fnName, st.slice(0, 260));
+            fire('omDbg', 'call.'+fnName+' '+st.slice(0, 240));
           }
           return orig.apply(this, arguments);
         };
@@ -1431,6 +1431,28 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         fire('omDbg', 'event.play on ' + c);
       }, true);
     } catch(e) { fire('omDbg', 'wrap-fail ' + e); }
+  })();
+  // ===== 调试 F：环境信息 + 页面全局错误/未捕获 Promise（仅上报一次）=====
+  (function(){
+    try {
+      fire('omDbg', 'env SAB=' + (typeof SharedArrayBuffer)
+        + ' W=' + (typeof Worker)
+        + ' ' + window.innerWidth + 'x' + window.innerHeight
+        + ' ' + navigator.userAgent.slice(0, 130));
+    } catch(e) {}
+    window.addEventListener('error', function(ev){
+      try {
+        fire('omDbg', 'winerr ' + (ev.message || '') + ' @'
+          + ((ev.filename || '').split('/').slice(-2).join('/'))
+          + ':' + ev.lineno);
+      } catch(e){}
+    }, true);
+    window.addEventListener('unhandledrejection', function(ev){
+      try {
+        var r = ev.reason;
+        fire('omDbg', 'reject ' + String(r && (r.name || r.message || r)).slice(0, 180));
+      } catch(e){}
+    });
   })();
   // 元素命中链简述（供点击代理/快照日志）
   function chainOf(el, depth){
@@ -1522,6 +1544,17 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     hookedDocs.push(d);
     d.addEventListener('mousemove', onMouseMove, true);
     d.addEventListener('keydown', onKeyDown, true);
+    // 调试 F：document 级鼠标按下探针（判断真实点击是否到达网页）
+    var __lastDown = 0;
+    d.addEventListener('mousedown', function(e){
+      var n = Date.now();
+      if (n - __lastDown < 900) return;
+      __lastDown = n;
+      try {
+        fire('omDbg', 'mousedown ' + Math.round(e.clientX) + ','
+          + Math.round(e.clientY) + ' ' + chainOf(e.target, 3));
+      } catch(x){}
+    }, true);
     // 起播前：用户的真实点击（带 user activation）若落在 <video> 上
     // （播放钮可能被视频层盖住），临时让 video 不参与命中，找到其下方
     // 站点真正的大播放钮，在同一激活窗口内派发 click——站点 play()
@@ -1654,6 +1687,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       '.prism-player .vjs-big-play-button','.vcp-bigplay',
       '.dplayer-play-icon','.art-play-btn','.art-video-poster',
       '.tvplayer-play','.player-start-btn','.tv-player-start',
+      // 央视频(CMG/VideoJS)站点自盖的海报/加载遮罩，其中心点击由
+      // 站点自身脚本接管起播
+      '.con.poster','.loading-main','.y-full-bg','.y-full','[id^="vodbox"]',
       '[class*="big-play"]','[class*="bigPlay"]','[class*="start-button"]',
       '[class*="player-start"]','[class*="cover-play"]','[class*="video-cover"]',
       '[class*="poster"]'
@@ -1669,6 +1705,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       try { r = b.getBoundingClientRect(); } catch(e) { continue; }
       // 大播放钮/封面都有一定面积；过滤隐藏元素和控制条小图标
       if (r.width >= 48 && r.height >= 48) {
+        // 调试 F：记录实际代点的元素
+        try { fire('omDbg', 'clickbtn ' + chainOf(b, 3)
+          + ' ' + Math.round(r.width) + 'x' + Math.round(r.height)); } catch(e){}
         try { b.click(); } catch(e) {}
         clickCooldown = 3; // 点完冷却几拍，让播放器自己起播
         return true;
@@ -1710,6 +1749,24 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       if (a > bestA) { bestA = a; best = vs[i]; }
     }
     return best;
+  }
+  // 调试 F：VideoJS 播放器内部状态（央视频使用 video.js），
+  // 用来分辨是「无源/错误」还是「有源但被状态机暂停」
+  function vjsState(){
+    try {
+      if (!window.videojs || !videojs.getAllPlayers) return ' | vjs=none';
+      var ps = videojs.getAllPlayers(), out = '';
+      for (var i=0;i<ps.length;i++){
+        var pl = ps[i], err = null;
+        try { err = pl.error(); } catch(e){}
+        out += ' | vjs' + i
+          + ' p=' + (pl.paused() ? 1 : 0)
+          + ' rs=' + pl.readyState() + ' ns=' + pl.networkState()
+          + ' src=' + String(pl.currentSrc() || '').slice(0, 55)
+          + ' err=' + (err ? (err.code + ':' + String(err.message || '').slice(0, 40)) : '0');
+      }
+      return out;
+    } catch(e) { return ' | vjs-fail ' + String(e).slice(0, 80); }
   }
   function kick(){
     if (location.href !== lastUrl) {
@@ -1754,7 +1811,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           try { vids[vi].style.removeProperty('pointer-events'); } catch(e){}
         }
         fire('omDbg', 'hit ' + parts.join(' || ')
-            + ' | muted=' + main.muted + ' fs=' + (document.fullscreenElement ? 1 : 0));
+            + ' | muted=' + main.muted + ' fs=' + (document.fullscreenElement ? 1 : 0)
+            + vjsState());
       } catch(e) { fire('omDbg', 'hit-fail ' + e); }
     }
     // 播放状态上报（供 App 面板图标与判定），只报主视频，去重
@@ -1763,14 +1821,20 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var advancing = false;
     try {
       if (!started) {
-        // 起播前保证有声；起播后音量交给 App（网页模式音量由
-        // PlayerController 直接写 video.volume，这里不再每拍覆盖）
-        main.muted = false;
-        if (main.volume <= 0.01) main.volume = 1;
+        // 起播前尊重站点的【静音自动播放】启动策略（央视频初始
+        // muted=true）：只调 play()，绝不强行 unmute——带声 play()
+        // 被站点拒绝后它会把视频重新暂停。等锁定起播后再解除静音
         if (main.paused && main.play) {
-          var p = main.play();
-          if (p && p.catch) p.catch(function(){});
+          var pp = main.play();
+          if (pp && pp.catch) pp.catch(function(err){
+            try {
+              fire('omDbg', 'play-reject '
+                + String(err && (err.name || err.message) || err).slice(0, 120));
+            } catch(e){}
+          });
         }
+      } else {
+        try { if (main.muted) main.muted = false; } catch(e){}
       }
       if (!main.paused && main.readyState >= 2 && main.currentTime > 0) {
         advancing = true;
@@ -1801,7 +1865,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       stallTicks++;
       if (stallTicks >= 43) { started = false; stallTicks = 0; pausedTicks = 0; }
     } else if (!main.paused) { stallTicks = 0; }
-    // 同步全屏 CSS 开关：起播锁定后才把视频拉满（含同源 iframe）
+    // 同步全屏 CSS 开关：起播锁定后才把视频拉满（含同源 iframe）；
+    // __omStarted 供 Dart 侧音量写入判断（起播前不解除站点静音）
+    window.__omStarted = started;
     for (var ci = 0; ci < hookedDocs.length; ci++) {
       try {
         hookedDocs[ci].documentElement.classList
@@ -1810,21 +1876,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
     // 锁定后用户的手动暂停生效，不再自动拉起
     if (started) return;
-    // 连续 2 拍仍 paused（纯 play() 无效）即代点大播放按钮，
-    // 避免与 play() 同一拍双动作把播放又切回暂停
+    // 连续 2 拍仍 paused（纯 play() 无效）即代点大播放按钮/站点海报
     if (main.paused) {
       pausedTicks++;
       if (clickCooldown > 0) { clickCooldown--; }
-      else if (pausedTicks >= 2) {
-        if (clickBigPlayButton()) return;
-      }
-      // 找不到任何大播放钮：连续 6 拍仍暂停，直接对主视频画面点一下
-      // （很多自研播放器点画面=播放），之后冷却避免反复 toggle
-      if (videoClickCooldown > 0) { videoClickCooldown--; }
-      else if (pausedTicks >= 6) {
-        try { main.click(); } catch(e){}
-        videoClickCooldown = 5;
-      }
+      else if (pausedTicks >= 2) { clickBigPlayButton(); }
     } else {
       pausedTicks = 0;
     }
@@ -1860,7 +1916,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
   if (!best) return 0;
   try {
-    best.muted = false; best.volume = 1;
+    // 起播前不解除站点静音（与 kick 策略一致），只尝试播放
     if (best.paused && best.play) { var p = best.play(); if (p && p.catch) p.catch(function(){}); }
     if (!best.paused && best.readyState >= 2 && best.currentTime > 0) return 1;
   } catch(e) {}
@@ -1897,7 +1953,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     } catch(e) {}
     if (best) {
       var br = best.getBoundingClientRect();
-      o.m = {p: best.paused ? 1 : 0, rs: best.readyState,
+      o.m = {p: best.paused ? 1 : 0, mu: best.muted ? 1 : 0,
+             rs: best.readyState,
              ct: Math.round(best.currentTime * 10) / 10,
              w: Math.round(br.width), h: Math.round(br.height)};
     }

@@ -56,11 +56,17 @@
 ## Verification Conclusion（迭代 1，v1.0.65 post-fix）
 部分见效：页面 UI 完整露出（视频尺寸 1536×864 → 原生 890×500），用户能看到央视频整站界面；但视频仍 `p:1`、ct 冻结 0.4~0.5，信息栏 toggle r:"0" 后仍被暂停。说明除"按钮被盖住"外还存在站点侧激活门槛（疑似只接受真实手势/仅允许静音自动播放）。
 
-## Iteration 2 (v1.0.66+67)：假设 F/G 取证据
-新增 JS 侧插桩（不改业务策略）：
-1. Monkey-patch `HTMLMediaElement.prototype.play/pause`，上报调用栈（谁在暂停视频）
-2. document 捕获 play/pause 事件及目标元素
-3. 点击代理上报 HIT/MISS + 命中元素链；派发完整 pointerdown/mousedown/pointerup/mouseup/click 序列
-4. kick 每 5 拍上报视频区域 elementFromPoint 命中链（3 个点）+ muted/fullscreen 状态
-新增 omDbg handler → hypothesisId=F
-请用户：打开频道后，直接用鼠标点击网页播放器**正中央的播放按钮/海报**（不是 App 的信息栏按钮），停留 20 秒。
+## Iteration 2 证据（v1.0.67，央视频 pid=600001818/600108442）
+1. **播放器真身 = VideoJS**：`event.play/pause on VIDEO.video-js vjs-default-skin vjs-big-play-centered`
+2. 视频区中心命中链（video 临时 pointer-events:none 后）不是 vjs 大播放钮，而是**站点自盖的遮罩**：`div.loading.black-bg < div.con.poster < div#vodbox...c-container.img`，后期为 `div.y-full-bg/div.container < div.con.poster`——站点自己的"加载中/海报"层一直不消失，盖在 VideoJS 控件之上
+3. 反复循环：`call.play`(我们) → 300ms 后 `call.pause`(站点)；event.play→event.pause；视频 ct 曾从 0 爬到 0.7 / 8.1 后永久暂停，rs:4
+4. 初始 `muted=true`（站点默认静音起播策略），我们的注入每拍强制 muted=false——疑似 play() 带声被拒绝→VideoJS 捕获 reject→pause
+5. `proxy-click MISS @0,0` 全部是我们自己 kick 里 `main.click()` 的合成点击（坐标 0,0），且未拦截时会落到 video 上让 VideoJS 切换暂停（自己和自己打架）；**用户真实点击在日志里零记录**（落在 poster 层而非 video，无法证明是否到达网页，需补 document 级 mousedown 探针）
+6. 站点 WASM HLS 管线（hls.cmg.js + cmg.worker.js）疑似未完成初始化（loading 层不消失）；需查 SharedArrayBuffer/window.error/videojs player.error
+
+## Iteration 3 (v1.0.68) 方案
+- 行为修复：起播锁定前不再强制 unmute（kick/_probeJs/_applyWebVolume/_webToggleJs 全部由 window.__omStarted 门控），让站点按静音策略起播，started 后再解除静音
+- 去掉 main.click() 合成点击（避免 0,0 点击误触 VideoJS 暂停）
+- 代点选择器补站点遮罩 .con.poster/.loading-main/.y-full-bg/.y-full/[id^="vodbox"]，并记录 clickbtn 命中
+- 补证据：修正调用栈上报（拼进消息）、env(SAB/Worker/UA)、window.onerror/unhandledrejection、play() reject reason、videojs 玩家 paused/rs/ns/currentSrc/error、document 级 mousedown 坐标+目标链（验证真实点击是否到达网页）、快照增加 mu
+- 待验证：静音起播能否让站点管线进入播放态；真实点击是否被 WebView2 HWND 吞掉

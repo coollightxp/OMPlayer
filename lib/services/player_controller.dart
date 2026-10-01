@@ -805,8 +805,8 @@ class PlayerController extends ChangeNotifier {
   try {
     if (best.paused) {
       try { proxySiteButton(); } catch(e) {}
-      // 只解除静音，音量尊重用户在 App 内的设置（不再强制拉满）
-      best.muted = false;
+      // 起播锁定前尊重站点静音自动播放策略，不强制解除静音
+      if (window.__omStarted === true) best.muted = false;
       var p = best.play(); if (p && p.catch) p.catch(function(){});
       return '0';
     }
@@ -1214,7 +1214,10 @@ class PlayerController extends ChangeNotifier {
         'for(var i=0;i<f.length;i++){try{var d=f[i].contentDocument;'
         'if(d)out=out.concat(av(d));}catch(e){}}return out;}'
         'var vs=av(document);for(var i=0;i<vs.length;i++){'
-        'try{vs[i].volume=$v;vs[i].muted=$m;}catch(e){}}})();');
+        // 用户显式静音（音量0）总是写入；解除静音必须等网页起播锁定后，
+        // 否则会破坏站点的静音自动播放策略导致视频被重新暂停
+        'try{vs[i].volume=$v;'
+        'if($m||window.__omStarted===true){vs[i].muted=$m;}}catch(e){}}})();');
   }
 
   /// 静音/恢复（M 键）
