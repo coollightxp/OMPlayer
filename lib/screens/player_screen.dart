@@ -457,10 +457,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                             : const SizedBox.shrink()),
                   ),
 
-                  // 桌面端亮度调节遮罩：普通/网页播放统一生效
-                  //（Flutter 遮罩盖在网页之上；网页截图走 WebView 自身
-                  // 捕获，不含此遮罩，与普通模式截图原始帧行为一致）
-                  if (controller.isDesktop)
+                  // 桌面端亮度调节遮罩：仅普通视频层生效。
+                  // 网页频道用 WebView2 原生 HWND，Flutter 半透明层盖上去
+                  // 会变成灰蒙蒙，所以网页频道走系统亮度调节，不叠 Flutter 遮罩
+                  if (controller.isDesktop && !controller.webPageActive)
                     Positioned.fill(
                       child: IgnorePointer(
                         child: Container(
