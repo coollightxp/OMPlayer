@@ -785,6 +785,8 @@ class PlayerController extends ChangeNotifier {
     WinHotkeys().setCursorHide(true);
     // 把当前音量同步给页面 video（kick 起播锁定后不再改写音量）
     _applyWebVolume();
+    // 网页频道用 CSS filter 调光（系统亮度 API 管不到 WebView2）
+    _applyWebBrightness();
   }
 
   /// 注销网页控制桥（WebView 销毁前）
@@ -1200,7 +1202,22 @@ class PlayerController extends ChangeNotifier {
       await ScreenBrightness.instance
           .setApplicationScreenBrightness(_brightness);
     } catch (_) {}
+    // 网页频道：WebView2 原生 HWND 不受系统亮度影响，用 CSS filter 调光
+    if (_webPageActive) _applyWebBrightness();
     notifyListeners();
+  }
+
+  /// 网页频道：把亮度写入所有 video 的 CSS filter
+  void _applyWebBrightness() {
+    final eval = _webEval;
+    if (eval == null) return;
+    final b = _brightness.toStringAsFixed(3);
+    eval('(function(){function av(root){var out=Array.prototype.slice.call('
+        'root.querySelectorAll("video"));var f=root.querySelectorAll("iframe");'
+        'for(var i=0;i<f.length;i++){try{var d=f[i].contentDocument;'
+        'if(d)out=out.concat(av(d));}catch(e){}}return out;}'
+        'var vs=av(document);for(var i=0;i<vs.length;i++){'
+        'try{vs[i].style.filter="brightness(" + $b + ")";}catch(e){}}})();');
   }
 
   /// 调节音量增量

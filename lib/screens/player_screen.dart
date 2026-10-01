@@ -1783,6 +1783,20 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       return out;
     } catch(e) { return ' | vjs-fail ' + String(e).slice(0, 80); }
   }
+  function bindMedia(v){
+    if (v.__omMediaBound) return;
+    v.__omMediaBound = true;
+    v.addEventListener('play', function(){ fire('omPlay', 1); });
+    v.addEventListener('pause', function(){ fire('omPlay', 0); });
+    // 网站一静音立刻恢复，对抗站点反复 mute
+    v.addEventListener('volumechange', function(){
+      try {
+        if (v.muted) { v.removeAttribute('muted'); v.muted = false; }
+        var wv = window.__omVol;
+        if (typeof wv === 'number' && v.volume !== wv) v.volume = wv;
+      } catch(e) {}
+    }, true);
+  }
   function kick(){
     if (location.href !== lastUrl) {
       lastUrl = location.href;
@@ -1804,10 +1818,21 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var up = !!window.__omUserPaused;
     var anyPaused = false;
     var anyPlaying = false;
+    // VideoJS 等封装播放器：通过其 API 解除静音，避免被内部状态机覆盖
+    try {
+      if (window.videojs && videojs.getAllPlayers) {
+        var ps = videojs.getAllPlayers();
+        for (var pi=0; pi<ps.length; pi++){
+          try { ps[pi].muted(false); ps[pi].volume(1); } catch(e){}
+        }
+      }
+    } catch(e) {}
     for (var i=0;i<vs.length;i++){
       var v = vs[i];
       try {
         bindMedia(v);
+        // 解除静音：同时清属性和属性值，防止 defaultMuted/属性残留
+        try { v.removeAttribute('muted'); } catch(e) {}
         v.muted = false;
         var wv = window.__omVol;
         v.volume = (typeof wv === 'number') ? wv : 1;
@@ -2034,12 +2059,19 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             mediaPlaybackRequiresUserGesture: false,
             supportZoom: false,
             transparentBackground: false,
+            // 禁用缓存，避免旧缓存导致加载慢/卡在加载页
+            cacheMode: CacheMode.LOAD_NO_CACHE,
           ),
-          onWebViewCreated: (controller) {
+          onWebViewCreated: (controller) async {
             _webController = controller;
             // #region debug-point A:webview-created
             _dbg('A', 'overlay:onWebViewCreated', 'webview created');
             // #endregion
+            // 清空 WebView 缓存，避免旧缓存导致加载慢或卡在加载页
+            try {
+              await controller.clearCache();
+              await CookieManager.instance().deleteAllCookies();
+            } catch (_) {}
             // JS bridge 通道
             controller.addJavaScriptHandler(
               handlerName: 'omPlaying',
@@ -2110,6 +2142,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             _dbg('B', 'overlay:onLoadStop', 'load stop');
             // #endregion
             await _inject();
+          },
+          // 页面开始渲染时立即注入 CSS，避免白屏闪现
+          onPageCommitVisible: (controller, _) async {
+            try {
+              await controller.evaluateJavascript(source: _cssJs);
+            } catch (_) {}
           },
           onProgressChanged: (controller, progress) {
             // 能收到任何进度都说明 WebView2 运行时工作正常
