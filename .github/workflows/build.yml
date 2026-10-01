@@ -15,6 +15,10 @@ jobs:
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
+    # SourceForge 持续不可用时改用 GitHub release 作为 MDK SDK 镜像；
+    # fvp 通过 FVP_DEPS_URL 覆盖默认 nightly 下载地址
+    env:
+      FVP_DEPS_URL: https://github.com/wang-bin/mdk-sdk/releases/download/v0.36.0
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -130,6 +134,10 @@ jobs:
   build-windows:
     name: Build Windows
     runs-on: windows-latest
+    # SourceForge 持续不可用时改用 GitHub release 作为 MDK SDK 镜像；
+    # fvp 通过 FVP_DEPS_URL 覆盖默认 nightly 下载地址
+    env:
+      FVP_DEPS_URL: https://github.com/wang-bin/mdk-sdk/releases/download/v0.36.0
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -482,6 +490,10 @@ jobs:
     # 22.04：desktop_webview_window 的 Linux 端依赖 webkit2gtk-4.0，
     # 该包在 24.04 中已被移除（仅剩 4.1）
     runs-on: ubuntu-22.04
+    # SourceForge 持续不可用时改用 GitHub release 作为 MDK SDK 镜像；
+    # fvp 通过 FVP_DEPS_URL 覆盖默认 nightly 下载地址
+    env:
+      FVP_DEPS_URL: https://github.com/wang-bin/mdk-sdk/releases/download/v0.36.0
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
