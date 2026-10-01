@@ -2058,7 +2058,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
                       args.length > 1 ? {'x': '${args[1]}'} : null);
                 }
               },
-            ),
+            );
             controller.addJavaScriptHandler(
               handlerName: 'omPlay',
               callback: (args) {
