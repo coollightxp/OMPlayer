@@ -283,12 +283,7 @@ class PlayerController extends ChangeNotifier {
       );
       _sourceIndex =
           srcIdx < target.streamUrls.length ? srcIdx : 0;
-      // 上次是网页频道：启动时不自动弹网站，仅保留选中状态
-      if (target.isWebPage) {
-        _currentChannel = target;
-        notifyListeners();
-        return;
-      }
+      // 上次是网页频道：启动时也自动打开网页播放
       await playChannel(target);
       // 开机时系统网络/DNS 可能尚未就绪，首次拉流偶发超时失败。
       // 3 秒后在用户无操作（未手动切台/未投屏）的前提下自动重试一次
