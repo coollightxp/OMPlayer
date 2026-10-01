@@ -1401,6 +1401,49 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function fire(name, arg){
     try { window.flutter_inappwebview.callHandler(name, arg); } catch(e) {}
   }
+  // ===== 调试 F：谁在调 play/pause + 命中链快照（web-channel-stuck）=====
+  (function(){
+    try {
+      var proto = HTMLMediaElement.prototype;
+      function wrap(fnName){
+        var orig = proto[fnName];
+        var lastSent = 0;
+        proto[fnName] = function(){
+          var n = Date.now();
+          if (n - lastSent > 800) {
+            lastSent = n;
+            var st = '';
+            try { st = (new Error().stack || '').split('\n').slice(1,4).join(' | '); } catch(e){}
+            fire('omDbg', 'call.'+fnName, st.slice(0, 260));
+          }
+          return orig.apply(this, arguments);
+        };
+      }
+      wrap('play'); wrap('pause');
+      document.addEventListener('pause', function(e){
+        var t = e.target, c = '';
+        try { c = t.tagName + '.' + (t.className || '').toString().slice(0,60); } catch(x){}
+        fire('omDbg', 'event.pause on ' + c);
+      }, true);
+      document.addEventListener('play', function(e){
+        var t = e.target, c = '';
+        try { c = t.tagName + '.' + (t.className || '').toString().slice(0,60); } catch(x){}
+        fire('omDbg', 'event.play on ' + c);
+      }, true);
+    } catch(e) { fire('omDbg', 'wrap-fail ' + e); }
+  })();
+  // 元素命中链简述（供点击代理/快照日志）
+  function chainOf(el, depth){
+    var out = [], n = el, d = 0;
+    while (n && d < depth && n.nodeType === 1){
+      var s = n.tagName.toLowerCase();
+      if (n.id) s += '#' + n.id;
+      if (n.className && n.className.toString)
+        s += '.' + n.className.toString().trim().replace(/\s+/g,'.').slice(0,80);
+      out.push(s); n = n.parentNode; d++;
+    }
+    return out.join('<');
+  }
   // 网页自己的双击全屏与 App 窗口全屏冲突，屏蔽之
   document.addEventListener('dblclick', function(e){
     e.stopPropagation(); e.preventDefault();
@@ -1489,13 +1532,25 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       if (!t || t.tagName !== 'VIDEO') return;
       try {
         var target = findRealClickTarget(d, e.clientX, e.clientY);
+        // 调试 F：记录代理是否找到站点播放钮及其命中链
+        fire('omDbg', 'proxy-click ' + (target
+            ? 'HIT ' + chainOf(target, 4)
+            : 'MISS @' + Math.round(e.clientX) + ',' + Math.round(e.clientY)));
         if (target) {
           e.preventDefault();
           e.stopPropagation();
-          try {
-            target.dispatchEvent(new d.defaultView.MouseEvent('click',
-                {bubbles:true, cancelable:true, view:d.defaultView}));
-          } catch(err) { try { target.click(); } catch(e2){} }
+          // 完整指针事件序列（部分播放器只听 mousedown/pointerdown）
+          var seq = ['pointerdown','mousedown','pointerup','mouseup','click'];
+          for (var si=0; si<seq.length; si++){
+            try {
+              var Ctor = seq[si].indexOf('pointer') === 0
+                  ? d.defaultView.PointerEvent : d.defaultView.MouseEvent;
+              target.dispatchEvent(new Ctor(seq[si],
+                  {bubbles:true, cancelable:true, view:d.defaultView,
+                   clientX:e.clientX, clientY:e.clientY}));
+            } catch(err) {}
+          }
+          try { target.click(); } catch(e2){}
         }
       } catch(err){}
     }, true);
@@ -1677,6 +1732,31 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       return;
     }
     noVideoTicks = 0;
+    // 调试 F：每 5 拍（约 3.5s）上报一次视频区域命中链，
+    // 看站点播放按钮/封面到底是什么元素、是否被视频盖住
+    if (!window.__omDbgTick) window.__omDbgTick = 0;
+    window.__omDbgTick++;
+    if (window.__omDbgTick % 5 === 1 && !started) {
+      try {
+        var mr = main.getBoundingClientRect();
+        var pts = [[mr.left+mr.width/2, mr.top+mr.height/2],
+                   [mr.left+mr.width/2, mr.top+mr.height*0.3],
+                   [mr.left+mr.width/2, mr.top+mr.height*0.75]];
+        var vids = document.querySelectorAll('video');
+        for (var vi=0;vi<vids.length;vi++)
+          vids[vi].style.setProperty('pointer-events','none','important');
+        var parts = [];
+        for (var pi=0;pi<pts.length;pi++){
+          var el = document.elementFromPoint(pts[pi][0], pts[pi][1]);
+          parts.push(chainOf(el, 4));
+        }
+        for (var vi=0;vi<vids.length;vi++){
+          try { vids[vi].style.removeProperty('pointer-events'); } catch(e){}
+        }
+        fire('omDbg', 'hit ' + parts.join(' || ')
+            + ' | muted=' + main.muted + ' fs=' + (document.fullscreenElement ? 1 : 0));
+      } catch(e) { fire('omDbg', 'hit-fail ' + e); }
+    }
     // 播放状态上报（供 App 面板图标与判定），只报主视频，去重
     var st = !main.paused ? 1 : 0;
     if (st !== lastReported) { lastReported = st; fire('omPlay', st); }
@@ -1970,6 +2050,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               handlerName: 'omMouse',
               callback: (_) => widget.onWebMouseMove(),
             );
+            controller.addJavaScriptHandler(
+              handlerName: 'omDbg',
+              callback: (args) {
+                if (args.isNotEmpty) {
+                  _dbg('F', 'webjs', '${args.first}',
+                      args.length > 1 ? {'x': '${args[1]}'} : null);
+                }
+              },
+            ),
             controller.addJavaScriptHandler(
               handlerName: 'omPlay',
               callback: (args) {

@@ -53,5 +53,14 @@
 3. `_webToggleJs`（信息栏播放钮）：暂停时先在视口中心附近 elementFromPoint 代点站点大播放钮，再兜底 video.play()
 4. runId 切 post-fix；业务行为其余不变
 
-## Verification Conclusion
-等待 post-fix 证据：期望快照由 `p:1,ct 冻结` 变为 `p:0` 且 ct 持续增长，__om_playing 后视频全屏起播。
+## Verification Conclusion（迭代 1，v1.0.65 post-fix）
+部分见效：页面 UI 完整露出（视频尺寸 1536×864 → 原生 890×500），用户能看到央视频整站界面；但视频仍 `p:1`、ct 冻结 0.4~0.5，信息栏 toggle r:"0" 后仍被暂停。说明除"按钮被盖住"外还存在站点侧激活门槛（疑似只接受真实手势/仅允许静音自动播放）。
+
+## Iteration 2 (v1.0.66+67)：假设 F/G 取证据
+新增 JS 侧插桩（不改业务策略）：
+1. Monkey-patch `HTMLMediaElement.prototype.play/pause`，上报调用栈（谁在暂停视频）
+2. document 捕获 play/pause 事件及目标元素
+3. 点击代理上报 HIT/MISS + 命中元素链；派发完整 pointerdown/mousedown/pointerup/mouseup/click 序列
+4. kick 每 5 拍上报视频区域 elementFromPoint 命中链（3 个点）+ muted/fullscreen 状态
+新增 omDbg handler → hypothesisId=F
+请用户：打开频道后，直接用鼠标点击网页播放器**正中央的播放按钮/海报**（不是 App 的信息栏按钮），停留 20 秒。
