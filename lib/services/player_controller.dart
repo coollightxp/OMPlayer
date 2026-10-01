@@ -747,73 +747,26 @@ class PlayerController extends ChangeNotifier {
     }
     return out;
   }
-  function collectDocs(root, out){
-    out.push(root);
-    var frames = root.querySelectorAll('iframe');
-    for (var i=0;i<frames.length;i++){
-      try { var d = frames[i].contentDocument;
-            if (d) collectDocs(d, out); } catch(e) {}
-    }
-  }
-  function looksClickable(n){
-    if (!n || n.nodeType !== 1) return false;
-    var tg = (n.tagName || '').toLowerCase();
-    if (tg === 'button' || (n.getAttribute &&
-        n.getAttribute('role') === 'button')) return true;
-    var c = ((n.className && n.className.toString)
-        ? n.className.toString() : '') + ' ' + (n.id || '');
-    return /play|start|poster|cover|bigplay|big-play/i.test(c);
-  }
-  // 在视口中心附近寻找被视频盖住的站点大播放钮并点击
-  function proxySiteButton(){
-    var docs = [];
-    collectDocs(document, docs);
-    for (var di=0; di<docs.length; di++){
-      var d = docs[di];
-      var w = d.defaultView.innerWidth || 1, h = d.defaultView.innerHeight || 1;
-      var pts = [[w/2,h/2],[w/2,h/2-70],[w/2,h/2+70],
-                 [w/2-100,h/2],[w/2+100,h/2]];
-      var vids = d.querySelectorAll('video');
-      for (var k=0;k<pts.length;k++){
-        for (var vi=0;vi<vids.length;vi++)
-          vids[vi].style.setProperty('pointer-events','none','important');
-        var el = null;
-        try { el = d.elementFromPoint(pts[k][0], pts[k][1]); } catch(e){}
-        for (var vi=0;vi<vids.length;vi++){
-          try { vids[vi].style.removeProperty('pointer-events'); } catch(e){}
-        }
-        var n = el, dep = 0;
-        while (n && dep < 6){
-          if (looksClickable(n)){
-            try { n.click(); } catch(e){}
-            return;
-          }
-          n = n.parentNode; dep++;
-        }
-      }
-    }
-  }
   var vs = allVideos(document);
-  var best = null, bestA = 0;
+  var anyPlaying = false;
   for (var i=0;i<vs.length;i++){
-    var r;
-    try { r = vs[i].getBoundingClientRect(); } catch(e) { continue; }
-    var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
-    if (a > bestA) { bestA = a; best = vs[i]; }
+    if (!vs[i].paused) { anyPlaying = true; break; }
   }
-  if (!best) return '2';
-  try {
-    if (best.paused) {
-      // 恢复播放：直接 play()，不代点站点按钮。
-      // 代点可能命中暂停钮/其他元素导致"点了没反应"。
-      // 用户已交互过（点过暂停），play() 不受浏览器自动播放策略限制。
-      if (window.__omStarted === true) best.muted = false;
-      var p = best.play(); if (p && p.catch) p.catch(function(){});
-      return '0';
-    }
-    best.pause();
-    return '1';
-  } catch(e) { return '2'; }
+  // 通知 kick()：暂停时不再自动拉起
+  try { window.__omUserPaused = anyPlaying; } catch(e) {}
+  for (var i=0;i<vs.length;i++){
+    var v = vs[i];
+    try {
+      if (anyPlaying) { v.pause(); }
+      else {
+        v.muted = false;
+        var wv = window.__omVol;
+        v.volume = (typeof wv === 'number') ? wv : 1;
+        var p = v.play(); if (p && p.catch) p.catch(function(){});
+      }
+    } catch(e) {}
+  }
+  return anyPlaying ? '1' : '0';
 })();
 ''';
 
@@ -1210,18 +1163,13 @@ class PlayerController extends ChangeNotifier {
     if (eval == null) return;
     final v = _volume.toStringAsFixed(3);
     final m = _volume <= 0.01 ? 'true' : 'false';
-    // window.__omVol 供 JS 侧 200ms 高频 unmute 轮询读取，对抗站点
-    // 播放器反复把 video.muted 写回 true
     eval('(function(){window.__omVol=$v;'
         'function av(root){var out=Array.prototype.slice.call('
         'root.querySelectorAll("video"));var f=root.querySelectorAll("iframe");'
         'for(var i=0;i<f.length;i++){try{var d=f[i].contentDocument;'
         'if(d)out=out.concat(av(d));}catch(e){}}return out;}'
         'var vs=av(document);for(var i=0;i<vs.length;i++){'
-        // 用户显式静音（音量0）总是写入；解除静音必须等网页起播锁定后，
-        // 否则会破坏站点的静音自动播放策略导致视频被重新暂停
-        'try{vs[i].volume=$v;'
-        'if($m||window.__omStarted===true){vs[i].muted=$m;}}catch(e){}}})();');
+        'try{vs[i].volume=$v;vs[i].muted=$m;}catch(e){}}})();');
   }
 
   /// 静音/恢复（M 键）
