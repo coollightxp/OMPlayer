@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -11,11 +12,11 @@ import 'app.dart';
 import 'services/auto_launch.dart';
 import 'services/fvp_register.dart';
 import 'services/media_capture_service.dart';
+import 'services/web_env.dart';
 
 /// 清理 WebView2 磁盘缓存（仅 Windows）。
 /// 只删 Cache / Code Cache / GPUCache / Service Worker 等可重建的缓存子目录，
 /// 保留 Cookies / Local Storage（网站记住用户交互/同意状态，自动播放需要）。
-/// 长期使用后缓存膨胀会导致网页频道打开越来越慢、停在旧画面。
 void cleanWebView2Cache() {
   if (!Platform.isWindows) return;
   try {
@@ -44,6 +45,27 @@ void main() async {
 
   // 启动前清理 WebView2 缓存，避免旧缓存导致网页频道加载慢/卡旧画面
   cleanWebView2Cache();
+
+  // Windows：创建自定义 WebView2 环境，禁用磁盘缓存 + 允许无手势自动播放
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows) {
+    final exeDir = File(Platform.resolvedExecutable).parent;
+    final exeName = Platform.resolvedExecutable
+        .split(Platform.pathSeparator)
+        .last
+        .replaceAll('.exe', '');
+    final userDataFolder =
+        '${exeDir.path}${Platform.pathSeparator}${exeName}.WebView2';
+    try {
+      webViewEnvironment = await WebViewEnvironment.create(
+        settings: WebViewEnvironmentSettings(
+          userDataFolder: userDataFolder,
+          // disk-cache-size=0 禁用磁盘缓存；autoplay-policy 允许无手势带声播放
+          additionalBrowserArguments:
+              '--disk-cache-size=0 --autoplay-policy=no-user-gesture-required',
+        ),
+      );
+    } catch (_) {}
+  }
 
   // 播放缓冲设置需在注册 MDK 后端前读取（仅启动时应用一次）
   final prefs = await SharedPreferences.getInstance();

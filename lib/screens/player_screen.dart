@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../services/player_controller.dart';
+import '../services/web_env.dart';
 import '../services/web_launch.dart';
 import '../services/win_hotkeys.dart';
 import '../services/window_drag.dart';
@@ -1820,6 +1821,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       fit: StackFit.expand,
       children: [
         InAppWebView(
+          webViewEnvironment: webViewEnvironment,
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           initialSettings: InAppWebViewSettings(
             // 网页播放器（如央视频）自动开播，无需用户先点击网页
