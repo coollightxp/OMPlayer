@@ -297,7 +297,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     PhysicalKeyboardKey.numpad9,
   ];
 
-  /// 鼠标活动：恢复显示并重置 3 秒隐藏计时（仅播放中计时）
+  /// 鼠标活动：恢复显示并重置 3 秒隐藏计时
   void _pokeCursor() {
     if (!mounted) return;
     if (_cursorHidden) setState(() => _cursorHidden = false);
@@ -314,13 +314,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         } catch (_) {}
       }
     }
-    if (!controller.isPlaying) return;
+    // 网页频道：无论是否正在播放，都要隐藏光标
+    // （后台加载时 isPlaying 为 false，不检查会导致光标永远不隐藏）
+    final canHide = controller.webPageActive || controller.isPlaying;
+    if (!canHide) return;
     _cursorHideTimer = Timer(const Duration(seconds: 3), () {
       if (mounted &&
-          controller.isPlaying &&
           !_settingsOpen &&
           !_leftDrawerOpen &&
-          !_rightEpgOpen) {
+          !_rightEpgOpen &&
+          (controller.webPageActive || controller.isPlaying)) {
         setState(() => _cursorHidden = true);
       }
     });
