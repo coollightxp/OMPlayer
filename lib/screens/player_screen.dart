@@ -1875,19 +1875,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return out;
   }
   var vs = allVideos(document);
-  var best = null, bestA = 0;
   for (var i=0;i<vs.length;i++){
-    var r;
-    try { r = vs[i].getBoundingClientRect(); } catch(e) { continue; }
-    var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
-    if (a > bestA) { bestA = a; best = vs[i]; }
+    var v = vs[i];
+    try {
+      v.muted = false; v.volume = 1;
+      if (v.paused && v.play) { var p = v.play(); if (p && p.catch) p.catch(function(){}); }
+    } catch(e) {}
+    if (!v.paused && v.readyState >= 2 && v.currentTime > 0) return 1;
   }
-  if (!best) return 0;
-  try {
-    // 起播前不解除站点静音（与 kick 策略一致），只尝试播放
-    if (best.paused && best.play) { var p = best.play(); if (p && p.catch) p.catch(function(){}); }
-    if (!best.paused && best.readyState >= 2 && best.currentTime > 0) return 1;
-  } catch(e) {}
   return 0;
 })();
 ''';
@@ -2050,19 +2045,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             mediaPlaybackRequiresUserGesture: false,
             supportZoom: false,
             transparentBackground: false,
-            // 禁用缓存，避免旧缓存导致加载慢/卡在加载页
-            cacheMode: CacheMode.LOAD_NO_CACHE,
           ),
           onWebViewCreated: (controller) async {
             _webController = controller;
             // #region debug-point A:webview-created
             _dbg('A', 'overlay:onWebViewCreated', 'webview created');
             // #endregion
-            // 清空 WebView 缓存，避免旧缓存导致加载慢或卡在加载页
-            try {
-              await controller.clearCache();
-              await CookieManager.instance().deleteAllCookies();
-            } catch (_) {}
             // JS bridge 通道
             controller.addJavaScriptHandler(
               handlerName: 'omPlaying',
