@@ -30,6 +30,7 @@ import 'remote_admin_service.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
 import 'web_launch.dart';
+import 'network_monitor.dart';
 
 // #region debug-point Z:reporter
 /// 调试证据上报（web-channel-stuck 会话专用）：POST 到本机 Debug Server，
@@ -52,7 +53,7 @@ void _dbg(String hypothesisId, String location, String msg,
 // #endregion
 
 /// 播放器状态
-enum PlayerState { idle, loading, playing, paused, error, ended }
+enum PlayerState { idle, loading, playing, paused, error, ended, waitingForNetwork }
 
 /// 播放器控制器 - 使用 ChangeNotifier 进行状态管理
 class PlayerController extends ChangeNotifier {
@@ -174,6 +175,10 @@ class PlayerController extends ChangeNotifier {
     await _loadSettings();
     await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
+
+    // 启动网络监控：开机启动时可能网络未就绪，需要检测并重试
+    NetworkMonitor.instance.start();
+    NetworkMonitor.instance.onNetworkChanged.listen(_onNetworkChanged);
     // 投屏诊断日志路径（供设置面板展示）
     CastLog.path().then((p) {
       if (p.isNotEmpty && _castLogPath != p) {
@@ -215,6 +220,45 @@ class PlayerController extends ChangeNotifier {
     await restoreLastChannel();
 
     notifyListeners();
+  }
+
+  // ==================== 网络状态处理 ====================
+
+  /// 网络状态变化回调
+  void _onNetworkChanged(bool online) {
+    if (online) {
+      // 网络恢复：如果之前在等待网络，重新播放当前频道
+      if (_state == PlayerState.waitingForNetwork && _currentChannel != null) {
+        _state = PlayerState.loading;
+        notifyListeners();
+        playChannel(_currentChannel!);
+      } else if (_state == PlayerState.paused && _webPageActive) {
+        // 网页频道：网络恢复后尝试继续播放
+        _webEval?.call('window.__omResume && window.__omResume()');
+      } else if (_state == PlayerState.paused && _videoController != null) {
+        // 普通频道：网络恢复后继续播放
+        _videoController?.play();
+      }
+    } else {
+      // 网络断开：暂停播放
+      if (_webPageActive) {
+        _webEval?.call('window.__omPause && window.__omPause()');
+      } else if (_videoController != null) {
+        _videoController?.pause();
+      }
+      _state = PlayerState.paused;
+      notifyListeners();
+    }
+  }
+
+  /// 等待网络可用（最多等 30 秒），返回是否有网
+  Future<bool> _waitForNetwork() async {
+    if (NetworkMonitor.instance.hasNetwork) return true;
+    _state = PlayerState.waitingForNetwork;
+    notifyListeners();
+    return NetworkMonitor.instance.waitForNetwork(
+      timeout: const Duration(seconds: 30),
+    );
   }
 
   // ==================== 上次播放记忆 ====================
@@ -692,6 +736,11 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放指定频道（从第一个源开始，失败自动尝试下一个源）
   Future<void> playChannel(Channel channel) async {
+    // 无网络时等待网络（开机启动时系统网络可能未就绪）
+    if (!await _waitForNetwork()) {
+      // 30 秒内仍无网络，保持等待状态，后台继续检测
+      return;
+    }
     // 网页频道（webview:// 包装的网站）：停掉视频，切到内嵌网页控件，
     // 由网站自身的播放器播放；节目单/信息面板浮层继续显示在其上
     if (channel.isWebPage) {

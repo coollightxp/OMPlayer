@@ -429,41 +429,63 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // - 普通频道：正常视频控件
                   // - 网页频道后台缓冲中：黑屏占位（网页在其下方缓冲）
                   // - 网页频道前台播放：空层（让下方网页全屏显露）
+                  // - 等待网络：显示网络等待提示
                   Positioned.fill(
-                    child: !controller.webPageActive
-                        ? const VideoPlayerWidget()
-                        : (!controller.webPageForeground
-                            ? Container(
-                                color: Colors.black,
-                                child: Center(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const CircularProgressIndicator(
-                                          color: Colors.blueAccent),
-                                      const SizedBox(height: 12),
-                                      const Text('网页频道缓冲中，起播后自动切换...',
-                                          style: TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 14)),
-                                      const SizedBox(height: 16),
-                                      // 网站不允许自动播放时，允许用户立刻
-                                      // 把网页切到前台手动点播放，不必死等
-                                      TextButton.icon(
-                                        onPressed: () => controller
-                                            .setWebForeground(true),
-                                        icon: const Icon(Icons.open_in_new,
-                                            size: 18,
-                                            color: Colors.white70),
-                                        label: const Text('立即显示网页',
-                                            style: TextStyle(
-                                                color: Colors.white70)),
+                    child: controller.state == PlayerState.waitingForNetwork
+                        ? Container(
+                            color: Colors.black,
+                            child: Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: const [
+                                  CircularProgressIndicator(
+                                      color: Colors.blueAccent),
+                                  SizedBox(height: 16),
+                                  Text('正在等待网络连接...',
+                                      style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 16)),
+                                  SizedBox(height: 8),
+                                  Text('网络恢复后将自动开始播放',
+                                      style: TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13)),
+                                ],
+                              ),
+                            ),
+                          )
+                        : !controller.webPageActive
+                            ? const VideoPlayerWidget()
+                            : (!controller.webPageForeground
+                                ? Container(
+                                    color: Colors.black,
+                                    child: Center(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const CircularProgressIndicator(
+                                              color: Colors.blueAccent),
+                                          const SizedBox(height: 12),
+                                          const Text('网页频道缓冲中，起播后自动切换...',
+                                              style: TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 14)),
+                                          const SizedBox(height: 16),
+                                          TextButton.icon(
+                                            onPressed: () => controller
+                                                .setWebForeground(true),
+                                            icon: const Icon(Icons.open_in_new,
+                                                size: 18,
+                                                color: Colors.white70),
+                                            label: const Text('立即显示网页',
+                                                style: TextStyle(
+                                                    color: Colors.white70)),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ),
-                                ),
-                              )
-                            : const SizedBox.shrink()),
+                                    ),
+                                  )
+                                : const SizedBox.shrink()),
                   ),
 
                   // 桌面端亮度调节遮罩：仅普通视频层生效。
@@ -1483,6 +1505,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   // 暴露给 Dart 侧：数字键切频道等 Flutter 侧交互时调用，
   // 否则网页收不到事件，光标不会自动隐藏
   window.__omShowCursor = showCursor;
+  // 暴露给 Dart 侧：网络断开/恢复时暂停/继续网页播放
+  window.__omPause = function(){
+    window.__omUserPaused = true;
+    var vs = allVideos(document);
+    for (var i=0;i<vs.length;i++){ try { vs[i].pause(); } catch(e){} }
+  };
+  window.__omResume = function(){
+    window.__omUserPaused = false;
+    kick();
+  };
   var lastMM = 0;
   function onMouseMove(){
     var n = Date.now();
