@@ -1458,24 +1458,33 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 
   // ===== 鼠标 / 键盘 桥接（含同源 iframe）=====
   var cursorHidden = false;
-  var hookedDocs = [];
   // 上次用户活动时间戳（任何鼠标/键盘交互都更新）
   var lastActivity = Date.now();
-  function allElsCursor(h, doc){
+  // 获取所有需要设置光标的文档（document + 同源 iframe）
+  function allDocs(){
+    var docs = [document];
     try {
-      doc.documentElement.style.cursor = h ? 'none' : '';
-      var vids = doc.querySelectorAll('video');
-      for (var i=0;i<vids.length;i++) vids[i].style.cursor = h ? 'none' : '';
+      var frames = document.querySelectorAll('iframe');
+      for (var i=0;i<frames.length;i++){
+        try { docs.push(frames[i].contentDocument); } catch(e){}
+      }
     } catch(e){}
+    return docs;
   }
   function setCursorHidden(h){
     cursorHidden = h;
-    for (var i=0;i<hookedDocs.length;i++){
+    var docs = allDocs();
+    for (var i=0;i<docs.length;i++){
       try {
-        var root = hookedDocs[i].documentElement;
+        var doc = docs[i];
+        if (!doc) continue;
+        var root = doc.documentElement;
+        if (!root) continue;
         if (h) root.classList.add('__om_hide_cursor');
         else root.classList.remove('__om_hide_cursor');
-        allElsCursor(h, hookedDocs[i]);
+        root.style.cursor = h ? 'none' : '';
+        var vids = doc.querySelectorAll('video');
+        for (var j=0;j<vids.length;j++) vids[j].style.cursor = h ? 'none' : '';
       } catch(e){}
     }
   }
@@ -1483,29 +1492,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     lastActivity = Date.now();
     if (cursorHidden) setCursorHidden(false);
   }
-  // 纯 JS 定时检查：3 秒无用户活动则隐藏光标。
-  // 不依赖 Flutter 侧调用，切频道/页面加载后都能自动工作。
-  setInterval(function(){
+  function checkCursor(){
     var idle = Date.now() - lastActivity;
     if (idle >= 3000) {
-      if (!cursorHidden) setCursorHidden(true);
-    } else {
-      // 持续重新应用隐藏/显示状态，防止网站覆盖
-      if (cursorHidden) {
-        for (var i=0;i<hookedDocs.length;i++){
-          try {
-            var root = hookedDocs[i].documentElement;
-            if (!root.classList.contains('__om_hide_cursor'))
-              root.classList.add('__om_hide_cursor');
-            allElsCursor(true, hookedDocs[i]);
-          } catch(e){}
-        }
-      }
+      setCursorHidden(true);
     }
-  }, 500);
-  // 暴露给 Dart 侧备用
+    // 递归 setTimeout，比 setInterval 更可靠
+    setTimeout(checkCursor, 500);
+  }
+  checkCursor();
+  // 暴露给 Dart 侧
   window.__omShowCursor = pokeActivity;
-  window.__omHideCursor = function(){ setCursorHidden(true); };
+  window.__omHideCursor = function(){ setCursorHidden(true); lastActivity = Date.now() - 5000; };
   var lastMM = 0;
   var lastMX = -1, lastMY = -1;
   function onMouseMove(e){
@@ -1543,7 +1541,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function hookDoc(d){
     if (!d || d.__omHooked) return;
     d.__omHooked = true;
-    hookedDocs.push(d);
     d.addEventListener('mousemove', onMouseMove, true);
     d.addEventListener('mousedown', onMouseActivity, true);
     d.addEventListener('click', onMouseActivity, true);
@@ -1627,6 +1624,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     v.addEventListener('pause', function(){ fire('omPlay', 0); });
   }
   function kick(){
+    // 双保险：kick 每 700ms 运行，即使 checkCursor 被节流也能隐藏光标
+    if (Date.now() - lastActivity >= 3000) setCursorHidden(true);
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       window.__omUserPaused = false;
