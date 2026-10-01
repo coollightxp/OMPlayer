@@ -5,7 +5,6 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
-import 'package:http/http.dart' as http;
 import 'package:video_player/video_player.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:volume_controller/volume_controller.dart';
@@ -31,26 +30,6 @@ import 'reservation_manager.dart';
 import 'source_manager.dart';
 import 'web_launch.dart';
 import 'network_monitor.dart';
-
-// #region debug-point Z:reporter
-/// 调试证据上报（web-channel-stuck 会话专用）：POST 到本机 Debug Server，
-/// 失败静默忽略，不影响任何业务逻辑
-void _dbg(String hypothesisId, String location, String msg,
-    [Map<String, Object?>? data]) {
-  http
-      .post(Uri.parse('http://127.0.0.1:7777/event'),
-          body: jsonEncode({
-            'sessionId': 'web-channel-stuck',
-            'runId': 'post-fix',
-            'hypothesisId': hypothesisId,
-            'location': location,
-            'msg': '[DEBUG] $msg',
-            'data': data ?? const <String, Object?>{},
-            'ts': DateTime.now().millisecondsSinceEpoch,
-          }))
-      .catchError((_) => http.Response('', 500));
-}
-// #endregion
 
 /// 播放器状态
 enum PlayerState { idle, loading, playing, paused, error, ended, waitingForNetwork }
@@ -894,9 +873,6 @@ class PlayerController extends ChangeNotifier {
     _webEval = eval;
     _webScreenshot = screenshot;
     _webPlaying = true;
-    // #region debug-point A:bridge-attached
-    _dbg('A', 'controller:attachWebBridge', 'web bridge attached');
-    // #endregion
     // 网页前台播放时鼠标静止 3 秒隐藏光标（原生实现，CSS 管不到跨域 iframe）
     WinHotkeys().setCursorHide(true);
     // 把当前音量同步给页面 video（kick 起播锁定后不再改写音量）
@@ -907,9 +883,6 @@ class PlayerController extends ChangeNotifier {
 
   /// 注销网页控制桥（WebView 销毁前）
   void detachWebBridge() {
-    // #region debug-point A:bridge-detached
-    _dbg('A', 'controller:detachWebBridge', 'web bridge detached');
-    // #endregion
     _webEval = null;
     _webScreenshot = null;
     _webPlaying = false;
@@ -925,10 +898,6 @@ class PlayerController extends ChangeNotifier {
 
   /// 网页起播后推到前台（由内嵌网页的 JS 回调触发）
   void setWebForeground(bool value) {
-    // #region debug-point D:set-foreground
-    _dbg('D', 'controller:setWebForeground', 'setWebForeground called',
-        {'value': value, 'was': _webPageForeground});
-    // #endregion
     if (_webPageForeground == value) return;
     _webPageForeground = value;
     // 起播成功：把 App 音量写入页面 video（attachWebBridge 时页面
@@ -956,10 +925,6 @@ class PlayerController extends ChangeNotifier {
       // 网页先在后台全屏缓冲（视频位保持黑屏），起播后再推到前台
       _webPageActive = true;
       _webPageForeground = false;
-      // #region debug-point D:open-web-channel
-      _dbg('D', 'controller:_openWebPageChannel', 'open web channel',
-          {'url': channel.webPageUrl});
-      // #endregion
       notifyListeners();
     } else {
       await launchExternal(channel.webPageUrl);
@@ -1230,19 +1195,10 @@ class PlayerController extends ChangeNotifier {
       if (eval == null) return;
       try {
         final r = await eval(_webToggleJs);
-        // #region debug-point A:toggle-result
-        _dbg('A', 'controller:togglePlayPause', 'web toggle result',
-            {'r': '$r'});
-        // #endregion
         // '1' = 切换后已暂停，'0' = 播放中，'2' = 无可见视频（忽略）
         final s = r?.toString();
         if (s == '0' || s == '1') setWebPlaying(s == '0');
-      } catch (e) {
-        // #region debug-point A:toggle-eval-fail
-        _dbg('A', 'controller:togglePlayPause', 'web toggle eval failed',
-            {'e': '$e'});
-        // #endregion
-      }
+      } catch (_) {}
       return;
     }
     if (_videoController == null || !_videoController!.value.isInitialized) {
