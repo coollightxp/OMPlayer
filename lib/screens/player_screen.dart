@@ -1505,10 +1505,17 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }, 500);
   // 暴露给 Dart 侧备用
   window.__omShowCursor = pokeActivity;
+  window.__omHideCursor = function(){ setCursorHidden(true); };
   var lastMM = 0;
-  function onMouseMove(){
+  var lastMX = -1, lastMY = -1;
+  function onMouseMove(e){
     var n = Date.now();
     if (n - lastMM < 300) return;
+    // 鼠标位置没变化就不更新活动时间（WebView 显示时可能
+    // 持续触发 mousemove 但鼠标没动，会导致光标永不隐藏）
+    var mx = e.clientX, my = e.clientY;
+    if (mx === lastMX && my === lastMY) return;
+    lastMX = mx; lastMY = my;
     lastMM = n;
     pokeActivity();
     fire('omMouse');
@@ -1900,6 +1907,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               callback: (_) {
                 // 视频起播：让 WebView 获得焦点，确保网页事件正常
                 if (mounted) _webFocusNode.requestFocus();
+                // 推到前台后延时强制隐藏光标（WebView 显示瞬间可能触发
+                // mouse 事件导致光标显示，需要在事件平息后隐藏）
+                Future.delayed(const Duration(milliseconds: 1500), () {
+                  if (mounted) {
+                    try {
+                      _webController?.evaluateJavascript(
+                          source: 'window.__omHideCursor && window.__omHideCursor()');
+                    } catch (_) {}
+                  }
+                });
                 if (mounted && !widget.foreground) widget.onForeground();
               },
             );
