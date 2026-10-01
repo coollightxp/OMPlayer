@@ -1875,14 +1875,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return out;
   }
   var vs = allVideos(document);
+  var best = null, bestA = 0;
   for (var i=0;i<vs.length;i++){
-    var v = vs[i];
-    try {
-      v.muted = false; v.volume = 1;
-      if (v.paused && v.play) { var p = v.play(); if (p && p.catch) p.catch(function(){}); }
-    } catch(e) {}
-    if (!v.paused && v.readyState >= 2 && v.currentTime > 0) return 1;
+    var r;
+    try { r = vs[i].getBoundingClientRect(); } catch(e) { continue; }
+    var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
+    if (a > bestA) { bestA = a; best = vs[i]; }
   }
+  if (!best) return 0;
+  try {
+    if (best.paused && best.play) { var p = best.play(); if (p && p.catch) p.catch(function(){}); }
+    if (!best.paused && best.readyState >= 2 && best.currentTime > 0) return 1;
+  } catch(e) {}
   return 0;
 })();
 ''';
@@ -2045,6 +2049,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             mediaPlaybackRequiresUserGesture: false,
             supportZoom: false,
             transparentBackground: false,
+            cacheMode: CacheMode.LOAD_NO_CACHE,
           ),
           onWebViewCreated: (controller) async {
             _webController = controller;

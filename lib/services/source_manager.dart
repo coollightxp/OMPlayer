@@ -350,7 +350,22 @@ class SourceManager {
     for (final list in lists) {
       for (final c in list) {
         if (merged.containsKey(c.name)) {
-          merged[c.name]!.addAll(c.channels);
+          // 按频道 ID 去重：多源重复的同名同地址频道只保留一个，
+          // 避免列表里一大片同时显示选中态
+          for (final ch in c.channels) {
+            final idx = merged[c.name]!
+                .indexWhere((e) => e.id == ch.id);
+            if (idx < 0) {
+              merged[c.name]!.add(ch);
+            } else {
+              final existing = merged[c.name]![idx];
+              for (final u in ch.streamUrls) {
+                if (!existing.streamUrls.contains(u)) {
+                  existing.streamUrls.add(u);
+                }
+              }
+            }
+          }
         } else {
           merged[c.name] = List<Channel>.from(c.channels);
           order.add(c.name);
