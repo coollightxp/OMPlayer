@@ -1373,8 +1373,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   var CSS_TEXT = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
       + '*{-webkit-user-select:none!important;user-select:none!important}'
       + 'input,textarea{-webkit-user-select:text!important;user-select:text!important}'
-      + 'html.__om_playing video.__om_main{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
-      + 'html.__om_playing video:not(.__om_main){position:static!important;z-index:0!important;opacity:0!important;pointer-events:none!important}'
+      // 起播锁定后：隐藏网站所有非视频元素（导航栏/加载遮罩/节目单/
+      // 控制条等），只保留主视频铺满全屏。用 visibility:hidden 而非
+      // display:none，避免触发网站重排/播放器状态机异常
+      + 'html.__om_playing body{visibility:hidden!important}'
+      + 'html.__om_playing video.__om_main{visibility:visible!important;position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
+      + 'html.__om_playing video:not(.__om_main){visibility:hidden!important;display:none!important}'
       + 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}'
       + '#__om_web_layer{position:fixed!important;inset:0!important;background:#000!important;z-index:2147483646!important}';
   function inject(d){
@@ -1790,6 +1794,58 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       return out;
     } catch(e) { return ' | vjs-fail ' + String(e).slice(0, 80); }
   }
+  // 起播锁定后一次性安装：声音拦截（对抗网站反复静音）+ 导航拦截
+  // （防止点击网站链接跳出当前播放页）
+  function setupPlayingOverrides(video){
+    if (!video || window.__omOverrides) return;
+    window.__omOverrides = true;
+    // 1) 声音拦截：网站可能通过 volumechange 事件或直接写 muted=true
+    //    来反复静音。监听 volumechange 立即拉回，并劫持 muted setter
+    try {
+      video.addEventListener('volumechange', function(){
+        try {
+          if (video.muted) video.muted = false;
+          var wv = window.__omVol;
+          if (typeof wv === 'number' && video.volume !== wv) video.volume = wv;
+        } catch(e) {}
+      }, true);
+      // 劫持 muted 属性：任何写入 true 都被忽略，getter 始终返回 false
+      try {
+        var realMuted = Object.getOwnPropertyDescriptor(
+          HTMLMediaElement.prototype, 'muted');
+        if (realMuted && realMuted.set) {
+          Object.defineProperty(video, 'muted', {
+            get: function(){ return false; },
+            set: function(v){
+              if (!v) { try { realMuted.set.call(this, false); } catch(e){} }
+              // 忽略 muted=true 的写入
+            },
+            configurable: true
+          });
+        }
+      } catch(e) {}
+    } catch(e) {}
+    // 2) 导航拦截：起播后点击 <a> / 提交表单都不离开当前页
+    try {
+      document.addEventListener('click', function(e){
+        var t = e.target;
+        while (t && t !== document) {
+          if (t.tagName === 'A') {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+          t = t.parentNode;
+        }
+      }, true);
+      document.addEventListener('submit', function(e){
+        e.preventDefault();
+      }, true);
+      // 阻止 window.open / location 跳转
+      var _open = window.open;
+      window.open = function(){ return null; };
+    } catch(e) {}
+  }
   function kick(){
     if (location.href !== lastUrl) {
       // SPA 换页：重置起播状态，重新自动唤起
@@ -1802,6 +1858,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         clearInterval(window.__omUnmuteTimer);
         window.__omUnmuteTimer = null;
       }
+      window.__omOverrides = false;
     }
     var vs = allVideos(document);
     var main = mainVideo(vs);
@@ -1909,8 +1966,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       window.__omPlayingFired = true;
       fire('omPlaying');
     }
+    var wasStarted = started;
     if (advancing) { playedTicks++; if (playedTicks >= 4) { started = true; stallTicks = 0; } }
     else playedTicks = 0;
+    // 首次锁定起播：安装声音拦截 + 导航拦截（一次性）
+    if (started && !wasStarted) setupPlayingOverrides(main);
     // 起播后卡死看门狗：时间约 10 秒不动且缓冲不足（readyState<3）才
     // 判定卡死刷新。直播播放器的 currentTime 可能几乎不动甚至不变，
     // 但 readyState 维持在 3-4，属正常播放，绝不能误触发 reload
@@ -1934,6 +1994,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           clearInterval(window.__omUnmuteTimer);
           window.__omUnmuteTimer = null;
         }
+        window.__omOverrides = false;
       }
     } else if (!main.paused) { stallTicks = 0; }
     // 同步全屏 CSS 开关：起播锁定后才把视频拉满（含同源 iframe）；
