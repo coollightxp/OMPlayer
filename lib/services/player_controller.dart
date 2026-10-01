@@ -804,8 +804,9 @@ class PlayerController extends ChangeNotifier {
   if (!best) return '2';
   try {
     if (best.paused) {
-      try { proxySiteButton(); } catch(e) {}
-      // 起播锁定前尊重站点静音自动播放策略，不强制解除静音
+      // 恢复播放：直接 play()，不代点站点按钮。
+      // 代点可能命中暂停钮/其他元素导致"点了没反应"。
+      // 用户已交互过（点过暂停），play() 不受浏览器自动播放策略限制。
       if (window.__omStarted === true) best.muted = false;
       var p = best.play(); if (p && p.catch) p.catch(function(){});
       return '0';

@@ -1373,12 +1373,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   var CSS_TEXT = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
       + '*{-webkit-user-select:none!important;user-select:none!important}'
       + 'input,textarea{-webkit-user-select:text!important;user-select:text!important}'
-      // 起播锁定后：隐藏网站所有非视频元素（导航栏/加载遮罩/节目单/
-      // 控制条等），只保留主视频铺满全屏。用 visibility:hidden 而非
-      // display:none，避免触发网站重排/播放器状态机异常
-      + 'html.__om_playing body{visibility:hidden!important}'
-      + 'html.__om_playing video.__om_main{visibility:visible!important;position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
-      + 'html.__om_playing video:not(.__om_main){visibility:hidden!important;display:none!important}'
+      // 起播锁定后：隐藏页面所有元素，只留主视频可见。
+      // 用 * 选择器而非 body，避免网站 body 上的 visibility:visible 覆盖
+      + 'html.__om_playing *{visibility:hidden!important}'
+      + 'html.__om_playing video.__om_main{visibility:visible!important;position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important;opacity:1!important;filter:none!important}'
+      + 'html.__om_playing video:not(.__om_main){display:none!important}'
       + 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}'
       + '#__om_web_layer{position:fixed!important;inset:0!important;background:#000!important;z-index:2147483646!important}';
   function inject(d){
@@ -1809,21 +1808,24 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           if (typeof wv === 'number' && video.volume !== wv) video.volume = wv;
         } catch(e) {}
       }, true);
-      // 劫持 muted 属性：任何写入 true 都被忽略，getter 始终返回 false
+      // 劫持原型链上的 muted：任何 HTMLMediaElement 的 muted=true 写入
+      // 都被忽略，getter 始终返回 false。比单元素劫持更彻底
       try {
-        var realMuted = Object.getOwnPropertyDescriptor(
-          HTMLMediaElement.prototype, 'muted');
-        if (realMuted && realMuted.set) {
-          Object.defineProperty(video, 'muted', {
+        var proto = HTMLMediaElement.prototype;
+        var realMuted = Object.getOwnPropertyDescriptor(proto, 'muted');
+        if (realMuted && realMuted.set && !proto.__omMutedHooked) {
+          Object.defineProperty(proto, 'muted', {
             get: function(){ return false; },
             set: function(v){
               if (!v) { try { realMuted.set.call(this, false); } catch(e){} }
-              // 忽略 muted=true 的写入
             },
             configurable: true
           });
+          proto.__omMutedHooked = true;
         }
       } catch(e) {}
+      // 移除 muted 属性，防止 defaultMuted 生效
+      try { video.removeAttribute('muted'); } catch(e) {}
     } catch(e) {}
     // 2) 导航拦截：起播后点击 <a> / 提交表单都不离开当前页
     try {
@@ -1841,7 +1843,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       document.addEventListener('submit', function(e){
         e.preventDefault();
       }, true);
-      // 阻止 window.open / location 跳转
       var _open = window.open;
       window.open = function(){ return null; };
     } catch(e) {}
