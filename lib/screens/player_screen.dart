@@ -212,7 +212,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   void _onNumberKey(int n) {
     // 设置面板打开时不拦截数字键（避免影响输入框）
     if (_settingsOpen) return;
-    _pokeCursor();
     setState(() {
       _numBuffer += n.toString();
       _osdVisible = true;
@@ -297,33 +296,27 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     PhysicalKeyboardKey.numpad9,
   ];
 
-  /// 鼠标活动：恢复显示并重置 3 秒隐藏计时
+  /// 鼠标活动：恢复显示并重置 3 秒隐藏计时（仅播放中计时）
   void _pokeCursor() {
     if (!mounted) return;
     if (_cursorHidden) setState(() => _cursorHidden = false);
     _cursorHideTimer?.cancel();
     final controller = context.read<PlayerController>();
-    // 网页频道：让 WebView 重新获得焦点 + 重置光标隐藏定时器
-    // （点击节目列表/数字键切频道后焦点在 Flutter 侧，网页收不到事件）
-    if (controller.webPageActive) {
-      controller.webFocusNode?.requestFocus();
-      if (controller.webController != null) {
-        try {
-          controller.webController
-              .evaluateJavascript(source: 'window.__omShowCursor && window.__omShowCursor()');
-        } catch (_) {}
-      }
+    // 网页频道：通知网页重置光标隐藏定时器
+    // （数字键切频道等 Flutter 侧交互不会触发网页 JS 事件）
+    if (controller.webPageActive && controller.webController != null) {
+      try {
+        controller.webController
+            .evaluateJavascript(source: 'window.__omShowCursor && window.__omShowCursor()');
+      } catch (_) {}
     }
-    // 网页频道：无论是否正在播放，都要隐藏光标
-    // （后台加载时 isPlaying 为 false，不检查会导致光标永远不隐藏）
-    final canHide = controller.webPageActive || controller.isPlaying;
-    if (!canHide) return;
+    if (!controller.isPlaying) return;
     _cursorHideTimer = Timer(const Duration(seconds: 3), () {
       if (mounted &&
+          controller.isPlaying &&
           !_settingsOpen &&
           !_leftDrawerOpen &&
-          !_rightEpgOpen &&
-          (controller.webPageActive || controller.isPlaying)) {
+          !_rightEpgOpen) {
         setState(() => _cursorHidden = true);
       }
     });
@@ -364,10 +357,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 把焦点收回根节点，保证硬件快捷键/数字选台随时可响应。
   /// 设置面板打开时不抢焦点（里面有输入框）。
-  /// 网页频道时不抢焦点（WebView 需要焦点才能正常播放和响应事件）。
   void _ensureShortcutFocus() {
     if (_settingsOpen) return;
-    if (context.read<PlayerController>().webPageActive) return;
     if (_rootFocusNode.hasPrimaryFocus) return;
     _rootFocusNode.requestFocus();
   }
@@ -597,7 +588,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverEnter: _cancelDrawerHide,
                     onHoverExit: _startDrawerHideTimer,
                     onHoverMove: _cancelDrawerHide,
-                    onChannelTap: _pokeCursor,
                   ),
 
                   // 右侧 EPG 面板
@@ -1126,7 +1116,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 方向键：←/→ 切换播放源，↑/↓ 切换频道
   void _onArrow(String action) {
     if (_settingsOpen || _leftDrawerOpen || _rightEpgOpen) return;
-    _pokeCursor();
     final controller = context.read<PlayerController>();
     switch (action) {
       case 'prevSource':
@@ -1367,10 +1356,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// WebView 是否报告过任何加载进度（有进度即证明 WebView2 运行时正常）
   bool _sawProgress = false;
   InAppWebViewController? _webController;
-  /// WebView 焦点：网页频道播放时需要让 WebView 获得焦点，
-  /// 否则点击节目列表/数字键切频道后焦点留在 Flutter 侧，
-  /// 网页事件不触发、光标不自动隐藏、播放可能异常
-  final FocusNode _webFocusNode = FocusNode();
 
   /// 后台缓冲期间每秒探测一次页面 <video> 的真实起播状态
   Timer? _probeTimer;
@@ -1457,73 +1442,60 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }, true);
 
   // ===== 鼠标 / 键盘 桥接（含同源 iframe）=====
+  var hideCursorTimer = null;
   var cursorHidden = false;
-  // 上次用户活动时间戳（任何鼠标/键盘交互都更新）
-  var lastActivity = Date.now();
-  // 获取所有需要设置光标的文档（document + 同源 iframe）
-  function allDocs(){
-    var docs = [document];
+  var hookedDocs = [];
+  function allElsCursor(h, doc){
     try {
-      var frames = document.querySelectorAll('iframe');
-      for (var i=0;i<frames.length;i++){
-        try { docs.push(frames[i].contentDocument); } catch(e){}
-      }
+      doc.documentElement.style.cursor = h ? 'none' : '';
+      var vids = doc.querySelectorAll('video');
+      for (var i=0;i<vids.length;i++) vids[i].style.cursor = h ? 'none' : '';
     } catch(e){}
-    return docs;
   }
   function setCursorHidden(h){
     cursorHidden = h;
-    var docs = allDocs();
-    for (var i=0;i<docs.length;i++){
+    for (var i=0;i<hookedDocs.length;i++){
       try {
-        var doc = docs[i];
-        if (!doc) continue;
-        var root = doc.documentElement;
-        if (!root) continue;
+        var root = hookedDocs[i].documentElement;
         if (h) root.classList.add('__om_hide_cursor');
         else root.classList.remove('__om_hide_cursor');
-        root.style.cursor = h ? 'none' : '';
-        var vids = doc.querySelectorAll('video');
-        for (var j=0;j<vids.length;j++) vids[j].style.cursor = h ? 'none' : '';
+        allElsCursor(h, hookedDocs[i]);
       } catch(e){}
     }
   }
-  function pokeActivity(){
-    lastActivity = Date.now();
-    if (cursorHidden) setCursorHidden(false);
-  }
-  function checkCursor(){
-    var idle = Date.now() - lastActivity;
-    if (idle >= 3000) {
-      setCursorHidden(true);
+  setInterval(function(){
+    if (cursorHidden) {
+      for (var i=0;i<hookedDocs.length;i++){
+        try {
+          var root = hookedDocs[i].documentElement;
+          if (!root.classList.contains('__om_hide_cursor'))
+            root.classList.add('__om_hide_cursor');
+          allElsCursor(true, hookedDocs[i]);
+        } catch(e){}
+      }
     }
-    // 递归 setTimeout，比 setInterval 更可靠
-    setTimeout(checkCursor, 500);
+  }, 500);
+  function showCursor(){
+    setCursorHidden(false);
+    if (hideCursorTimer) clearTimeout(hideCursorTimer);
+    hideCursorTimer = setTimeout(function(){ setCursorHidden(true); }, 3000);
   }
-  checkCursor();
-  // 暴露给 Dart 侧
-  window.__omShowCursor = pokeActivity;
-  window.__omHideCursor = function(){ setCursorHidden(true); lastActivity = Date.now() - 5000; };
+  // 暴露给 Dart 侧：数字键切频道等 Flutter 侧交互时调用，
+  // 否则网页收不到事件，光标不会自动隐藏
+  window.__omShowCursor = showCursor;
   var lastMM = 0;
-  var lastMX = -1, lastMY = -1;
-  function onMouseMove(e){
+  function onMouseMove(){
     var n = Date.now();
     if (n - lastMM < 300) return;
-    // 鼠标位置没变化就不更新活动时间（WebView 显示时可能
-    // 持续触发 mousemove 但鼠标没动，会导致光标永不隐藏）
-    var mx = e.clientX, my = e.clientY;
-    if (mx === lastMX && my === lastMY) return;
-    lastMX = mx; lastMY = my;
     lastMM = n;
-    pokeActivity();
+    showCursor();
     fire('omMouse');
   }
-  // 点击/按键后也要更新活动时间，否则不挪鼠标就不会自动隐藏
+  // 点击后也要重置隐藏定时器，否则点完不挪鼠标就不会自动隐藏
   function onMouseActivity(){
-    pokeActivity();
+    showCursor();
   }
   function onKeyDown(e){
-    pokeActivity();
     var t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
         || t.isContentEditable)) return;
@@ -1541,6 +1513,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function hookDoc(d){
     if (!d || d.__omHooked) return;
     d.__omHooked = true;
+    hookedDocs.push(d);
     d.addEventListener('mousemove', onMouseMove, true);
     d.addEventListener('mousedown', onMouseActivity, true);
     d.addEventListener('click', onMouseActivity, true);
@@ -1624,8 +1597,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     v.addEventListener('pause', function(){ fire('omPlay', 0); });
   }
   function kick(){
-    // 双保险：kick 每 700ms 运行，即使 checkCursor 被节流也能隐藏光标
-    if (Date.now() - lastActivity >= 3000) setCursorHidden(true);
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       window.__omUserPaused = false;
@@ -1758,9 +1729,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   @override
   void initState() {
     super.initState();
-    // 把 WebView 的 FocusNode 存到 PlayerController，
-    // 供 PlayerScreen 在用户交互后请求 WebView 焦点
-    context.read<PlayerController>().webFocusNode = _webFocusNode;
     // 每次打开网页频道前清理 WebView2 缓存，避免旧频道的 Service Worker
     // 或残留状态导致新频道黑屏/长时间不播放
     cleanWebView2Cache();
@@ -1795,7 +1763,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _probeTimer?.cancel();
     _forceForegroundTimer?.cancel();
     _runtimeTimer?.cancel();
-    _webFocusNode.dispose();
     // #region debug-point E:heartbeat
     _diagTimer?.cancel();
     // #endregion
@@ -1873,11 +1840,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        Focus(
-          focusNode: _webFocusNode,
-          child: InAppWebView(
-            webViewEnvironment: webViewEnvironment,
-            initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+        InAppWebView(
+          webViewEnvironment: webViewEnvironment,
+          initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           initialSettings: InAppWebViewSettings(
             // 网页播放器（如央视频）自动开播，无需用户先点击网页
             mediaPlaybackRequiresUserGesture: false,
@@ -1892,11 +1857,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             _webController = controller;
             // 把 controller 存到 PlayerController，供 Dart 侧调用网页 JS
             context.read<PlayerController>().webController = controller;
-            // 让 WebView 获得焦点：否则点击节目列表/数字键切频道后
-            // 焦点留在 Flutter 侧，网页事件不触发
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) _webFocusNode.requestFocus();
-            });
             // #region debug-point A:webview-created
             _dbg('A', 'overlay:onWebViewCreated', 'webview created');
             // #endregion
@@ -1904,18 +1864,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             controller.addJavaScriptHandler(
               handlerName: 'omPlaying',
               callback: (_) {
-                // 视频起播：让 WebView 获得焦点，确保网页事件正常
-                if (mounted) _webFocusNode.requestFocus();
-                // 推到前台后延时强制隐藏光标（WebView 显示瞬间可能触发
-                // mouse 事件导致光标显示，需要在事件平息后隐藏）
-                Future.delayed(const Duration(milliseconds: 1500), () {
-                  if (mounted) {
-                    try {
-                      _webController?.evaluateJavascript(
-                          source: 'window.__omHideCursor && window.__omHideCursor()');
-                    } catch (_) {}
-                  }
-                });
                 if (mounted && !widget.foreground) widget.onForeground();
               },
             );
@@ -2019,7 +1967,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               }
             }
           },
-        ),
         ),
         // 等待层：仅后台缓冲期间显示（推到前台后即使页面慢也露出来，
         // 避免「正在打开网页频道」永久转圈把用户锁死）
