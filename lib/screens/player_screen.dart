@@ -1454,9 +1454,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }, true);
 
   // ===== 鼠标 / 键盘 桥接（含同源 iframe）=====
-  var hideCursorTimer = null;
   var cursorHidden = false;
   var hookedDocs = [];
+  // 上次用户活动时间戳（任何鼠标/键盘交互都更新）
+  var lastActivity = Date.now();
   function allElsCursor(h, doc){
     try {
       doc.documentElement.style.cursor = h ? 'none' : '';
@@ -1475,39 +1476,46 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       } catch(e){}
     }
   }
+  function pokeActivity(){
+    lastActivity = Date.now();
+    if (cursorHidden) setCursorHidden(false);
+  }
+  // 纯 JS 定时检查：3 秒无用户活动则隐藏光标。
+  // 不依赖 Flutter 侧调用，切频道/页面加载后都能自动工作。
   setInterval(function(){
-    if (cursorHidden) {
-      for (var i=0;i<hookedDocs.length;i++){
-        try {
-          var root = hookedDocs[i].documentElement;
-          if (!root.classList.contains('__om_hide_cursor'))
-            root.classList.add('__om_hide_cursor');
-          allElsCursor(true, hookedDocs[i]);
-        } catch(e){}
+    var idle = Date.now() - lastActivity;
+    if (idle >= 3000) {
+      if (!cursorHidden) setCursorHidden(true);
+    } else {
+      // 持续重新应用隐藏/显示状态，防止网站覆盖
+      if (cursorHidden) {
+        for (var i=0;i<hookedDocs.length;i++){
+          try {
+            var root = hookedDocs[i].documentElement;
+            if (!root.classList.contains('__om_hide_cursor'))
+              root.classList.add('__om_hide_cursor');
+            allElsCursor(true, hookedDocs[i]);
+          } catch(e){}
+        }
       }
     }
   }, 500);
-  function showCursor(){
-    setCursorHidden(false);
-    if (hideCursorTimer) clearTimeout(hideCursorTimer);
-    hideCursorTimer = setTimeout(function(){ setCursorHidden(true); }, 3000);
-  }
-  // 暴露给 Dart 侧：数字键切频道等 Flutter 侧交互时调用，
-  // 否则网页收不到事件，光标不会自动隐藏
-  window.__omShowCursor = showCursor;
+  // 暴露给 Dart 侧备用
+  window.__omShowCursor = pokeActivity;
   var lastMM = 0;
   function onMouseMove(){
     var n = Date.now();
     if (n - lastMM < 300) return;
     lastMM = n;
-    showCursor();
+    pokeActivity();
     fire('omMouse');
   }
-  // 点击后也要重置隐藏定时器，否则点完不挪鼠标就不会自动隐藏
+  // 点击/按键后也要更新活动时间，否则不挪鼠标就不会自动隐藏
   function onMouseActivity(){
-    showCursor();
+    pokeActivity();
   }
   function onKeyDown(e){
+    pokeActivity();
     var t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
         || t.isContentEditable)) return;
@@ -1662,8 +1670,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
   setInterval(kick, 700);
   kick();
-  // 页面加载完成后启动光标隐藏计时
-  showCursor();
 })();
 ''';
 
