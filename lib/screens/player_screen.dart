@@ -1857,7 +1857,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (anyPaused && !up) {
       pausedTicks++;
       if (clickCooldown > 0) { clickCooldown--; }
-      else if (pausedTicks >= 2) { clickBigPlayButton(); }
+      else if (pausedTicks >= 2) {
+        if (!clickBigPlayButton()) {
+          // 找不到大播放钮：直接点 video 元素（很多自研播放器点画面=播放）
+          if (videoClickCooldown > 0) { videoClickCooldown--; }
+          else if (pausedTicks >= 4) {
+            for (var j=0;j<vs.length;j++){
+              try { if (vs[j].paused) vs[j].click(); } catch(e){}
+            }
+            videoClickCooldown = 5;
+          }
+        }
+      }
     } else {
       pausedTicks = 0;
     }

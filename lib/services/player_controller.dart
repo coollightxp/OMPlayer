@@ -747,6 +747,50 @@ class PlayerController extends ChangeNotifier {
     }
     return out;
   }
+  function collectDocs(root, out){
+    out.push(root);
+    var frames = root.querySelectorAll('iframe');
+    for (var i=0;i<frames.length;i++){
+      try { var d = frames[i].contentDocument;
+            if (d) collectDocs(d, out); } catch(e) {}
+    }
+  }
+  // 代点网站大播放按钮（VideoJS 等封装播放器不认 raw video.play()）
+  function clickBigPlay(){
+    var docs = [];
+    collectDocs(document, docs);
+    for (var di=0; di<docs.length; di++){
+      var d = docs[di];
+      var w = d.defaultView;
+      var ww = (w.innerWidth || 1), hh = (w.innerHeight || 1);
+      var pts = [[ww/2, hh/2], [ww/2, hh*0.3], [ww/2, hh*0.7],
+                 [ww*0.3, hh/2], [ww*0.7, hh/2]];
+      var vids = d.querySelectorAll('video');
+      for (var vi=0;vi<vids.length;vi++)
+        vids[vi].style.setProperty('pointer-events','none','important');
+      for (var k=0;k<pts.length;k++){
+        var el = null;
+        try { el = d.elementFromPoint(pts[k][0], pts[k][1]); } catch(e){}
+        for (var vi=0;vi<vids.length;vi++){
+          try { vids[vi].style.removeProperty('pointer-events'); } catch(e){}
+        }
+        var n = el, dep = 0;
+        while (n && n !== d && dep < 6){
+          var tg = (n.tagName || '').toLowerCase();
+          var role = n.getAttribute ? n.getAttribute('role') : '';
+          var cls = ((n.className && n.className.toString) ? n.className.toString() : '')
+              + ' ' + (n.id || '');
+          if (tg === 'button' || role === 'button'
+              || /play|start|poster|cover|bigplay/i.test(cls)) {
+            try { n.click(); } catch(e){}
+            return true;
+          }
+          n = n.parentNode; dep++;
+        }
+      }
+    }
+    return false;
+  }
   var vs = allVideos(document);
   var anyPlaying = false;
   for (var i=0;i<vs.length;i++){
@@ -754,17 +798,38 @@ class PlayerController extends ChangeNotifier {
   }
   // 通知 kick()：暂停时不再自动拉起
   try { window.__omUserPaused = anyPlaying; } catch(e) {}
-  for (var i=0;i<vs.length;i++){
-    var v = vs[i];
+  if (anyPlaying) {
+    // 暂停：raw video.pause() 即可
+    for (var i=0;i<vs.length;i++){ try { vs[i].pause(); } catch(e){} }
+    // VideoJS 等封装播放器也暂停
     try {
-      if (anyPlaying) { v.pause(); }
-      else {
-        v.muted = false;
+      if (window.videojs && videojs.getAllPlayers) {
+        var ps = videojs.getAllPlayers();
+        for (var pi=0; pi<ps.length; pi++){
+          try { ps[pi].pause(); } catch(e){}
+        }
+      }
+    } catch(e) {}
+  } else {
+    // 播放：先 VideoJS API，再 raw play()，最后代点网站播放钮
+    try {
+      if (window.videojs && videojs.getAllPlayers) {
+        var ps = videojs.getAllPlayers();
+        for (var pi=0; pi<ps.length; pi++){
+          try { ps[pi].muted(false); ps[pi].play(); } catch(e){}
+        }
+      }
+    } catch(e) {}
+    for (var i=0;i<vs.length;i++){
+      var v = vs[i];
+      try {
+        v.removeAttribute('muted'); v.muted = false;
         var wv = window.__omVol;
         v.volume = (typeof wv === 'number') ? wv : 1;
         var p = v.play(); if (p && p.catch) p.catch(function(){});
-      }
-    } catch(e) {}
+      } catch(e) {}
+    }
+    clickBigPlay();
   }
   return anyPlaying ? '1' : '0';
 })();
