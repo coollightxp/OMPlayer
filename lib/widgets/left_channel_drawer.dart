@@ -16,6 +16,9 @@ class LeftChannelDrawer extends StatefulWidget {
   final VoidCallback? onHoverExit;
   final VoidCallback? onHoverMove;
 
+  /// 点击频道后回调（用于重置光标隐藏定时器等）
+  final VoidCallback? onChannelTap;
+
   const LeftChannelDrawer({
     super.key,
     required this.isOpen,
@@ -23,6 +26,7 @@ class LeftChannelDrawer extends StatefulWidget {
     this.onHoverEnter,
     this.onHoverExit,
     this.onHoverMove,
+    this.onChannelTap,
   });
 
   @override
@@ -242,6 +246,7 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
           isSelected: isCurrent,
           onTap: () {
             controller.playChannel(channel);
+            widget.onChannelTap?.call();
             widget.onClose();
           },
         );

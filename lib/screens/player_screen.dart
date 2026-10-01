@@ -212,6 +212,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   void _onNumberKey(int n) {
     // 设置面板打开时不拦截数字键（避免影响输入框）
     if (_settingsOpen) return;
+    _pokeCursor();
     setState(() {
       _numBuffer += n.toString();
       _osdVisible = true;
@@ -593,6 +594,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverEnter: _cancelDrawerHide,
                     onHoverExit: _startDrawerHideTimer,
                     onHoverMove: _cancelDrawerHide,
+                    onChannelTap: _pokeCursor,
                   ),
 
                   // 右侧 EPG 面板
@@ -1121,6 +1123,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 方向键：←/→ 切换播放源，↑/↓ 切换频道
   void _onArrow(String action) {
     if (_settingsOpen || _leftDrawerOpen || _rightEpgOpen) return;
+    _pokeCursor();
     final controller = context.read<PlayerController>();
     switch (action) {
       case 'prevSource':
@@ -1659,6 +1662,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
   setInterval(kick, 700);
   kick();
+  // 页面加载完成后启动光标隐藏计时
+  showCursor();
 })();
 ''';
 
