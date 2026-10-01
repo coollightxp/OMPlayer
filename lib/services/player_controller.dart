@@ -206,18 +206,7 @@ class PlayerController extends ChangeNotifier {
   /// 网络状态变化回调
   void _onNetworkChanged(bool online) {
     if (online) {
-      // 网络恢复：如果之前在等待网络，重新播放当前频道
-      if (_state == PlayerState.waitingForNetwork && _currentChannel != null) {
-        _state = PlayerState.loading;
-        notifyListeners();
-        playChannel(_currentChannel!);
-      } else if (_state == PlayerState.paused && _webPageActive) {
-        // 网页频道：网络恢复后尝试继续播放
-        _webEval?.call('window.__omResume && window.__omResume()');
-      } else if (_state == PlayerState.paused && _videoController != null) {
-        // 普通频道：网络恢复后继续播放
-        _videoController?.play();
-      }
+      _onNetworkRestored();
     } else {
       // 网络断开：暂停播放
       if (_webPageActive) {
@@ -227,6 +216,42 @@ class PlayerController extends ChangeNotifier {
       }
       _state = PlayerState.paused;
       notifyListeners();
+    }
+  }
+
+  /// 网络恢复：补加载启动时因无网未载入的频道列表/EPG（已载入的不管），
+  /// 并恢复播放
+  Future<void> _onNetworkRestored() async {
+    // 频道列表为空且已选播放列表：启动时无网加载失败，补加载
+    if (_categories.isEmpty &&
+        sourceManager.currentPlaylist != null &&
+        !_isLoadingPlaylist) {
+      await refreshChannels();
+    }
+    // EPG 无数据且已选 EPG 源：补加载
+    if (sourceManager.cachedEpg.isEmpty &&
+        sourceManager.currentEpg != null &&
+        !_isLoadingEpg) {
+      await refreshEpg();
+    }
+    if (_state == PlayerState.waitingForNetwork) {
+      if (_currentChannel != null) {
+        // 之前在等待网络：重新播放当前频道
+        _state = PlayerState.loading;
+        notifyListeners();
+        await playChannel(_currentChannel!);
+      } else {
+        // 启动时无网，playChannel 在等网阶段返回、频道从未赋值：
+        // 重新恢复上次播放的频道（无记录时回到空闲态）
+        _state = PlayerState.idle;
+        await restoreLastChannel();
+      }
+    } else if (_state == PlayerState.paused && _webPageActive) {
+      // 网页频道：网络恢复后尝试继续播放
+      _webEval?.call('window.__omResume && window.__omResume()');
+    } else if (_state == PlayerState.paused && _videoController != null) {
+      // 普通频道：网络恢复后继续播放
+      _videoController?.play();
     }
   }
 

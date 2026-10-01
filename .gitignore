@@ -57,3 +57,6 @@ app.*.map.json
 
 # OS
 Thumbs.db
+
+# Debug session artifacts
+.dbg/
