@@ -1412,79 +1412,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function fire(name, arg){
     try { window.flutter_inappwebview.callHandler(name, arg); } catch(e) {}
   }
-  // ===== 调试 F：谁在调 play/pause + 命中链快照（web-channel-stuck）=====
-  (function(){
-    try {
-      var proto = HTMLMediaElement.prototype;
-      function wrap(fnName){
-        var orig = proto[fnName];
-        var lastSent = 0;
-        proto[fnName] = function(){
-          var n = Date.now();
-          if (n - lastSent > 800) {
-            lastSent = n;
-            var st = '';
-            try { st = (new Error().stack || '').split('\n').slice(1,4).join(' | '); } catch(e){}
-            fire('omDbg', 'call.'+fnName+' '+st.slice(0, 240));
-          }
-          return orig.apply(this, arguments);
-        };
-      }
-      wrap('play'); wrap('pause');
-      document.addEventListener('pause', function(e){
-        var t = e.target, c = '';
-        try { c = t.tagName + '.' + (t.className || '').toString().slice(0,60); } catch(x){}
-        fire('omDbg', 'event.pause on ' + c);
-      }, true);
-      document.addEventListener('play', function(e){
-        var t = e.target, c = '';
-        try { c = t.tagName + '.' + (t.className || '').toString().slice(0,60); } catch(x){}
-        fire('omDbg', 'event.play on ' + c);
-      }, true);
-    } catch(e) { fire('omDbg', 'wrap-fail ' + e); }
-  })();
-  // ===== 调试 F：环境信息 + 页面全局错误/未捕获 Promise（仅上报一次）=====
-  (function(){
-    try {
-      fire('omDbg', 'env SAB=' + (typeof SharedArrayBuffer)
-        + ' W=' + (typeof Worker)
-        + ' ' + window.innerWidth + 'x' + window.innerHeight
-        + ' ' + navigator.userAgent.slice(0, 130));
-    } catch(e) {}
-    window.addEventListener('error', function(ev){
-      try {
-        fire('omDbg', 'winerr ' + (ev.message || '') + ' @'
-          + ((ev.filename || '').split('/').slice(-2).join('/'))
-          + ':' + ev.lineno);
-      } catch(e){}
-    }, true);
-    window.addEventListener('unhandledrejection', function(ev){
-      try {
-        var r = ev.reason;
-        fire('omDbg', 'reject ' + String(r && (r.name || r.message || r)).slice(0, 180));
-      } catch(e){}
-    });
-  })();
-  // 元素命中链简述（供点击代理/快照日志）
-  function chainOf(el, depth){
-    var out = [], n = el, d = 0;
-    while (n && d < depth && n.nodeType === 1){
-      var s = n.tagName.toLowerCase();
-      if (n.id) s += '#' + n.id;
-      if (n.className && n.className.toString)
-        s += '.' + n.className.toString().trim().replace(/\s+/g,'.').slice(0,80);
-      out.push(s); n = n.parentNode; d++;
-    }
-    return out.join('<');
-  }
   // 网页自己的双击全屏与 App 窗口全屏冲突，屏蔽之
   document.addEventListener('dblclick', function(e){
     e.stopPropagation(); e.preventDefault();
   }, true);
 
   // ===== 鼠标 / 键盘 桥接（含同源 iframe）=====
-  // 鼠标静止 3 秒后在网页内隐藏系统光标（WebView 是独立 HWND，
-  // Flutter 的 MouseRegion 管不到页面上的光标，必须在页面内隐藏）
   var hideCursorTimer = null;
   var cursorHidden = false;
   var hookedDocs = [];
@@ -1506,7 +1439,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       } catch(e){}
     }
   }
-  // 播放器常在播放时用 JS 反复写 cursor 样式，定时重新应用隐藏状态
   setInterval(function(){
     if (cursorHidden) {
       for (var i=0;i<hookedDocs.length;i++){
@@ -1544,8 +1476,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       fire('omKey', 'fullscreen');
       e.preventDefault();
     } else if (k === 'Escape') {
-      // Escape 只请求“退出”全屏：非全屏时 Dart 侧忽略，
-      // 也不拦网页自身对 Escape 的处理
       fire('omKey', 'exitfullscreen');
     }
   }
@@ -1553,112 +1483,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (!d || d.__omHooked) return;
     d.__omHooked = true;
     hookedDocs.push(d);
-    // iframe 挂载时立即注入全屏样式（_probe 在前台后停止轮询，
-    // 新出现的 iframe 必须在此处获得 CSS，否则 iframe 内视频无法全屏）
-    try {
-      if (d.head && !d.getElementById('__om_fullscreen_style')) {
-        var cs = d.createElement('style');
-        cs.id = '__om_fullscreen_style';
-        cs.textContent = window.__omCssText || '';
-        d.head.appendChild(cs);
-      }
-    } catch(e) {}
     d.addEventListener('mousemove', onMouseMove, true);
     d.addEventListener('keydown', onKeyDown, true);
-    // 调试 F：document 级鼠标按下探针（判断真实点击是否到达网页）
-    var __lastDown = 0;
-    d.addEventListener('mousedown', function(e){
-      var n = Date.now();
-      if (n - __lastDown < 900) return;
-      __lastDown = n;
-      try {
-        fire('omDbg', 'mousedown ' + Math.round(e.clientX) + ','
-          + Math.round(e.clientY) + ' ' + chainOf(e.target, 3));
-      } catch(x){}
-    }, true);
-    // 起播前：用户的真实点击（带 user activation）若落在 <video> 上
-    // （播放钮可能被视频层盖住），临时让 video 不参与命中，找到其下方
-    // 站点真正的大播放钮，在同一激活窗口内派发 click——站点 play()
-    // 因此被允许带声起播。找不到可点目标时完全不干预原事件。
-    d.addEventListener('click', function(e){
-      if (started) return;
-      var t = e.target;
-      if (!t || t.tagName !== 'VIDEO') return;
-      try {
-        var target = findRealClickTarget(d, e.clientX, e.clientY);
-        // 调试 F：记录代理是否找到站点播放钮及其命中链
-        fire('omDbg', 'proxy-click ' + (target
-            ? 'HIT ' + chainOf(target, 4)
-            : 'MISS @' + Math.round(e.clientX) + ',' + Math.round(e.clientY)));
-        if (target) {
-          e.preventDefault();
-          e.stopPropagation();
-          // 完整指针事件序列（部分播放器只听 mousedown/pointerdown）
-          var seq = ['pointerdown','mousedown','pointerup','mouseup','click'];
-          for (var si=0; si<seq.length; si++){
-            try {
-              var Ctor = seq[si].indexOf('pointer') === 0
-                  ? d.defaultView.PointerEvent : d.defaultView.MouseEvent;
-              target.dispatchEvent(new Ctor(seq[si],
-                  {bubbles:true, cancelable:true, view:d.defaultView,
-                   clientX:e.clientX, clientY:e.clientY}));
-            } catch(err) {}
-          }
-          try { target.click(); } catch(e2){}
-        }
-      } catch(err){}
-    }, true);
-    // 同源 iframe 有自己的文档树，主文档的 CSS 选择器管不到其内部，
-    // 向其中也注入隐藏光标样式
     try {
       var ss = d.createElement('style');
       ss.textContent = 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}';
       (d.head || d.documentElement).appendChild(ss);
     } catch(e){}
-  }
-  // 在 (x,y) 附近找到被视频盖住的站点播放按钮（含同文档内小范围搜索）
-  function findRealClickTarget(doc, x, y){
-    function looksClickable(n){
-      if (!n || n.nodeType !== 1) return false;
-      var tg = (n.tagName || '').toLowerCase();
-      if (tg === 'button' || (n.getAttribute &&
-          n.getAttribute('role') === 'button')) return true;
-      var c = ((n.className && n.className.toString)
-          ? n.className.toString() : '') + ' ' + (n.id || '');
-      if (/play|start|poster|cover|bigplay|big-play/i.test(c)) return true;
-      var cs = null;
-      try { cs = doc.defaultView.getComputedStyle(n); } catch(e) {}
-      if (cs && cs.cursor === 'pointer') return true;
-      return false;
-    }
-    function pickAt(px, py){
-      var vids = doc.querySelectorAll('video');
-      for (var i=0;i<vids.length;i++)
-        vids[i].style.setProperty('pointer-events','none','important');
-      var el = null;
-      try { el = doc.elementFromPoint(px, py); } catch(e){}
-      for (var i=0;i<vids.length;i++){
-        try { vids[i].style.removeProperty('pointer-events'); } catch(e){}
-      }
-      var n = el, depth = 0;
-      while (n && depth < 6){
-        if (looksClickable(n)) return n;
-        n = n.parentNode; depth++;
-      }
-      return null;
-    }
-    var hit = pickAt(x, y);
-    if (hit) return hit;
-    var w = doc.defaultView.innerWidth || 1, hh = doc.defaultView.innerHeight || 1;
-    var offsets = [[0,-70],[0,70],[-100,0],[100,0],
-                   [0,-140],[0,140],[-180,0],[180,0]];
-    for (var k=0;k<offsets.length;k++){
-      var px = x + offsets[k][0], py = y + offsets[k][1];
-      if (px < 0 || py < 0 || px > w || py > hh) continue;
-      hit = pickAt(px, py);
-      if (hit) return hit;
-    }
-    return null;
   }
   hookDoc(document);
   showCursor();
@@ -1682,7 +1513,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
   var clickCooldown = 0;
   var videoClickCooldown = 0;
-  // 在文档（含同源 iframe）内收集匹配选择器的可见元素
   function collectAll(root, sels, out){
     for (var s=0;s<sels.length;s++){
       try {
@@ -1699,18 +1529,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
   }
   function clickBigPlayButton(){
-    // 只点「暂停时才覆盖在画面上的大播放钮/封面」；绝不能点
-    // .vjs-play-control 这类底部常显切换钮——play() 刚生效又被点成暂停，
-    // 就是「有时还要再点一下才播」的根因。央视/地方台常用播放器都覆盖。
     var sels = [
       '.vjs-big-play-button','.vjs-poster',
       '.xgplayer-start','.xgplayer-start-button','.xgplayer-poster',
       '.prism-player .vjs-big-play-button','.vcp-bigplay',
       '.dplayer-play-icon','.art-play-btn','.art-video-poster',
       '.tvplayer-play','.player-start-btn','.tv-player-start',
-      // 央视频(CMG/VideoJS)站点自盖的海报/加载遮罩，其中心点击由
-      // 站点自身脚本接管起播
-      '.con.poster','.loading-main','.y-full-bg','.y-full','[id^="vodbox"]',
       '[class*="big-play"]','[class*="bigPlay"]','[class*="start-button"]',
       '[class*="player-start"]','[class*="cover-play"]','[class*="video-cover"]',
       '[class*="poster"]'
@@ -1719,18 +1543,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     collectAll(document, sels, els);
     for (var i=0;i<els.length;i++){
       var b = els[i];
-      // 排除底部控制条里的常显小切换钮
       var cls = (b.className && b.className.toString) ? b.className.toString() : '';
       if (/control|bar|small/i.test(cls)) continue;
       var r;
       try { r = b.getBoundingClientRect(); } catch(e) { continue; }
-      // 大播放钮/封面都有一定面积；过滤隐藏元素和控制条小图标
       if (r.width >= 48 && r.height >= 48) {
-        // 调试 F：记录实际代点的元素
-        try { fire('omDbg', 'clickbtn ' + chainOf(b, 3)
-          + ' ' + Math.round(r.width) + 'x' + Math.round(r.height)); } catch(e){}
         try { b.click(); } catch(e) {}
-        clickCooldown = 3; // 点完冷却几拍，让播放器自己起播
+        clickCooldown = 3;
         return true;
       }
     }
@@ -1738,51 +1557,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
   var pausedTicks = 0;
   var lastUrl = location.href;
-  var noVideoTicks = 0;
-  // reload 会清空 JS 上下文，计数存 sessionStorage（按页面路径分开，
-  // 换频道自动归零，同一页面最多重载 2 次，防无限刷新循环）
-  var reloadKey = '__omRel_' + location.pathname;
-  function getReloads(){
-    try { return parseInt(sessionStorage.getItem(reloadKey) || '0'); }
-    catch(e) { return 0; }
-  }
-  function bumpReloads(){
-    try { sessionStorage.setItem(reloadKey, String(getReloads() + 1)); }
-    catch(e) {}
-  }
-  var reloads = getReloads();
-  var lastReported = -1;
-  // 主视频 = 可见面积最大的 video。页面常带有隐藏的预览/广告播放器，
-  // 它们的 play/pause 状态会干扰判定（曾导致"点播放反而暂停主视频"），
-  // 一律忽略，只看主视频
-  function mainVideo(vs){
-    var best = null, bestA = 0;
-    for (var i=0;i<vs.length;i++){
-      var r;
-      try { r = vs[i].getBoundingClientRect(); } catch(e) { continue; }
-      var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
-      if (a > bestA) { bestA = a; best = vs[i]; }
-    }
-    return best;
-  }
-  // 调试 F：VideoJS 播放器内部状态（央视频使用 video.js），
-  // 用来分辨是「无源/错误」还是「有源但被状态机暂停」
-  function vjsState(){
-    try {
-      if (!window.videojs || !videojs.getAllPlayers) return ' | vjs=none';
-      var ps = videojs.getAllPlayers(), out = '';
-      for (var i=0;i<ps.length;i++){
-        var pl = ps[i], err = null;
-        try { err = pl.error(); } catch(e){}
-        out += ' | vjs' + i
-          + ' p=' + (pl.paused() ? 1 : 0)
-          + ' rs=' + pl.readyState() + ' ns=' + pl.networkState()
-          + ' src=' + String(pl.currentSrc() || '').slice(0, 55)
-          + ' err=' + (err ? (err.code + ':' + String(err.message || '').slice(0, 40)) : '0');
-      }
-      return out;
-    } catch(e) { return ' | vjs-fail ' + String(e).slice(0, 80); }
-  }
   function bindMedia(v){
     if (v.__omMediaBound) return;
     v.__omMediaBound = true;
@@ -1793,20 +1567,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       window.__omUserPaused = false;
-      noVideoTicks = 0;
-      reloadKey = '__omRel_' + location.pathname;
-      reloads = getReloads();
     }
     var vs = allVideos(document);
-    if (vs.length === 0) {
-      noVideoTicks++;
-      if (noVideoTicks >= 17 && reloads < 2) {
-        bumpReloads(); reloads = getReloads(); noVideoTicks = 0;
-        try { location.reload(); } catch(e) {}
-      }
-      return;
-    }
-    noVideoTicks = 0;
     var up = !!window.__omUserPaused;
     var anyPaused = false;
     var anyPlaying = false;
@@ -1819,7 +1581,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         var wv = window.__omVol;
         v.volume = (typeof wv === 'number') ? wv : 1;
         if (!v.paused) anyPlaying = true;
-        // 用户手动暂停后不自动拉起；否则持续尝试播放（与 v1.0.60 一致）
         if (!up && v.paused && v.play) {
           anyPaused = true;
           var p = v.play();
@@ -1833,15 +1594,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       }
     }
     var st = anyPlaying ? 1 : 0;
-    if (st !== lastReported) { lastReported = st; fire('omPlay', st); }
-    // 连续 2 拍仍 paused（纯 play() 无效）即代点大播放按钮
+    if (st !== window.__omLastReported) {
+      window.__omLastReported = st;
+      fire('omPlay', st);
+    }
     if (anyPaused && !up) {
       pausedTicks++;
       if (clickCooldown > 0) { clickCooldown--; }
       else if (pausedTicks >= 2) {
         if (clickBigPlayButton()) return;
       }
-      // 找不到大播放钮：连续 6 拍仍暂停，直接点 video 元素
       if (videoClickCooldown > 0) { videoClickCooldown--; }
       else if (pausedTicks >= 6) {
         for (var j=0;j<vs.length;j++){
