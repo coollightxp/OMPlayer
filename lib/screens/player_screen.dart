@@ -1480,6 +1480,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     showCursor();
     fire('omMouse');
   }
+  // 点击后也要重置隐藏定时器，否则点完不挪鼠标就不会自动隐藏
+  function onMouseActivity(){
+    showCursor();
+  }
   function onKeyDown(e){
     var t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
@@ -1500,6 +1504,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     d.__omHooked = true;
     hookedDocs.push(d);
     d.addEventListener('mousemove', onMouseMove, true);
+    d.addEventListener('mousedown', onMouseActivity, true);
+    d.addEventListener('click', onMouseActivity, true);
     d.addEventListener('keydown', onKeyDown, true);
     try {
       var ss = d.createElement('style');
@@ -1712,6 +1718,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   @override
   void initState() {
     super.initState();
+    // 每次打开网页频道前清理 WebView2 缓存，避免旧频道的 Service Worker
+    // 或残留状态导致新频道黑屏/长时间不播放
+    cleanWebView2Cache();
     // 后台缓冲期间持续探测，起播即推前台
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
     // 8 秒仍未自动起播：强制推前台，避免永久黑屏
