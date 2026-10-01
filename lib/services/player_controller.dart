@@ -1209,7 +1209,10 @@ class PlayerController extends ChangeNotifier {
     if (eval == null) return;
     final v = _volume.toStringAsFixed(3);
     final m = _volume <= 0.01 ? 'true' : 'false';
-    eval('(function(){function av(root){var out=Array.prototype.slice.call('
+    // window.__omVol 供 JS 侧 200ms 高频 unmute 轮询读取，对抗站点
+    // 播放器反复把 video.muted 写回 true
+    eval('(function(){window.__omVol=$v;'
+        'function av(root){var out=Array.prototype.slice.call('
         'root.querySelectorAll("video"));var f=root.querySelectorAll("iframe");'
         'for(var i=0;i<f.length;i++){try{var d=f[i].contentDocument;'
         'if(d)out=out.concat(av(d));}catch(e){}}return out;}'

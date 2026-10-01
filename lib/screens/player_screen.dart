@@ -1366,27 +1366,39 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   int _dbgProgBucket = -1;
   // #endregion
 
-  /// CSS：把页面里的 <video> 伪全屏铺满窗口（网站不配合
-  /// requestFullscreen 时的兜底），黑底、禁滚动、禁止拖选文字
+  /// CSS：把页面里的 <video> 伪全屏铺满窗口（网站不配合 requestFullscreen 时的兜底），黑底、禁滚动、禁止拖选文字。
+  /// 递归注入到主文档和所有同源 iframe。
   static const String _cssJs = r'''
 (function(){
-  try {
-    var old = document.getElementById('__om_fullscreen_style');
-    if (old) old.parentNode.removeChild(old);
-    var s = document.createElement('style');
-    s.id = '__om_fullscreen_style';
-    s.textContent = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
+  var CSS_TEXT = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
       + '*{-webkit-user-select:none!important;user-select:none!important}'
       + 'input,textarea{-webkit-user-select:text!important;user-select:text!important}'
-      // 起播【之后】才把 video 拉满全屏。起播前强制 fixed+z-index 最大
-      // 会把站点自己的大播放钮/封面压在视频下方：央视频(CMG)等站点的
-      // 播放器状态机只接受自身按钮激活，程序化 play() 会被立即暂停，
-      // 表现为永久灰屏、点屏幕/播放钮都没反应（v1.0.64 日志证实）
-      + 'html.__om_playing video{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
+      + 'html.__om_playing video.__om_main{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
+      + 'html.__om_playing video:not(.__om_main){position:static!important;z-index:0!important;opacity:0!important;pointer-events:none!important}'
       + 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}'
       + '#__om_web_layer{position:fixed!important;inset:0!important;background:#000!important;z-index:2147483646!important}';
-    (document.head || document.documentElement).appendChild(s);
-  } catch(e) {}
+  function inject(d){
+    try {
+      if (!d || !d.head) return;
+      var old = d.getElementById('__om_fullscreen_style');
+      if (old) return;
+      var s = d.createElement('style');
+      s.id = '__om_fullscreen_style';
+      s.textContent = CSS_TEXT;
+      d.head.appendChild(s);
+    } catch(e) {}
+  }
+  function walk(root){
+    inject(root);
+    try {
+      var frames = root.querySelectorAll('iframe');
+      for (var i=0;i<frames.length;i++){
+        try { var d = frames[i].contentDocument; if (d) walk(d); } catch(e) {}
+      }
+    } catch(e) {}
+  }
+  walk(document);
+  window.__omCssText = CSS_TEXT;
 })();
 ''';
 
@@ -1542,6 +1554,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (!d || d.__omHooked) return;
     d.__omHooked = true;
     hookedDocs.push(d);
+    // iframe 挂载时立即注入全屏样式（_probe 在前台后停止轮询，
+    // 新出现的 iframe 必须在此处获得 CSS，否则 iframe 内视频无法全屏）
+    try {
+      if (d.head && !d.getElementById('__om_fullscreen_style')) {
+        var cs = d.createElement('style');
+        cs.id = '__om_fullscreen_style';
+        cs.textContent = window.__omCssText || '';
+        d.head.appendChild(cs);
+      }
+    } catch(e) {}
     d.addEventListener('mousemove', onMouseMove, true);
     d.addEventListener('keydown', onKeyDown, true);
     // 调试 F：document 级鼠标按下探针（判断真实点击是否到达网页）
@@ -1776,6 +1798,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       noVideoTicks = 0; lastCT = -1; frozenTicks = 0;
       reloadKey = '__omRel_' + location.pathname;
       reloads = getReloads();
+      if (window.__omUnmuteTimer) {
+        clearInterval(window.__omUnmuteTimer);
+        window.__omUnmuteTimer = null;
+      }
     }
     var vs = allVideos(document);
     var main = mainVideo(vs);
@@ -1789,6 +1815,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       return;
     }
     noVideoTicks = 0;
+    // 标记主视频：只给面积最大的可见视频加 __om_main，CSS 只把它
+    // 拉到全屏最高层；其他 video（隐藏广告/预览）保留原位不覆盖
+    for (var vi=0; vi<vs.length; vi++){
+      try {
+        if (vs[vi] === main) vs[vi].classList.add('__om_main');
+        else vs[vi].classList.remove('__om_main');
+      } catch(e) {}
+    }
     // 调试 F：每 5 拍（约 3.5s）上报一次视频区域命中链，
     // 看站点播放按钮/封面到底是什么元素、是否被视频盖住
     if (!window.__omDbgTick) window.__omDbgTick = 0;
@@ -1834,7 +1868,38 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           });
         }
       } else {
-        try { if (main.muted) main.muted = false; } catch(e){}
+        // 起播锁定后高频强制解除静音：站点播放器（央视频等）会反复
+        // 把 video.muted 写回 true，700ms 的 kick 节拍不够对抗。
+        // 首次锁定时启动 200ms 轮询，直接写 video.muted=false + volume，
+        // 并尝试通过 VideoJS 等站点播放器 API 同步解除静音
+        try {
+          if (main.muted) main.muted = false;
+          var wantVol = window.__omVol;
+          if (typeof wantVol === 'number' && wantVol >= 0 && wantVol <= 1) {
+            try { main.volume = wantVol; } catch(e) {}
+          }
+          // VideoJS 等封装播放器：通过其 API 解除静音，避免被内部状态机覆盖
+          try {
+            if (window.videojs && videojs.getAllPlayers) {
+              var ps = videojs.getAllPlayers();
+              for (var pi=0; pi<ps.length; pi++){
+                try { ps[pi].muted(false); } catch(e){}
+              }
+            }
+          } catch(e) {}
+        } catch(e) {}
+        if (!window.__omUnmuteTimer) {
+          window.__omUnmuteTimer = setInterval(function(){
+            try {
+              var v = mainVideo(allVideos(document));
+              if (v) {
+                if (v.muted) v.muted = false;
+                var wv = window.__omVol;
+                if (typeof wv === 'number') v.volume = wv;
+              }
+            } catch(e) {}
+          }, 200);
+        }
       }
       if (!main.paused && main.readyState >= 2 && main.currentTime > 0) {
         advancing = true;
@@ -1863,7 +1928,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 30 秒内不受影响
     if (started && main.paused) {
       stallTicks++;
-      if (stallTicks >= 43) { started = false; stallTicks = 0; pausedTicks = 0; }
+      if (stallTicks >= 43) {
+        started = false; stallTicks = 0; pausedTicks = 0;
+        if (window.__omUnmuteTimer) {
+          clearInterval(window.__omUnmuteTimer);
+          window.__omUnmuteTimer = null;
+        }
+      }
     } else if (!main.paused) { stallTicks = 0; }
     // 同步全屏 CSS 开关：起播锁定后才把视频拉满（含同源 iframe）；
     // __omStarted 供 Dart 侧音量写入判断（起播前不解除站点静音）
