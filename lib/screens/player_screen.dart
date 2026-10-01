@@ -1788,14 +1788,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     v.__omMediaBound = true;
     v.addEventListener('play', function(){ fire('omPlay', 1); });
     v.addEventListener('pause', function(){ fire('omPlay', 0); });
-    // 网站一静音立刻恢复，对抗站点反复 mute
-    v.addEventListener('volumechange', function(){
-      try {
-        if (v.muted) { v.removeAttribute('muted'); v.muted = false; }
-        var wv = window.__omVol;
-        if (typeof wv === 'number' && v.volume !== wv) v.volume = wv;
-      } catch(e) {}
-    }, true);
   }
   function kick(){
     if (location.href !== lastUrl) {
@@ -1818,29 +1810,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var up = !!window.__omUserPaused;
     var anyPaused = false;
     var anyPlaying = false;
-    // VideoJS 等封装播放器：走其 API 播放+解除静音。
-    // 网站播放器内部状态机可能覆盖 raw video.play()，必须用 player.play()
-    if (!up) {
-      try {
-        if (window.videojs && videojs.getAllPlayers) {
-          var ps = videojs.getAllPlayers();
-          for (var pi=0; pi<ps.length; pi++){
-            try { ps[pi].muted(false); ps[pi].volume(1); ps[pi].play(); } catch(e){}
-          }
-        }
-      } catch(e) {}
-    }
     for (var i=0;i<vs.length;i++){
       var v = vs[i];
       try {
         bindMedia(v);
-        // 解除静音：同时清属性和属性值，防止 defaultMuted/属性残留
         try { v.removeAttribute('muted'); } catch(e) {}
         v.muted = false;
         var wv = window.__omVol;
         v.volume = (typeof wv === 'number') ? wv : 1;
         if (!v.paused) anyPlaying = true;
-        // 用户手动暂停后不自动拉起；否则持续尝试播放
+        // 用户手动暂停后不自动拉起；否则持续尝试播放（与 v1.0.60 一致）
         if (!up && v.paused && v.play) {
           anyPaused = true;
           var p = v.play();
@@ -1853,7 +1832,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         fire('omPlaying');
       }
     }
-    // 播放状态上报（供 App 面板图标）
     var st = anyPlaying ? 1 : 0;
     if (st !== lastReported) { lastReported = st; fire('omPlay', st); }
     // 连续 2 拍仍 paused（纯 play() 无效）即代点大播放按钮
@@ -1861,16 +1839,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       pausedTicks++;
       if (clickCooldown > 0) { clickCooldown--; }
       else if (pausedTicks >= 2) {
-        if (!clickBigPlayButton()) {
-          // 找不到大播放钮：直接点 video 元素（很多自研播放器点画面=播放）
-          if (videoClickCooldown > 0) { videoClickCooldown--; }
-          else if (pausedTicks >= 4) {
-            for (var j=0;j<vs.length;j++){
-              try { if (vs[j].paused) vs[j].click(); } catch(e){}
-            }
-            videoClickCooldown = 5;
-          }
+        if (clickBigPlayButton()) return;
+      }
+      // 找不到大播放钮：连续 6 拍仍暂停，直接点 video 元素
+      if (videoClickCooldown > 0) { videoClickCooldown--; }
+      else if (pausedTicks >= 6) {
+        for (var j=0;j<vs.length;j++){
+          try { if (vs[j].paused) vs[j].click(); } catch(e){}
         }
+        videoClickCooldown = 5;
       }
     } else {
       pausedTicks = 0;
