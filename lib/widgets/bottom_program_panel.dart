@@ -104,9 +104,9 @@ class BottomProgramPanel extends StatelessWidget {
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        _buildLogo(c),
+                        _buildLogo(context, c),
                         SizedBox(width: isPhone ? 16 : 28),
-                        Expanded(child: _buildInfo(c)),
+                        Expanded(child: _buildInfo(context, c)),
                         Flexible(
                           flex: 0,
                           child: FittedBox(
@@ -130,7 +130,7 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 台标 ====================
 
-  Widget _buildLogo(PlayerController c) {
+  Widget _buildLogo(BuildContext context, PlayerController c) {
     final isPhone = defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).size.shortestSide < 600;
     final double size = isPhone ? 72 : 128;
@@ -160,7 +160,7 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 节目信息 ====================
 
-  Widget _buildInfo(PlayerController c) {
+  Widget _buildInfo(BuildContext context, PlayerController c) {
     final isPhone = defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).size.shortestSide < 600;
     final info = c.getNowPlayingInfo();
