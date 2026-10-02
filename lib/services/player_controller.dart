@@ -73,6 +73,8 @@ class PlayerController extends ChangeNotifier {
   DateTime? _watchAdvanceAt;
   bool _stallNudged = false;
   bool _stallReinitTried = false;
+  // 防止投屏重建并发（上一次重建未完成又触发）
+  bool _castRecovering = false;
 
   // 投屏诊断：1 秒一次状态采样 + buffering 持续超时自愈
   DateTime? _lastCastTickAt;
@@ -1627,18 +1629,22 @@ class PlayerController extends ChangeNotifier {
           'buf=$isBuf play=$isPlay done=$done size=${vw}x$vh state=$_state');
     }
 
-    // 持续 buffering 超过 10 秒：流已断但内核没报错，干净重建
+    // 持续 buffering 超过 20 秒：流已断但内核没报错，干净重建。
+    // 长视频（视频号 1 小时等）正常网络缓冲可能持续 10~15 秒，超时不能太短
     if (isBuf &&
         !_bufferReinitTried &&
         _bufferingSince != null &&
-        now.difference(_bufferingSince!).inSeconds >= 10) {
+        now.difference(_bufferingSince!).inSeconds >= 20) {
       _bufferReinitTried = true;
-      CastLog.write('cast buffering >10s, trigger recovery');
+      CastLog.write('cast buffering >20s, trigger recovery');
       _recoverCastPlayback();
       return;
     }
 
     if (_state != PlayerState.playing) return;
+    // 正在缓冲时不判 stall：缓冲时位置本就不推进，已有上面的缓冲超时
+    // 专门处理；若再叠加 stall 计时会在正常缓冲时误触发重建
+    if (isBuf) return;
 
     // 有声无画：位置时钟照走但视频尺寸长时间为 0，视频解码轨没恢复，
     // 重建一次拉流（整场投屏只重建一次，避免死循环）
@@ -1682,18 +1688,36 @@ class PlayerController extends ChangeNotifier {
   /// 投屏流卡死的最终自愈：销毁内核、用同一 URL 重新拉流。
   /// 点播从上次位置续播，直播从头缓冲。整场投屏只重建一次，避免死循环。
   Future<void> _recoverCastPlayback() async {
+    // 重建并发保护：上一次重建未完成直接忽略，避免连续两次 initialize
+    if (_castRecovering) return;
     final ch = _currentChannel;
     if (ch == null) return;
+    _castRecovering = true;
     final savedPos = _videoController?.value.position ?? Duration.zero;
     final isLive = duration <= Duration.zero;
-    _noVideoSince = null;
     CastLog.write(
         'cast stall recovery: re-init player (live=$isLive, pos=$savedPos)');
-    await _playCurrentSource();
-    if (!isLive && savedPos > const Duration(seconds: 2)) {
-      try {
-        await _videoController?.seekTo(savedPos);
-      } catch (_) {}
+    try {
+      await _playCurrentSource();
+      if (!isLive && savedPos > const Duration(seconds: 2)) {
+        try {
+          await _videoController?.seekTo(savedPos);
+        } catch (_) {}
+      }
+      // 关键：重建后重置全部看门狗状态，给新流一个干净的开始。
+      // 否则 _watchAdvanceAt/_bufferingSince 仍是重建前的旧时间，
+      // 新流正常缓冲会被立即误判为 stall，几十秒内连锁误断开
+      _watchPosMs = -1;
+      _watchAdvanceAt = null;
+      _stallNudged = false;
+      _stallReinitTried = false;
+      _bufferReinitTried = false;
+      _bufferingSince = null;
+      _wasBuffering = false;
+      _noVideoSince = null;
+      _noVideoReinitTried = false;
+    } finally {
+      _castRecovering = false;
     }
   }
 

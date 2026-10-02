@@ -106,7 +106,7 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
     // 平台 + 最短边判断：手机横屏时宽度是长边，按 width 会误判成桌面
     final isPhone = defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).size.shortestSide < 600;
-    final drawerW = isPhone ? (screenW * 0.85).clamp(240.0, 280.0) : 320.0;
+    final drawerW = isPhone ? (screenW * 0.78).clamp(220.0, 260.0) : 320.0;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,

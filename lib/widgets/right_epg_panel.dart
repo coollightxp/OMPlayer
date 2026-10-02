@@ -55,7 +55,7 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
     // 平台 + 最短边：手机横屏 width 是长边，按 width 会误判
     final isPhone = defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).size.shortestSide < 600;
-    final drawerW = isPhone ? (screenW * 0.85).clamp(240.0, 300.0) : 340.0;
+    final drawerW = isPhone ? (screenW * 0.78).clamp(220.0, 270.0) : 340.0;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,

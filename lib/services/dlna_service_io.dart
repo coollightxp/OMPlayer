@@ -460,12 +460,15 @@ class DlnaService {
     }
     final callback = m.group(1)!;
     final sid = _sidFor(path);
+    final peerHost =
+        h.value('X-Forwarded-For') ?? req.connectionInfo?.remoteAddress.address ?? '';
     _subs[path]?.expireTimer.cancel();
-    final sub = _EventSubscription(sid: sid, callback: callback);
+    final sub = _EventSubscription(
+        sid: sid, callback: callback, peerHost: peerHost);
     _subs[path] = sub;
     _armExpiry(sub, path);
     CastLog.write(
-        'GENA subscribe path=$path sid=$sid callback=$callback from=${h.value('X-Forwarded-For') ?? req.connectionInfo?.remoteAddress.address ?? '?'}');
+        'GENA subscribe path=$path sid=$sid callback=$callback from=$peerHost');
 
     req.response.headers.set('SID', sid);
     req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
@@ -589,37 +592,63 @@ class DlnaService {
     // 等上一条发完（或失败）再发本条
     prev.whenComplete(() => completer.complete());
     await prev;
-    // 回调地址不可达（如企业 WiFi 客户端隔离）退避期间丢弃事件，
-    // 避免对黑洞地址每 2 秒建一次连接（首次 SYN 要挂 21 秒）
+    // 回调地址不可达（如多网卡/企业 WiFi 隔离）退避期间丢弃事件
     final cd = sub.cooldownUntil;
     if (cd != null && DateTime.now().isBefore(cd)) return;
-    HttpClient? client;
+
+    Future<int> sendTo(Uri uri) async {
+      HttpClient? client;
+      try {
+        client = HttpClient();
+        // openUrl 内部建连，黑洞地址会挂 21 秒才抛 errno 121，强制 3 秒超时
+        final request = await client
+            .openUrl('NOTIFY', uri)
+            .timeout(const Duration(seconds: 3));
+        request.headers
+            .set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
+        request.headers.set('NT', 'upnp:event');
+        request.headers.set('NTS', 'upnp:propchange');
+        request.headers.set('SID', sub.sid);
+        request.headers.set('SEQ', '$seq');
+        request.contentLength = data.length;
+        request.add(data);
+        final resp = await request.close().timeout(const Duration(seconds: 3));
+        final sc = resp.statusCode;
+        resp.drain<void>();
+        return sc;
+      } finally {
+        client?.close(force: true);
+      }
+    }
+
     try {
       final uri = Uri.parse(sub.callback);
-      client = HttpClient();
-      // openUrl 内部建连，黑洞地址会挂 21 秒才抛 errno 121，强制 3 秒超时
-      final req = await client
-          .openUrl('NOTIFY', uri)
-          .timeout(const Duration(seconds: 3));
-      req.headers.set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
-      req.headers.set('NT', 'upnp:event');
-      req.headers.set('NTS', 'upnp:propchange');
-      req.headers.set('SID', sub.sid);
-      req.headers.set('SEQ', '$seq');
-      req.contentLength = data.length;
-      req.add(data);
-      final resp = await req.close().timeout(const Duration(seconds: 3));
+      int sc;
+      try {
+        sc = await sendTo(uri);
+      } catch (e) {
+        // CALLBACK 地址不可达（多网卡时手机给的地址可能不在可达网段）：
+        // 用订阅来源 IP 替换 host 兜底一次
+        if (sub.peerHost.isNotEmpty && sub.peerHost != uri.host) {
+          final alt = uri.replace(host: sub.peerHost);
+          CastLog.write(
+              'GENA callback ${uri.host} unreachable, retry via ${sub.peerHost}');
+          sc = await sendTo(alt);
+          // 记住可达地址，后续事件直接用
+          sub.callback = alt.toString();
+        } else {
+          rethrow;
+        }
+      }
       // 发送成功：清除退避
       sub.failStreak = 0;
       sub.cooldownUntil = null;
       // 412 Precondition Failed：SID 无效，控制点要求重新订阅
-      if (resp.statusCode == 412) {
+      if (sc == 412) {
         CastLog.write('GENA NOTIFY 412, drop sid=${sub.sid}');
         _subs.removeWhere((_, s) => s.sid == sub.sid);
       }
-      resp.drain<void>();
     } catch (e) {
-      client?.close(force: true);
       // 指数退避：4s、8s、16s、30s、30s…
       const waits = [4, 8, 16, 30];
       sub.failStreak++;
@@ -1188,9 +1217,13 @@ class DlnaService {
 /// 一个 GENA 事件订阅（控制点回调）
 class _EventSubscription {
   final String sid;
-  final String callback;
+  String callback;
   int seq = 0;
   Timer expireTimer;
+
+  /// 订阅请求的来源 IP（多网卡时 CALLBACK 里的地址可能不可达，
+  /// 用它作为兜底 host）
+  String peerHost;
 
   /// 串行发送队列：保证事件按入队顺序送达
   Future<void> sending = Future.value();
@@ -1199,6 +1232,9 @@ class _EventSubscription {
   int failStreak = 0;
   DateTime? cooldownUntil;
 
-  _EventSubscription({required this.sid, required this.callback})
-      : expireTimer = Timer(Duration.zero, () {});
+  _EventSubscription({
+    required this.sid,
+    required this.callback,
+    required this.peerHost,
+  }) : expireTimer = Timer(Duration.zero, () {});
 }

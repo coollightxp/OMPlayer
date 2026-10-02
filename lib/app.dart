@@ -48,10 +48,22 @@ class OMPlayerApp extends StatelessWidget {
           ),
           builder: (context, child) {
             final mq = MediaQuery.of(context);
-            // 自动模式按屏幕【物理像素】宽度计算（乘以 devicePixelRatio，
-            // 不受系统 DPI 缩放影响）：1080p=1.0，2K≈1.33，4K=2.0，8K=3.0
+            // 按设备形态区分（用最短边：手机横屏时宽是长边，不能按宽判）：
+            //  - 安卓手机（最短边<600）：界面是按桌面/TV比例设计的，
+            //    手机上整体缩小，避免字和面板过大
+            //  - 安卓小平板（600~720）：略微缩小
+            //  - 其余（TV/桌面/大平板）：沿用按物理宽度的放大逻辑
+            final shortest = mq.size.shortestSide;
+            final isAndroid = !kIsWeb &&
+                defaultTargetPlatform == TargetPlatform.android;
             double scale;
-            if (controller.settings.uiScaleAuto) {
+            if (isAndroid && shortest < 600) {
+              scale = 0.58;
+            } else if (isAndroid && shortest < 720) {
+              scale = 0.82;
+            } else if (controller.settings.uiScaleAuto) {
+              // 自动模式按屏幕【物理像素】宽度计算（乘以 devicePixelRatio，
+              // 不受系统 DPI 缩放影响）：1080p=1.0，2K≈1.33，4K=2.0，8K=3.0
               final physicalW = mq.size.width * mq.devicePixelRatio;
               scale = (physicalW / 1920.0).clamp(1.0, 3.0);
             } else {

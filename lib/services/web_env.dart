@@ -11,8 +11,12 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 WebViewEnvironment? webViewEnvironment;
 
 /// 清理 WebView2 磁盘数据（仅 Windows）。
-/// 只删除 Service Worker（旧频道的 Service Worker 可能导致新频道黑屏），
-/// 保留 Cache/Cookies/Local Storage/IndexedDB 等，加速二次加载。
+///
+/// 启动时清空纯缓存目录：Cache / Code Cache / GPUCache / Service Worker。
+/// 实测 WebView2 文件夹臃肿后启动明显变慢，清空后启动快。
+/// 保留 Cookies / Local Storage / IndexedDB 等登录态数据。
+/// 注意这与「禁用缓存」不同：本次运行期间 HTTP 缓存照常工作，
+/// 同一会话内切台/返回仍走缓存，只是不带入上次的旧缓存。
 void cleanWebView2Cache() {
   if (!Platform.isWindows) return;
   try {
@@ -24,10 +28,16 @@ void cleanWebView2Cache() {
     final wvDir = Directory('${exeDir.path}${Platform.pathSeparator}'
         '${exeName}.WebView2');
     if (!wvDir.existsSync()) return;
-    // 只清理 Service Worker，避免旧站点 Service Worker 干扰新频道
-    final sw = Directory('${wvDir.path}${Platform.pathSeparator}Service Worker');
-    if (sw.existsSync()) {
-      try { sw.deleteSync(recursive: true); } catch (_) {}
+    // 纯缓存目录，删除安全
+    const cacheDirs = ['Cache', 'Code Cache', 'GPUCache', 'Service Worker'];
+    for (final name in cacheDirs) {
+      final d =
+          Directory('${wvDir.path}${Platform.pathSeparator}$name');
+      if (d.existsSync()) {
+        try {
+          d.deleteSync(recursive: true);
+        } catch (_) {}
+      }
     }
   } catch (_) {}
 }
