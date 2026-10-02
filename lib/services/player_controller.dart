@@ -23,6 +23,7 @@ import 'cast_log.dart';
 import 'dlna_service.dart';
 import 'win_hotkeys.dart';
 import 'fvp_register.dart';
+import 'format_hint.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
 import 'remote_admin_service.dart';
@@ -1075,9 +1076,37 @@ class PlayerController extends ChangeNotifier {
     if (channel.userAgent.trim().isNotEmpty) {
       headers['User-Agent'] = channel.userAgent.trim();
     }
+
+    // ExoPlayer（安卓）不嗅探内容：live.php?id=... 这类脚本入口 302 跳到
+    // m3u8，没有后缀又没有显式 MIME 时会被当作 progressive 文件解析而失败。
+    // 依据后缀或轻量预检推断格式，通过 formatHint 让其选择正确的 MediaSource
+    final streamUrl = channel.streamUrls[_sourceIndex];
+    final path = (Uri.tryParse(streamUrl)?.path ?? '').toLowerCase();
+    final segName = path.split('/').isEmpty ? '' : path.split('/').last;
+    final dotIdx = segName.lastIndexOf('.');
+    final ext = dotIdx >= 0 ? segName.substring(dotIdx + 1) : '';
+    const knownMediaExt = {
+      'mp4', 'mkv', 'avi', 'flv', 'ts', 'mov', 'wmv', 'm4v', 'webm', 'mpg',
+      'mpeg', '3gp', 'rmvb', 'rm', 'mp3', 'aac', 'flac', 'ogg', 'wav', 'mka',
+    };
+    VideoFormat? formatHint;
+    if (ext == 'm3u8' || ext == 'm3u') {
+      formatHint = VideoFormat.hls;
+    } else if (ext == 'mpd') {
+      formatHint = VideoFormat.dash;
+    } else if (!knownMediaExt.contains(ext)) {
+      // 后缀无法识别（php/html/无后缀等）：预检拿真实 Content-Type
+      final fmt =
+          await inferStreamFormat(url: streamUrl, headers: headers);
+      formatHint = fmt == 'hls'
+          ? VideoFormat.hls
+          : (fmt == 'dash' ? VideoFormat.dash : null);
+    }
+
     final c = VideoPlayerController.networkUrl(
-      Uri.parse(channel.streamUrls[_sourceIndex]),
+      Uri.parse(streamUrl),
       videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+      formatHint: formatHint,
       // video_player 2.8.x 该参数为非空 Map（默认空）；空 map 时
       // fvp 不会设置 avio.headers，与不传等价
       httpHeaders: headers,

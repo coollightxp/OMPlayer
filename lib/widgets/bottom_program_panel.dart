@@ -54,7 +54,8 @@ class BottomProgramPanel extends StatelessWidget {
     // 窄屏贴近两侧，避免内容被挤
     final screenW = MediaQuery.of(context).size.width;
     final scale = panelScaleOf(context);
-    final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 10.0);
+    // 用户反馈：手机面板离两端太远，希望横向拉长贴近边缘
+    final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 6.0);
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
@@ -95,9 +96,9 @@ class BottomProgramPanel extends StatelessWidget {
               child: SafeArea(
                 top: false,
                 child: Padding(
-                  // 手机内边距略收紧但上下加高（配合 92 台标，面板更高）
+                  // 贴近屏幕左右两端（横向拉长），上下略加高保持比例
                   padding: scale < 1
-                      ? const EdgeInsets.fromLTRB(14, 14, 10, 12)
+                      ? const EdgeInsets.fromLTRB(12, 16, 8, 14)
                       : const EdgeInsets.fromLTRB(22, 16, 18, 10),
                   child: Consumer<PlayerController>(
                     builder: (context, c, _) => Column(
