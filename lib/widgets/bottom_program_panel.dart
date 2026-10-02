@@ -95,9 +95,9 @@ class BottomProgramPanel extends StatelessWidget {
               child: SafeArea(
                 top: false,
                 child: Padding(
-                  // 手机上收紧内边距，把空间留给节目信息文字
+                  // 手机内边距略收紧但上下加高（配合 92 台标，面板更高）
                   padding: scale < 1
-                      ? const EdgeInsets.fromLTRB(14, 10, 10, 8)
+                      ? const EdgeInsets.fromLTRB(14, 14, 10, 12)
                       : const EdgeInsets.fromLTRB(22, 16, 18, 10),
                   child: Consumer<PlayerController>(
                     builder: (context, c, _) => Column(
@@ -108,7 +108,7 @@ class BottomProgramPanel extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
                             _buildLogo(c, scale),
-                            SizedBox(width: scale < 1 ? 10 : 28),
+                            SizedBox(width: scale < 1 ? 12 : 28),
                             Expanded(child: _buildInfo(c, scale)),
                             Flexible(
                               flex: 0,
@@ -135,8 +135,8 @@ class BottomProgramPanel extends StatelessWidget {
   // ==================== 台标 ====================
 
   Widget _buildLogo(PlayerController c, double scale) {
-    // 手机上台标 128 过大、严重挤占节目信息：缩到 64
-    final size = scale < 1 ? 64.0 : 128.0;
+    // 手机台标 64→92：用户反馈偏小，配合面板整体加高
+    final size = scale < 1 ? 92.0 : 128.0;
     final logo = c.currentLogo;
     Widget placeholder() => Container(
           width: size,
@@ -146,7 +146,7 @@ class BottomProgramPanel extends StatelessWidget {
             borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
           ),
           child: Icon(Icons.live_tv,
-              color: Colors.white54, size: scale < 1 ? 32 : 64),
+              color: Colors.white54, size: scale < 1 ? 46 : 64),
         );
     if (logo.isEmpty) return placeholder();
     return ClipRRect(

@@ -54,6 +54,7 @@ class DlnaService {
   DlnaHooks? _hooks;
   String? _currentUri;
   String _currentTitle = '';
+  String _currentMetaData = '';
 
   /// GENA 事件订阅：key = 事件路径（/event/AVTransport 等）
   final Map<String, _EventSubscription> _subs = {};
@@ -93,6 +94,7 @@ class DlnaService {
     final wasActive = _currentUri != null && _currentUri!.isNotEmpty;
     _currentUri = null;
     _currentTitle = '';
+    _currentMetaData = '';
     _lastPushedPosSec = -1;
     if (wasActive) {
       final sub = _subs['/event/AVTransport'];
@@ -348,20 +350,34 @@ class DlnaService {
     }
 
     // 略微延迟回复，避免同网络设备风暴
+    // 必须对 ssdp:all 回复全部 6 个 USN（含 3 个 service 类型），
+    // 乐播/抖音 SDK 依赖 AVTransport service USN 确认设备投屏能力
     Future.delayed(const Duration(milliseconds: 100), () {
       if (_ssdp == null) return;
-      if (st == 'ssdp:all') {
+      void sendAll() {
         send('upnp:rootdevice', '$usnBase::upnp:rootdevice');
         send(usnBase, usnBase);
         send('urn:schemas-upnp-org:device:MediaRenderer:1',
             '$usnBase::urn:schemas-upnp-org:device:MediaRenderer:1');
+        send('urn:schemas-upnp-org:service:AVTransport:1',
+            '$usnBase::urn:schemas-upnp-org:service:AVTransport:1');
+        send('urn:schemas-upnp-org:service:RenderingControl:1',
+            '$usnBase::urn:schemas-upnp-org:service:RenderingControl:1');
+        send('urn:schemas-upnp-org:service:ConnectionManager:1',
+            '$usnBase::urn:schemas-upnp-org:service:ConnectionManager:1');
+      }
+
+      if (st == 'ssdp:all') {
+        sendAll();
       } else if (st == 'upnp:rootdevice') {
         send(st, '$usnBase::upnp:rootdevice');
       } else if (st == usnBase) {
         send(st, usnBase);
       } else if (st.contains('MediaRenderer') ||
           st.contains('MediaServer') ||
-          st.contains('AVTransport')) {
+          st.contains('AVTransport') ||
+          st.contains('RenderingControl') ||
+          st.contains('ConnectionManager')) {
         send(st, '$usnBase::$st');
       }
     });
@@ -371,12 +387,25 @@ class DlnaService {
     final socket = _ssdp;
     if (socket == null) return;
     final usnBase = 'uuid:$_uuid';
+    // 全部 6 个 USN（含 3 个 service 类型），与 ssdp:all 回复保持一致
     final entries = <List<String>>[
       ['upnp:rootdevice', '$usnBase::upnp:rootdevice'],
       [usnBase, usnBase],
       [
         'urn:schemas-upnp-org:device:MediaRenderer:1',
         '$usnBase::urn:schemas-upnp-org:device:MediaRenderer:1'
+      ],
+      [
+        'urn:schemas-upnp-org:service:AVTransport:1',
+        '$usnBase::urn:schemas-upnp-org:service:AVTransport:1'
+      ],
+      [
+        'urn:schemas-upnp-org:service:RenderingControl:1',
+        '$usnBase::urn:schemas-upnp-org:service:RenderingControl:1'
+      ],
+      [
+        'urn:schemas-upnp-org:service:ConnectionManager:1',
+        '$usnBase::urn:schemas-upnp-org:service:ConnectionManager:1'
       ],
     ];
     for (final e in entries) {
@@ -566,10 +595,18 @@ class DlnaService {
       _notify(sub, _rcEventBody());
     } else {
       const sink = 'http-get:*:video/mp4:*,http-get:*:video/x-matroska:*,'
-          'http-get:*:video/avi:*,http-get:*:video/mpeg:*,'
-          'http-get:*:video/mp2t:*,http-get:*:application/vnd.apple.mpegurl:*,'
-          'http-get:*:application/x-mpegURL:*,http-get:*:video/*:*,'
-          'http-get:*:audio/*:*,http-get:*:image/*:*';
+          'http-get:*:video/x-mkv:*,http-get:*:video/avi:*,'
+          'http-get:*:video/x-msvideo:*,http-get:*:video/mpeg:*,'
+          'http-get:*:video/mp2t:*,http-get:*:video/x-ms-wmv:*,'
+          'http-get:*:video/x-flv:*,http-get:*:video/flv:*,'
+          'http-get:*:video/webm:*,http-get:*:video/3gpp:*,'
+          'http-get:*:video/3gpp2:*,http-get:*:video/quicktime:*,'
+          'http-get:*:video/x-m4v:*,http-get:*:application/vnd.apple.mpegurl:*,'
+          'http-get:*:application/x-mpegURL:*,http-get:*:video/m3u8:*,'
+          'http-get:*:video/hlv:*,http-get:*:video/x-rmvb:*,'
+          'http-get:*:video/x-rm:*,http-get:*:video/rmvb:*,'
+          'http-get:*:video/rm:*,http-get:*:video/x-ms-asf:*,'
+          'http-get:*:video/*:*,http-get:*:audio/*:*,http-get:*:image/*:*';
       _notify(
           sub,
           '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
@@ -600,6 +637,7 @@ class DlnaService {
     final pos = hooks == null ? '0:00:00' : _fmtTime(hooks.position());
     final dur = hooks == null ? '0:00:00' : _fmtTime(hooks.duration());
     final uri = _xmlEscape(_currentUri ?? '');
+    final meta = _xmlEscape(_currentMetaData);
     // 无媒体时 CurrentTrack=0（DLNA 规范：Track 0 表示无加载的媒体）
     final track = hasMedia ? '1' : '0';
     final inner = '<InstanceID val="0">'
@@ -607,9 +645,9 @@ class DlnaService {
         '<TransportStatus val="OK"/>'
         '<CurrentTrack val="$track"/>'
         '<AVTransportURI val="$uri"/>'
-        '<AVTransportURIMetaData val=""/>'
+        '<AVTransportURIMetaData val="$meta"/>'
         '<CurrentTrackURI val="$uri"/>'
-        '<CurrentTrackMetaData val=""/>'
+        '<CurrentTrackMetaData val="$meta"/>'
         '<CurrentTrackDuration val="$dur"/>'
         '<RelativeTimePosition val="$pos"/>'
         '<AbsoluteTimePosition val="$pos"/>'
@@ -747,6 +785,7 @@ class DlnaService {
         case 'SetAVTransportURI':
           _currentUri = _extract(body, 'CurrentURI');
           _currentTitle = _extractCastTitle(body);
+          _currentMetaData = _extract(body, 'CurrentURIMetaData');
           // 新地址：重置进度推送缓存
           _lastPushedState = null;
           _lastPushedPosSec = -1;
@@ -815,10 +854,13 @@ class DlnaService {
           final dur = hooks.duration() > Duration.zero
               ? _fmtTime(hooks.duration())
               : '';
+          // 返回 metadata：乐播/抖音等 SDK 用它确认投屏内容、
+          // 显示标题，缺失会被判为投屏异常
+          final meta = _xmlEscape(_currentMetaData);
           await _soapResponse(req, service, action,
               '<Track>1</Track>'
               '<TrackDuration>$dur</TrackDuration>'
-              '<TrackMetaData></TrackMetaData>'
+              '<TrackMetaData>$meta</TrackMetaData>'
               '<TrackURI>$uri</TrackURI>'
               '<RelTime>$pos</RelTime>'
               '<AbsTime>$pos</AbsTime>'
@@ -845,11 +887,12 @@ class DlnaService {
           final dur = hooks.duration() > Duration.zero
               ? _fmtTime(hooks.duration())
               : '';
+          final meta = _xmlEscape(_currentMetaData);
           await _soapResponse(req, service, action,
               '<NrTracks>1</NrTracks>'
               '<MediaDuration>$dur</MediaDuration>'
               '<CurrentURI>$uri</CurrentURI>'
-              '<CurrentURIMetaData></CurrentURIMetaData>'
+              '<CurrentURIMetaData>$meta</CurrentURIMetaData>'
               '<NextURI></NextURI>'
               '<NextURIMetaData></NextURIMetaData>'
               '<PlayMedium>NETWORK</PlayMedium>'
@@ -876,6 +919,18 @@ class DlnaService {
         case 'SetNextAVTransportURI':
           // 单轨渲染器：接受请求但不做实际动作
           await _soapResponse(req, service, action, '');
+          return;
+        case 'GetDeviceCapabilities':
+          // 乐播/抖音等 SDK 用它确认设备支持的媒体类型
+          await _soapResponse(req, service, action,
+              '<PlayMedia>NETWORK,NONE</PlayMedia>'
+              '<RecMedia>NOT_IMPLEMENTED</RecMedia>'
+              '<RecQualityModes>NOT_IMPLEMENTED</RecQualityModes>');
+          return;
+        case 'GetTransportSettings':
+          await _soapResponse(req, service, action,
+              '<PlayMode>NORMAL</PlayMode>'
+              '<RecQualityMode>NOT_IMPLEMENTED</RecQualityMode>');
           return;
         default:
           await _soapResponse(req, service, action, '');
@@ -925,11 +980,12 @@ class DlnaService {
     if (service.contains('ConnectionManager')) {
       switch (action) {
         case 'GetProtocolInfo':
-          // 我们是接收端（Sink），Source 留空；Sink 声明支持的协议，
-          // 抖音会据此判断能否投屏，必须非空且包含 mp4
+          // 我们是接收端（Sink），Source 留空；Sink 声明支持的协议。
+          // 乐播/抖音据此判断能否投屏。对齐 Macast 的列表：覆盖面广，
+          // 包含 HLS/FLV/RMVB/WMV 等常见格式，让发送端不再因格式疑虑判失败
           await _soapResponse(req, service, action,
               '<Source></Source>'
-              '<Sink>http-get:*:video/mp4:*,http-get:*:video/x-matroska:*,http-get:*:video/avi:*,http-get:*:video/mpeg:*,http-get:*:video/mp2t:*,http-get:*:application/vnd.apple.mpegurl:*,http-get:*:application/x-mpegURL:*,http-get:*:video/*:*,http-get:*:audio/*:*,http-get:*:image/*:*</Sink>');
+              '<Sink>http-get:*:video/mp4:*,http-get:*:video/x-matroska:*,http-get:*:video/x-mkv:*,http-get:*:video/avi:*,http-get:*:video/x-msvideo:*,http-get:*:video/mpeg:*,http-get:*:video/mp2t:*,http-get:*:video/x-ms-wmv:*,http-get:*:video/x-flv:*,http-get:*:video/flv:*,http-get:*:video/webm:*,http-get:*:video/3gpp:*,http-get:*:video/3gpp2:*,http-get:*:video/quicktime:*,http-get:*:video/x-m4v:*,http-get:*:application/vnd.apple.mpegurl:*,http-get:*:application/x-mpegURL:*,http-get:*:video/m3u8:*,http-get:*:video/hlv:*,http-get:*:video/x-rmvb:*,http-get:*:video/x-rm:*,http-get:*:video/rmvb:*,http-get:*:video/rm:*,http-get:*:video/x-ms-asf:*,http-get:*:video/*:*,http-get:*:audio/*:*,http-get:*:image/*:*</Sink>');
           return;
         case 'GetCurrentConnectionIDs':
           await _soapResponse(req, service, action,
@@ -1184,6 +1240,35 @@ class DlnaService {
 <argument><name>Actions</name><direction>out</direction><relatedStateVariable>CurrentTransportActions</relatedStateVariable></argument>
 </argumentList>
 </action>
+<action>
+<name>GetDeviceCapabilities</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>PlayMedia</name><direction>out</direction><relatedStateVariable>PossiblePlaybackStorageMedia</relatedStateVariable></argument>
+<argument><name>RecMedia</name><direction>out</direction><relatedStateVariable>PossibleRecordStorageMedia</relatedStateVariable></argument>
+<argument><name>RecQualityModes</name><direction>out</direction><relatedStateVariable>PossibleRecordQualityModes</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>GetTransportSettings</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+<argument><name>PlayMode</name><direction>out</direction><relatedStateVariable>CurrentPlayMode</relatedStateVariable></argument>
+<argument><name>RecQualityMode</name><direction>out</direction><relatedStateVariable>CurrentRecordQualityMode</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>Next</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+</argumentList>
+</action>
+<action>
+<name>Previous</name>
+<argumentList>
+<argument><name>InstanceID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_InstanceID</relatedStateVariable></argument>
+</argumentList>
+</action>
 </actionList>
 <serviceStateTable>
 <stateVariable sendEvents="no"><name>TransportState</name><dataType>string</dataType><allowedValueList><allowedValue>STOPPED</allowedValue><allowedValue>PLAYING</allowedValue><allowedValue>PAUSED_PLAYBACK</allowedValue><allowedValue>TRANSITIONING</allowedValue><allowedValue>NO_MEDIA_PRESENT</allowedValue></allowedValueList></stateVariable>
@@ -1208,6 +1293,11 @@ class DlnaService {
 <stateVariable sendEvents="no"><name>AbsoluteCounterPosition</name><dataType>i4</dataType></stateVariable>
 <stateVariable sendEvents="no"><name>CurrentTransportActions</name><dataType>string</dataType></stateVariable>
 <stateVariable sendEvents="yes"><name>LastChange</name><dataType>string</dataType></stateVariable>
+<stateVariable sendEvents="no"><name>CurrentPlayMode</name><dataType>string</dataType><allowedValueList><allowedValue>NORMAL</allowedValue></allowedValueList><defaultValue>NORMAL</defaultValue></stateVariable>
+<stateVariable sendEvents="no"><name>CurrentRecordQualityMode</name><dataType>string</dataType><allowedValueList><allowedValue>NOT_IMPLEMENTED</allowedValue></allowedValueList><defaultValue>NOT_IMPLEMENTED</defaultValue></stateVariable>
+<stateVariable sendEvents="no"><name>PossiblePlaybackStorageMedia</name><dataType>string</dataType><allowedValueList><allowedValue>NETWORK</allowedValue><allowedValue>NONE</allowedValue></allowedValueList><defaultValue>NETWORK</defaultValue></stateVariable>
+<stateVariable sendEvents="no"><name>PossibleRecordStorageMedia</name><dataType>string</dataType><allowedValueList><allowedValue>NOT_IMPLEMENTED</allowedValue></allowedValueList><defaultValue>NOT_IMPLEMENTED</defaultValue></stateVariable>
+<stateVariable sendEvents="no"><name>PossibleRecordQualityModes</name><dataType>string</dataType><allowedValueList><allowedValue>NOT_IMPLEMENTED</allowedValue></allowedValueList><defaultValue>NOT_IMPLEMENTED</defaultValue></stateVariable>
 <stateVariable sendEvents="no"><name>A_ARG_TYPE_SeekMode</name><dataType>string</dataType><allowedValueList><allowedValue>REL_TIME</allowedValue><allowedValue>TRACK_NR</allowedValue></allowedValueList></stateVariable>
 <stateVariable sendEvents="no"><name>A_ARG_TYPE_SeekTarget</name><dataType>string</dataType></stateVariable>
 <stateVariable sendEvents="no"><name>A_ARG_TYPE_InstanceID</name><dataType>ui4</dataType></stateVariable>

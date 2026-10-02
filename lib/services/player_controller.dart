@@ -414,8 +414,9 @@ class PlayerController extends ChangeNotifier {
               case PlayerState.paused:
                 return 'PAUSED_PLAYBACK';
               case PlayerState.loading:
-                // 标准状态：媒体正在准备，发送端此时不应判定为失败/重试
-                return 'TRANSITIONING';
+                // Macast 对 SetURI 返回 PAUSED_PLAYBACK，发送端以此确认
+                // 设置成功；TRANSITIONING 部分 SDK 不识别会判失败
+                return 'PAUSED_PLAYBACK';
               default:
                 return 'STOPPED';
             }
@@ -1058,7 +1059,13 @@ class PlayerController extends ChangeNotifier {
 
     // 缓冲设置即时生效：每次起播前按当前设置重新注册 fvp 选项，
     // 不必重启程序（registerWith 的全局选项对之后创建的播放器生效）
-    registerFvp(bufferSeconds: _settings.bufferSeconds);
+    // 投屏点播（非 HLS）用大缓冲：腾讯视频等单连接下载常有十几秒波动，
+    // 5 秒上限会反复缓冲卡顿（mpv/Macast 大缓存无此问题）；直播/HLS
+    // 投屏仍用用户设置，避免拉长直播延迟
+    final rawUrl = channel.streamUrls[_sourceIndex].toLowerCase();
+    final isHls = rawUrl.contains('.m3u8') || rawUrl.contains('.m3u');
+    registerFvp(
+        bufferSeconds: _isCasting && !isHls ? 90 : _settings.bufferSeconds);
 
     await _disposeVideoController();
 
@@ -1085,8 +1092,6 @@ class PlayerController extends ChangeNotifier {
     // - 普通频道按用户设置（默认 5 秒，超时自动切下一个源）
     // - 投屏只有一个地址且没有备用源，HLS 跨网慢时给 45 秒，
     //   其它流 15 秒（与投屏重试逻辑配合）
-    final rawUrl = channel.streamUrls[_sourceIndex].toLowerCase();
-    final isHls = rawUrl.contains('.m3u8') || rawUrl.contains('.m3u');
     final Duration initTimeout;
     if (_isCasting) {
       initTimeout =

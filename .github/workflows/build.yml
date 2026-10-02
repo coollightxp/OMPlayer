@@ -79,20 +79,33 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/.android/debug.keystore
-          key: omplayer-keystore-v2
+          key: omplayer-keystore-v3-${{ runner.os }}
 
       - name: Ensure stable keystore
         run: |
           mkdir -p "$HOME/.android"
-          # 仅在缓存未命中时生成：runner 镜像自带的 debug.keystore 随镜像
-          # 版本变化（每次签名不同导致无法覆盖安装），先删掉再用固定参数生成
-          if [ "${{ steps.ks-cache.outputs.cache-hit }}" != "true" ]; then
+          # 优先使用仓库 Secret 中固定的 keystore（根治签名漂移）：
+          # 在 GitHub Settings -> Secrets and variables -> Actions -> Repository secrets
+          # 中创建 DEBUG_KEYSTORE_BASE64，值为 base64 编码的 debug.keystore
+          if [ -n "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" ]; then
+            echo "Using keystore from repository secret (stable signature)"
+            echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > "$HOME/.android/debug.keystore"
+          elif [ "${{ steps.ks-cache.outputs.cache-hit }}" != "true" ]; then
+            # 缓存未命中且无 Secret：生成新的，但签名会与历史版本不同
+            echo "Generating new debug.keystore (signature will differ from previous releases)"
             rm -f "$HOME/.android/debug.keystore"
             keytool -genkey -v \
               -keystore "$HOME/.android/debug.keystore" \
               -storepass android -alias androiddebugkey -keypass android \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=OMPlayer,O=OMPlayer,C=CN"
+            # 输出 base64 供用户一次性保存到 Secret，以后不再漂移
+            echo "=== DEBUG_KEYSTORE_BASE64 (save to GitHub Secret to stabilize) ==="
+            base64 -w 0 "$HOME/.android/debug.keystore"
+            echo ""
+            echo "=== END ==="
+          else
+            echo "Using cached debug.keystore"
           fi
 
       - name: Build APK
