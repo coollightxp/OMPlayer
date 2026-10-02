@@ -311,7 +311,7 @@ class BottomProgramPanel extends StatelessWidget {
           const SizedBox(width: 4),
         ],
         // 旋转画面：投屏竖屏直播（如抖音）时把画面转 90° 填满屏幕，
-        // 每点一下顺时针转 90°。0° 时按钮半透明，旋转后高亮提示。
+        // 再点一下恢复原始方向。0° 时半透明，旋转后高亮提示。
         ValueListenableBuilder<int>(
           valueListenable: c.videoRotation,
           builder: (context, rot, _) => IconButton(
@@ -321,7 +321,7 @@ class BottomProgramPanel extends StatelessWidget {
               size: 24,
             ),
             onPressed: hasVideo ? c.cycleVideoRotation : null,
-            tooltip: rot == 0 ? '旋转画面' : '旋转中（再点切换，共90°x${rot}）',
+            tooltip: rot == 0 ? '旋转画面' : '恢复原始方向',
           ),
         ),
         _btn(Icons.list, '频道列表', onOpenChannels),

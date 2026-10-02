@@ -74,6 +74,13 @@ class DlnaService {
   /// 就判定“投屏失败”（即使稍后实际已播放），并禁用清晰度切换等功能。
   Timer? _readyWatchTimer;
   String? _readyWatchLastState;
+
+  /// 最近一次命令期望的对外状态（Macast 同款：命令驱动而非播放器驱动）。
+  /// SetURI→PAUSED_PLAYBACK，Play→PLAYING，Pause→PAUSED_PLAYBACK。
+  /// 抖音(乐播SDK)在 Play 后几百毫秒内就轮询 GetTransportInfo，
+  /// 若等播放器真正 init 完（约1秒）才报 PLAYING 会超出其等待窗口，
+  /// 触发 Stop+SetURI 无限重试（即"放停放停"闪联）。
+  String? _cmdState;
   static const _noisyActions = {
     'GetPositionInfo',
     'GetTransportInfo',
@@ -95,6 +102,7 @@ class DlnaService {
     _currentUri = null;
     _currentTitle = '';
     _currentMetaData = '';
+    _cmdState = null;
     _lastPushedPosSec = -1;
     if (wasActive) {
       final sub = _subs['/event/AVTransport'];
@@ -161,10 +169,15 @@ class DlnaService {
   /// 无投屏媒体时一律 STOPPED：投屏断开后本地会恢复之前的频道，
   /// 但那是本机的事，不能把本地的 PLAYING 报给投送端，
   /// 否则它一直认为投屏还在进行、UI 停在"投屏中"。
+  /// 播放器真实状态为 PLAYING/STOPPED 时以真实为准；loading/buffering
+  /// 期间按最近命令上报（_cmdState，Macast 同款命令驱动），
+  /// 抖音在 Play 后几百毫秒内轮询即可见到 PLAYING，不会触发重试。
   String get _exposedState {
     final uri = _currentUri;
     if (uri == null || uri.isEmpty) return 'STOPPED';
-    return _hooks?.transportState() ?? 'STOPPED';
+    final real = _hooks?.transportState() ?? 'STOPPED';
+    if (real == 'PLAYING' || real == 'STOPPED') return real;
+    return _cmdState ?? real;
   }
 
   void stop() {
@@ -788,6 +801,8 @@ class DlnaService {
           _currentUri = _extract(body, 'CurrentURI');
           _currentTitle = _extractCastTitle(body);
           _currentMetaData = _extract(body, 'CurrentURIMetaData');
+          // 命令驱动状态：Macast 同款，SetURI 后先报 PAUSED 等 Play
+          _cmdState = 'PAUSED_PLAYBACK';
           // 新地址：重置进度推送缓存
           _lastPushedState = null;
           _lastPushedPosSec = -1;
@@ -802,11 +817,13 @@ class DlnaService {
           _startReadyWatch();
           return;
         case 'Play':
+          _cmdState = 'PLAYING'; // 立即上报，不等播放器 init（Macast 同款）
           hooks.onResume();
           await _soapResponse(req, service, action, '');
           _startReadyWatch();
           return;
         case 'Pause':
+          _cmdState = 'PAUSED_PLAYBACK';
           hooks.onPause();
           await _soapResponse(req, service, action, '');
           _fireAvtChange();
@@ -816,6 +833,7 @@ class DlnaService {
           // 发送端轮询即可知道投屏已结束（不依赖 GENA 通知）
           _currentUri = null;
           _currentTitle = '';
+          _cmdState = null;
           hooks.onStop();
           await _soapResponse(req, service, action, '');
           _fireAvtChange();
@@ -1135,6 +1153,19 @@ class DlnaService {
         's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
         '<s:Body><u:$respAction xmlns:u="$service">$argsXml</u:$respAction></s:Body>'
         '</s:Envelope>';
+    // 诊断：把关键查询动作的完整响应写入投屏日志（10 秒限频），
+    // 用于与 Macast 逐字节对比定位抖音"放停放停"重试的触发字段
+    if (action == 'GetTransportInfo' ||
+        action == 'GetPositionInfo' ||
+        action == 'GetMediaInfo') {
+      final key = 'resp-$action';
+      final now = DateTime.now();
+      final last = _lastPollLog[key];
+      if (last == null || now.difference(last).inSeconds >= 10) {
+        _lastPollLog[key] = now;
+        CastLog.write('SOAP-RESP[$action] $body');
+      }
+    }
     await _respondXml(req, body);
   }
 

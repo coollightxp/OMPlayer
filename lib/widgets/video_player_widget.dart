@@ -99,7 +99,6 @@ class VideoPlayerWidget extends StatelessWidget {
         final h = vc.value.size.height;
         final hasSize = w > 0 && h > 0;
         // 旋转：用独立的 ValueNotifier 只重建视频层，避免整 Stack 灰屏
-        final rotation = controller.videoRotation.value;
         return ValueListenableBuilder<int>(
           valueListenable: controller.videoRotation,
           builder: (context, rot, _) {

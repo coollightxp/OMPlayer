@@ -48,14 +48,9 @@ class PlayerController extends ChangeNotifier {
   /// 仅影响显示，不改变解码器或流本身。投屏竖屏直播时可旋转画面填满屏幕。
   final ValueNotifier<int> videoRotation = ValueNotifier<int>(0);
 
-  /// 循环切换画面旋转角度
+  /// 旋转/恢复：0° ↔ 90° 二态切换（再点一下回到原始方向）
   void cycleVideoRotation() {
-    videoRotation.value = (videoRotation.value + 1) % 4;
-  }
-
-  /// 恢复为 0°
-  void resetVideoRotation() {
-    videoRotation.value = 0;
+    videoRotation.value = videoRotation.value == 0 ? 1 : 0;
   }
 
   PlayerState _state = PlayerState.idle;
