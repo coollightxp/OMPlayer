@@ -1440,6 +1440,8 @@ class PlayerController extends ChangeNotifier {
 
   /// 更新设置并持久化（开机启动项会同步到系统）
   void updateSettings(PlayerSettings settings) {
+    final clockChanged = settings.showClock != _settings.showClock;
+    if (clockChanged) _logVideoTexture('showClock->${settings.showClock}');
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
     final topChanged = settings.alwaysOnTop != _settings.alwaysOnTop;
     final dlnaChanged = settings.dlnaEnabled != _settings.dlnaEnabled;
@@ -1468,6 +1470,21 @@ class PlayerController extends ChangeNotifier {
       }
     }
     notifyListeners();
+    if (clockChanged) {
+      WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _logVideoTexture('postframe showClock'));
+    }
+  }
+
+  /// 诊断：记录当前视频纹理关键状态（仅写文件日志，无界面探针）
+  void _logVideoTexture(String tag) {
+    try {
+      final vc = _videoController;
+      CastLog.write(
+          '$tag state=$_state playing=${vc?.value.isPlaying} init=${vc?.value.isInitialized} tex=${vc?.textureId} size=${vc?.value.size}');
+    } catch (e) {
+      CastLog.write('$tag texture log failed: $e');
+    }
   }
 
   /// 应用窗口置顶设置（全屏时强制置顶，退出全屏后按设置恢复）

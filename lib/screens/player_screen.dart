@@ -487,7 +487,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   _buildChannelOsd(controller),
 
                   // 右上角系统时间：在视频画面之上、所有弹出面板之下
-                  if (controller.settings.showClock) _buildClock(),
+                  // 时钟槽位常驻：开关只切换槽内内容，不在 Stack 中增删
+                  // 节点，避免 Stack 结构性重排牵连视频纹理变灰
+                  _buildClock(controller),
 
                   // 手势检测层：普通模式全功能；网页模式仅保留左右两侧
                   // 垂直滑动（亮度/音量），中间区域完全穿透不拦截网页点击，
@@ -994,32 +996,38 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     );
   }
 
-  Widget _buildClock() {
+  Widget _buildClock(PlayerController controller) {
     return Positioned(
       top: 0,
       right: 0,
-      child: SafeArea(
-        child: Padding(
-          // 与屏幕上边、右边保持约一行的距离（桌面无 SafeArea 边距，
-          // 这里显式留白）
-          padding: const EdgeInsets.only(top: 20, right: 28, bottom: 8),
-          child: StreamBuilder<int>(
-            stream: _clockStream,
-            builder: (context, _) {
-              final now = DateTime.now();
-              return Text(
-                DateFormat('HH:mm').format(now),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                  fontWeight: FontWeight.w500,
-                  shadows: [Shadow(color: Colors.black87, blurRadius: 6)],
+      // 关闭时 Positioned 槽位仍常驻、内部为空，不在 Stack 中增删节点
+      child: !controller.settings.showClock
+          ? const SizedBox.shrink()
+          : SafeArea(
+              child: Padding(
+                // 与屏幕上边、右边保持约一行的距离（桌面无 SafeArea 边距，
+                // 这里显式留白）
+                padding:
+                    const EdgeInsets.only(top: 20, right: 28, bottom: 8),
+                child: StreamBuilder<int>(
+                  stream: _clockStream,
+                  builder: (context, _) {
+                    final now = DateTime.now();
+                    return Text(
+                      DateFormat('HH:mm').format(now),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w500,
+                        shadows: [
+                          Shadow(color: Colors.black87, blurRadius: 6)
+                        ],
+                      ),
+                    );
+                  },
                 ),
-              );
-            },
-          ),
-        ),
-      ),
+              ),
+            ),
     );
   }
 
