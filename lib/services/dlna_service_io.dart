@@ -66,6 +66,13 @@ class DlnaService {
 
   /// 高频轮询动作的诊断日志限频（最多 10 秒一条）
   final Map<String, DateTime> _lastPollLog = {};
+
+  /// 起播确认监视：SetAVTransportURI/Play 后短时间内高频检查状态，
+  /// 一旦对外状态变成 PLAYING 立即推送事件。
+  /// 抖音极速版等发送端在 SetURI 后只等约 2~3 秒，收不到 PLAYING
+  /// 就判定“投屏失败”（即使稍后实际已播放），并禁用清晰度切换等功能。
+  Timer? _readyWatchTimer;
+  String? _readyWatchLastState;
   static const _noisyActions = {
     'GetPositionInfo',
     'GetTransportInfo',
@@ -161,6 +168,7 @@ class DlnaService {
   void stop() {
     _aliveTimer?.cancel();
     _positionEventTimer?.cancel();
+    _readyWatchTimer?.cancel();
     for (final s in _subs.values) {
       s.expireTimer.cancel();
     }
@@ -169,8 +177,31 @@ class DlnaService {
     _http?.close();
     _aliveTimer = null;
     _positionEventTimer = null;
+    _readyWatchTimer = null;
     _ssdp = null;
     _http = null;
+  }
+
+  /// 启动起播确认监视：每 200ms 检查一次，状态变化即推送，
+  /// 见到 PLAYING 后停止；最长 9 秒。
+  void _startReadyWatch() {
+    _readyWatchTimer?.cancel();
+    _readyWatchLastState = _exposedState;
+    var ticks = 0;
+    _readyWatchTimer = Timer.periodic(const Duration(milliseconds: 200), (t) {
+      ticks++;
+      final sub = _subs['/event/AVTransport'];
+      final state = _exposedState;
+      if (sub != null && state != _readyWatchLastState) {
+        _readyWatchLastState = state;
+        _lastPushedState = state;
+        _notify(sub, _avtEventBody());
+      }
+      if (state == 'PLAYING' || ticks >= 45) {
+        t.cancel();
+        _readyWatchTimer = null;
+      }
+    });
   }
 
   // ==================== 设备名称 ====================
@@ -717,16 +748,16 @@ class DlnaService {
             hooks.onPlay(_currentUri!, _currentTitle);
           }
           await _soapResponse(req, service, action, '');
-          // 立即推送一次状态事件：抖音等发送端等待首条事件确认连接，
-          // 只等 1.5 秒的延迟推送会被其判定「投屏失败」（实际已在播放）
+          // 立即推送一次状态事件：抖音等发送端等待首条事件确认连接
           _fireAvtChange();
-          // 播放初始化完成后再推一次 PLAYING（初始化需 1 秒左右）
-          Timer(const Duration(milliseconds: 1500), _fireAvtChange);
+          // 高频监视起播：状态一变成 PLAYING 立即推送（初始化通常需
+          // 2~3 秒），让发送端在超时窗口内确认投屏成功、启用清晰度选择
+          _startReadyWatch();
           return;
         case 'Play':
           hooks.onResume();
           await _soapResponse(req, service, action, '');
-          Timer(const Duration(milliseconds: 500), _fireAvtChange);
+          _startReadyWatch();
           return;
         case 'Pause':
           hooks.onPause();

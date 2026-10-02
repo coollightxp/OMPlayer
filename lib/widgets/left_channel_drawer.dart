@@ -207,25 +207,25 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   /// 第一级：分类列表
   Widget _buildCategoryList(List<ChannelCategory> cats) {
     if (cats.isEmpty) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
+          padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.playlist_add, size: 56, color: Colors.white38),
-              SizedBox(height: 16),
-              Text(
+              const Icon(Icons.playlist_add, size: 56, color: Colors.white38),
+              const SizedBox(height: 16),
+              const Text(
                 '暂无频道列表',
                 style: TextStyle(color: Colors.white54, fontSize: 16),
               ),
-              SizedBox(height: 8),
-              Text(
+              const SizedBox(height: 8),
+              const Text(
                 '请在设置中添加 M3U/TXT 播放列表',
                 style: TextStyle(color: Colors.white38, fontSize: 12),
                 textAlign: TextAlign.center,
               ),
-              SizedBox(height: 20),
+              const SizedBox(height: 20),
               OutlinedButton.icon(
                 onPressed: widget.onOpenSettings,
                 icon: const Icon(Icons.settings, size: 18),
