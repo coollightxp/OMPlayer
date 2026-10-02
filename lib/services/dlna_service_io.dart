@@ -635,7 +635,9 @@ class DlnaService {
     final hasMedia = _currentUri != null && _currentUri!.isNotEmpty;
     final state = _exposedState;
     final pos = hooks == null ? '0:00:00' : _fmtTime(hooks.position());
-    final dur = hooks == null ? '0:00:00' : _fmtTime(hooks.duration());
+    final dur = hooks != null && _isUsableDuration(hooks.duration())
+        ? _fmtTime(hooks.duration())
+        : '';
     final uri = _xmlEscape(_currentUri ?? '');
     final meta = _xmlEscape(_currentMetaData);
     // 无媒体时 CurrentTrack=0（DLNA 规范：Track 0 表示无加载的媒体）
@@ -851,7 +853,7 @@ class DlnaService {
           final pos = _fmtTime(hooks.position());
           // 直播流/时长未知时按规范返回空串，不能返回 0:00:00，
           // 否则部分发送端会把进度算成 100% 或判定异常
-          final dur = hooks.duration() > Duration.zero
+          final dur = _isUsableDuration(hooks.duration())
               ? _fmtTime(hooks.duration())
               : '';
           // 返回 metadata：乐播/抖音等 SDK 用它确认投屏内容、
@@ -884,7 +886,7 @@ class DlnaService {
                 '<WriteStatus>NOT_IMPLEMENTED</WriteStatus>');
             return;
           }
-          final dur = hooks.duration() > Duration.zero
+          final dur = _isUsableDuration(hooks.duration())
               ? _fmtTime(hooks.duration())
               : '';
           final meta = _xmlEscape(_currentMetaData);
@@ -906,7 +908,7 @@ class DlnaService {
                 '<Actions>Play</Actions>');
             return;
           }
-          final canSeek = hooks.duration() > Duration.zero;
+          final canSeek = _isUsableDuration(hooks.duration());
           final actions = canSeek
               ? 'Play,Pause,Stop,Seek,X_DLNA_SeekTime'
               : 'Play,Pause,Stop';
@@ -1093,6 +1095,11 @@ class DlnaService {
     if (sec != null) return Duration(seconds: sec);
     return null;
   }
+
+  /// 时长是否可用：video_player/fvp 对直播流返回 2^63-1 微秒的哨兵值
+  /// （约 9223372036854 秒）。不识别的话 DLNA 会输出 "2562047:47:16"
+  /// 这类非法时长，抖音等发送端解析失败后会反复 Stop+SetURI 重试（闪联）。
+  bool _isUsableDuration(Duration d) => d > Duration.zero && d.inDays < 365;
 
   String _fmtTime(Duration d) {
     final h = d.inHours;

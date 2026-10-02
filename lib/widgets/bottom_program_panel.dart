@@ -310,6 +310,20 @@ class BottomProgramPanel extends StatelessWidget {
           ),
           const SizedBox(width: 4),
         ],
+        // 旋转画面：投屏竖屏直播（如抖音）时把画面转 90° 填满屏幕，
+        // 每点一下顺时针转 90°。0° 时按钮半透明，旋转后高亮提示。
+        ValueListenableBuilder<int>(
+          valueListenable: c.videoRotation,
+          builder: (context, rot, _) => IconButton(
+            icon: Icon(
+              Icons.screen_rotation,
+              color: rot == 0 ? Colors.white54 : Colors.amber,
+              size: 24,
+            ),
+            onPressed: hasVideo ? c.cycleVideoRotation : null,
+            tooltip: rot == 0 ? '旋转画面' : '旋转中（再点切换，共90°x${rot}）',
+          ),
+        ),
         _btn(Icons.list, '频道列表', onOpenChannels),
         _btn(Icons.menu_book, '节目单', onOpenEpg),
         _btn(Icons.settings, '设置', onOpenSettings),

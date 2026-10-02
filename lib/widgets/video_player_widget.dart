@@ -98,15 +98,25 @@ class VideoPlayerWidget extends StatelessWidget {
         final w = vc.value.size.width;
         final h = vc.value.size.height;
         final hasSize = w > 0 && h > 0;
-        return SizedBox.expand(
-          child: FittedBox(
-            fit: BoxFit.contain,
-            child: SizedBox(
-              width: hasSize ? w : 16,
-              height: hasSize ? h : 9,
-              child: VideoPlayer(vc),
-            ),
-          ),
+        // 旋转：用独立的 ValueNotifier 只重建视频层，避免整 Stack 灰屏
+        final rotation = controller.videoRotation.value;
+        return ValueListenableBuilder<int>(
+          valueListenable: controller.videoRotation,
+          builder: (context, rot, _) {
+            return SizedBox.expand(
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: RotatedBox(
+                  quarterTurns: rot,
+                  child: SizedBox(
+                    width: hasSize ? w : 16,
+                    height: hasSize ? h : 9,
+                    child: VideoPlayer(vc),
+                  ),
+                ),
+              ),
+            );
+          },
         );
       },
     );

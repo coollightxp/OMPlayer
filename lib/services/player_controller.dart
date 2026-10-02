@@ -44,6 +44,20 @@ class PlayerController extends ChangeNotifier {
   /// Stack 的 notifyListeners（避免反复重建导致灰屏）
   final ValueNotifier<bool> clockVisible = ValueNotifier<bool>(false);
 
+  /// 视频画面旋转（顺时针 90° 的倍数）：0=0°, 1=90°, 2=180°, 3=270°。
+  /// 仅影响显示，不改变解码器或流本身。投屏竖屏直播时可旋转画面填满屏幕。
+  final ValueNotifier<int> videoRotation = ValueNotifier<int>(0);
+
+  /// 循环切换画面旋转角度
+  void cycleVideoRotation() {
+    videoRotation.value = (videoRotation.value + 1) % 4;
+  }
+
+  /// 恢复为 0°
+  void resetVideoRotation() {
+    videoRotation.value = 0;
+  }
+
   PlayerState _state = PlayerState.idle;
   Channel? _currentChannel;
   double _volume = 0.8;
