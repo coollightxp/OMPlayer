@@ -462,14 +462,10 @@ class DlnaService {
     final sid = _sidFor(path);
     _subs[path]?.expireTimer.cancel();
     final sub = _EventSubscription(sid: sid, callback: callback);
-    // 记录订阅来源 IP，回调地址不可达时用它替换 host 兜底
-    final subFrom = h.value('X-Forwarded-For') ??
-        req.connectionInfo?.remoteAddress.address;
-    sub.senderIp = subFrom;
     _subs[path] = sub;
     _armExpiry(sub, path);
     CastLog.write(
-        'GENA subscribe path=$path sid=$sid callback=$callback from=$subFrom');
+        'GENA subscribe path=$path sid=$sid callback=$callback from=${h.value('X-Forwarded-For') ?? req.connectionInfo?.remoteAddress.address ?? '?'}');
 
     req.response.headers.set('SID', sid);
     req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
@@ -522,10 +518,6 @@ class DlnaService {
           '</e:property></e:propertyset>');
     }
   }
-
-  /// 外部（播放器）状态变化后主动通知：立即向订阅者推送一次
-  /// AVTransport LastChange 事件（如投屏自愈重建期间上报 TRANSITIONING）
-  void notifyAvTransportChanged() => _fireAvtChange();
 
   /// AVTransport 状态变化事件（播放/暂停/停止/切地址后调用）
   void _fireAvtChange() {
@@ -601,64 +593,15 @@ class DlnaService {
     // 避免对黑洞地址每 2 秒建一次连接（首次 SYN 要挂 21 秒）
     final cd = sub.cooldownUntil;
     if (cd != null && DateTime.now().isBefore(cd)) return;
-
-    final cbUri = Uri.parse(sub.callback);
-    // 目标地址序列：
-    // - 备用地址近期可用：先发备用，顺带探测主地址是否恢复
-    // - 否则先发主地址，失败后用订阅来源 IP 替换 host 兜底
-    //   （控制点多网卡，CALLBACK 地址可能不可达）
-    final targets = <Uri>[];
-    final wh = sub.workingHost;
-    if (wh != null) {
-      targets.add(cbUri.replace(host: wh));
-      targets.add(cbUri);
-    } else {
-      targets.add(cbUri);
-      final sip = sub.senderIp;
-      if (sip != null && sip.isNotEmpty && sip != cbUri.host) {
-        targets.add(cbUri.replace(host: sip));
-      }
-    }
-
-    String? failErr;
-    for (final uri in targets) {
-      final r = await _sendNotifyOnce(sub, uri, seq, data);
-      if (r.ok) {
-        sub.failStreak = 0;
-        sub.cooldownUntil = null;
-        // 记录哪个 host 可用（主地址恢复则清除备用标记）
-        sub.workingHost = uri.host == cbUri.host ? null : uri.host;
-        if (r.sidInvalid) {
-          CastLog.write('GENA NOTIFY 412, drop sid=${sub.sid}');
-          _subs.removeWhere((_, s) => s.sid == sub.sid);
-        }
-        return;
-      }
-      failErr = r.error;
-    }
-    // 所有目标均失败：指数退避 4s、8s、16s、30s、30s…
-    const waits = [4, 8, 16, 30];
-    sub.failStreak++;
-    final waitSec = waits[(sub.failStreak - 1).clamp(0, waits.length - 1)];
-    sub.cooldownUntil = DateTime.now().add(Duration(seconds: waitSec));
-    CastLog.write(
-        'GENA NOTIFY failed seq=$seq streak=${sub.failStreak} '
-        'backoff=${waitSec}s targets=${targets.map((u) => u.host).join(",")} '
-        '-> $failErr');
-  }
-
-  /// 向单个地址发送一次 NOTIFY。黑洞地址 3 秒超时。
-  Future<({bool ok, bool sidInvalid, String? error})> _sendNotifyOnce(
-      _EventSubscription sub, Uri uri, int seq, List<int> data) async {
     HttpClient? client;
     try {
+      final uri = Uri.parse(sub.callback);
       client = HttpClient();
       // openUrl 内部建连，黑洞地址会挂 21 秒才抛 errno 121，强制 3 秒超时
       final req = await client
           .openUrl('NOTIFY', uri)
           .timeout(const Duration(seconds: 3));
-      req.headers
-          .set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
+      req.headers.set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
       req.headers.set('NT', 'upnp:event');
       req.headers.set('NTS', 'upnp:propchange');
       req.headers.set('SID', sub.sid);
@@ -666,13 +609,26 @@ class DlnaService {
       req.contentLength = data.length;
       req.add(data);
       final resp = await req.close().timeout(const Duration(seconds: 3));
+      // 发送成功：清除退避
+      sub.failStreak = 0;
+      sub.cooldownUntil = null;
       // 412 Precondition Failed：SID 无效，控制点要求重新订阅
-      final sidInvalid = resp.statusCode == 412;
+      if (resp.statusCode == 412) {
+        CastLog.write('GENA NOTIFY 412, drop sid=${sub.sid}');
+        _subs.removeWhere((_, s) => s.sid == sub.sid);
+      }
       resp.drain<void>();
-      return (ok: true, sidInvalid: sidInvalid, error: null);
     } catch (e) {
       client?.close(force: true);
-      return (ok: false, sidInvalid: false, error: '$e');
+      // 指数退避：4s、8s、16s、30s、30s…
+      const waits = [4, 8, 16, 30];
+      sub.failStreak++;
+      final waitSec = waits[(sub.failStreak - 1).clamp(0, waits.length - 1)];
+      sub.cooldownUntil =
+          DateTime.now().add(Duration(seconds: waitSec));
+      CastLog.write(
+          'GENA NOTIFY failed seq=$seq streak=${sub.failStreak} '
+          'backoff=${waitSec}s -> $e');
     }
   }
 
@@ -1233,15 +1189,6 @@ class DlnaService {
 class _EventSubscription {
   final String sid;
   final String callback;
-
-  /// 订阅 HTTP 请求的来源 IP。控制点多网卡时 CALLBACK 里给的地址
-  /// （如蜂窝网 10.52.x）可能与实际通信地址（WiFi 10.185.x）不同网段、
-  /// 不可达；此时用该 IP 替换回调 host 兜底发送。
-  String? senderIp;
-
-  /// 最近发送成功的 host（备用地址成功时记下，主地址恢复后自动切回）
-  String? workingHost;
-
   int seq = 0;
   Timer expireTimer;
 

@@ -52,7 +52,7 @@ class BottomProgramPanel extends StatelessWidget {
     // 宽屏（电视/桌面）：面板做成居中悬浮卡片，两侧留白、底边抬升；
     // 手机窄屏仍贴近两侧，避免内容被挤
     final screenW = MediaQuery.of(context).size.width;
-    // 平台 + shortestSide 判断：手机横屏 width 是长边，不能按 width 判
+    // 平台 + 最短边：手机横屏 width 是长边，按 width 会误判
     final isPhone = defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).size.shortestSide < 600;
     final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 10.0);
@@ -80,7 +80,7 @@ class BottomProgramPanel extends StatelessWidget {
                 Colors.black.withOpacity(0.85),
               ],
             ),
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(isPhone ? 16 : 20),
             border: Border.all(color: Colors.white.withOpacity(0.08)),
             boxShadow: [
               BoxShadow(
@@ -94,7 +94,7 @@ class BottomProgramPanel extends StatelessWidget {
             top: false,
             child: Padding(
               padding: isPhone
-                  ? const EdgeInsets.fromLTRB(14, 12, 12, 8)
+                  ? const EdgeInsets.fromLTRB(16, 12, 14, 8)
                   : const EdgeInsets.fromLTRB(22, 16, 18, 10),
               child: Consumer<PlayerController>(
                 builder: (context, c, _) => Column(
@@ -104,15 +104,15 @@ class BottomProgramPanel extends StatelessWidget {
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        _buildLogo(c, isPhone),
+                        _buildLogo(c),
                         SizedBox(width: isPhone ? 16 : 28),
-                        Expanded(child: _buildInfo(c, isPhone)),
+                        Expanded(child: _buildInfo(c)),
                         Flexible(
                           flex: 0,
                           child: FittedBox(
                             fit: BoxFit.scaleDown,
                             alignment: Alignment.centerRight,
-                            child: _buildButtons(c, isPhone),
+                            child: _buildButtons(c),
                           ),
                         ),
                       ],
@@ -130,22 +130,24 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 台标 ====================
 
-  Widget _buildLogo(PlayerController c, bool isPhone) {
-    final double size = isPhone ? 80 : 128;
+  Widget _buildLogo(PlayerController c) {
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
+    final double size = isPhone ? 72 : 128;
     final logo = c.currentLogo;
     Widget placeholder() => Container(
           width: size,
           height: size,
           decoration: BoxDecoration(
             color: Colors.white12,
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(isPhone ? 12 : 16),
           ),
           child: Icon(Icons.live_tv,
-              color: Colors.white54, size: isPhone ? 40 : 64),
+              color: Colors.white54, size: isPhone ? 36 : 64),
         );
     if (logo.isEmpty) return placeholder();
     return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(isPhone ? 12 : 16),
       child: Image.network(
         logo,
         width: size,
@@ -158,7 +160,9 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 节目信息 ====================
 
-  Widget _buildInfo(PlayerController c, bool isPhone) {
+  Widget _buildInfo(PlayerController c) {
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
     final info = c.getNowPlayingInfo();
     final current = c.currentProgram;
     final next = c.nextProgram;
@@ -173,7 +177,7 @@ class BottomProgramPanel extends StatelessWidget {
           current?.title ?? (hasChannel ? info.channelName : '未选择频道'),
           style: TextStyle(
             color: Colors.white,
-            fontSize: isPhone ? 18 : 22,
+            fontSize: isPhone ? 17 : 22,
             fontWeight: FontWeight.bold,
           ),
           maxLines: 1,
@@ -187,11 +191,11 @@ class BottomProgramPanel extends StatelessWidget {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             if (current != null)
-              _metaText(_range(current), Colors.amber, isPhone),
-            if (hasChannel) _metaText(info.channelName, Colors.white70, isPhone),
+              _metaText(_range(current), Colors.amber),
+            if (hasChannel) _metaText(info.channelName, Colors.white70),
             if (c.resolutionText.isNotEmpty)
-              _badge(c.resolutionText, isPhone),
-            _badge('线路 ${c.sourceIndex + 1}/${c.sourceCount}', isPhone),
+              _badge(c.resolutionText),
+            _badge('线路 ${c.sourceIndex + 1}/${c.sourceCount}'),
           ],
         ),
         const SizedBox(height: 3),
@@ -199,8 +203,7 @@ class BottomProgramPanel extends StatelessWidget {
         if (next != null)
           Text(
             '${_range(next)}  ${next.title}',
-            style: TextStyle(
-                color: Colors.white54, fontSize: isPhone ? 11.5 : 12.5),
+            style: const TextStyle(color: Colors.white54, fontSize: 12.5),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           )
@@ -213,15 +216,12 @@ class BottomProgramPanel extends StatelessWidget {
     );
   }
 
-  Widget _metaText(String text, Color color, bool isPhone) {
+  Widget _metaText(String text, Color color) {
     return Text(text,
-        style: TextStyle(
-            color: color,
-            fontSize: isPhone ? 12 : 13,
-            fontWeight: FontWeight.w500));
+        style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500));
   }
 
-  Widget _badge(String text, bool isPhone) {
+  Widget _badge(String text) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
       decoration: BoxDecoration(
@@ -229,8 +229,7 @@ class BottomProgramPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(text,
-          style: TextStyle(
-              color: Colors.white70, fontSize: isPhone ? 11 : 11.5)),
+          style: const TextStyle(color: Colors.white70, fontSize: 11.5)),
     );
   }
 
@@ -274,25 +273,25 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 控制按钮 ====================
 
-  Widget _buildButtons(PlayerController c, bool isPhone) {
+  Widget _buildButtons(PlayerController c) {
     final hasVideo = c.currentChannel != null;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         _btn(Icons.skip_previous, '上一个源',
-            c.hasPrevSource ? c.prevSource : null, isPhone),
+            c.hasPrevSource ? c.prevSource : null),
         Text('源${c.sourceIndex + 1}/${c.sourceCount}',
             style: const TextStyle(color: Colors.white54, fontSize: 11)),
         _btn(Icons.skip_next, '下一个源',
-            c.hasNextSource ? c.nextSource : null, isPhone),
+            c.hasNextSource ? c.nextSource : null),
         IconButton(
           icon: Icon(c.isPlaying ? Icons.pause : Icons.play_arrow,
-              color: Colors.white, size: isPhone ? 26 : 30),
+              color: Colors.white, size: 30),
           onPressed: hasVideo ? onTogglePlayPause : null,
         ),
         const SizedBox(width: 4),
         if (c.isDesktop) ...[
-          _btn(Icons.camera_alt, '截图', hasVideo ? onScreenshot : null, isPhone),
+          _btn(Icons.camera_alt, '截图', hasVideo ? onScreenshot : null),
           // 录制：开始=红色圆点，录制中=红色方块（带呼吸感）
           IconButton(
             icon: Icon(
@@ -305,17 +304,16 @@ class BottomProgramPanel extends StatelessWidget {
           ),
           const SizedBox(width: 4),
         ],
-        _btn(Icons.list, '频道列表', onOpenChannels, isPhone),
-        _btn(Icons.menu_book, '节目单', onOpenEpg, isPhone),
-        _btn(Icons.settings, '设置', onOpenSettings, isPhone),
+        _btn(Icons.list, '频道列表', onOpenChannels),
+        _btn(Icons.menu_book, '节目单', onOpenEpg),
+        _btn(Icons.settings, '设置', onOpenSettings),
       ],
     );
   }
 
-  Widget _btn(IconData icon, String tooltip, VoidCallback? onPressed,
-      bool isPhone) {
+  Widget _btn(IconData icon, String tooltip, VoidCallback? onPressed) {
     return IconButton(
-      icon: Icon(icon, color: Colors.white, size: isPhone ? 22 : 24),
+      icon: Icon(icon, color: Colors.white, size: 24),
       onPressed: onPressed,
       tooltip: tooltip,
     );

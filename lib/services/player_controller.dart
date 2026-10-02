@@ -78,6 +78,7 @@ class PlayerController extends ChangeNotifier {
   DateTime? _lastCastTickAt;
   bool _wasBuffering = false;
   DateTime? _bufferingSince;
+  bool _bufferReinitTried = false;
 
   // 有声无画面看门狗：音频在播但视频尺寸长时间为 0（解码链视频轨没起来）
   DateTime? _noVideoSince;
@@ -404,10 +405,6 @@ class PlayerController extends ChangeNotifier {
           onSetVolume: (v) => setVolume(v),
           onSetMute: (m) => setMuted(m),
           transportState: () {
-            // 缓冲中必须上报 TRANSITIONING，否则发送端会判定设备卡死并发 Stop
-            if (_videoController?.value.isBuffering == true) {
-              return 'TRANSITIONING';
-            }
             switch (_state) {
               case PlayerState.playing:
                 return 'PLAYING';
@@ -560,6 +557,7 @@ class PlayerController extends ChangeNotifier {
     _lastCastTickAt = null;
     _wasBuffering = false;
     _bufferingSince = null;
+    _bufferReinitTried = false;
     _noVideoSince = null;
     _noVideoReinitTried = false;
     _castInitRetried = false;
@@ -580,40 +578,25 @@ class PlayerController extends ChangeNotifier {
   /// 初始化会覆盖点播（进度条消失、假重试、有声无画的根因）。
   Future<void> stopCastAndRestore() async {
     if (!_isCasting) return;
-    // 重入保护：看门狗可能每 500ms 重复调用本方法，若每次都取消重设
-    // 800ms 定时器，恢复将永远无法执行（投屏实际已死却无法退出）
-    if (_castRestoreTimer != null) return;
     _castEndedTimer?.cancel();
     _castEndedTimer = null;
+    _castRestoreTimer?.cancel();
     _castRestoreTimer = Timer(const Duration(milliseconds: 800), () {
       _castRestoreTimer = null;
       _doStopCastAndRestore();
     });
   }
 
-  /// 接收端主动断开投屏（用户按钮/快捷键/遥控器返回）：
-  /// 不等待换片信令窗口，立即恢复投屏前频道
-  Future<void> userStopCasting() async {
-    if (!_isCasting) return;
-    _castRestoreTimer?.cancel();
-    _castRestoreTimer = null;
-    _castEndedTimer?.cancel();
-    _castEndedTimer = null;
-    CastLog.write('cast stopped by receiver (user), restore previous channel');
-    await _doStopCastAndRestore();
-  }
-
   /// 投屏端断开/停止后的实际恢复逻辑
   Future<void> _doStopCastAndRestore() async {
     if (!_isCasting) return;
+    CastLog.write('cast stopped by sender, restore previous channel');
     _isCasting = false;
     _watchPosMs = -1;
     _watchAdvanceAt = null;
     // 清空 DLNA 服务端当前媒体：发送端轮询 GetMediaInfo 时看到无媒体，
     // 即可知道投屏已结束，不再显示"已连接"。
     dlnaService.clearCurrentMedia();
-    // 尽力推送一次 STOPPED 事件（多网卡/客户端隔离时可能失败，无碍）
-    dlnaService.notifyAvTransportChanged();
     final restore = _preCastChannel;
     _preCastChannel = null;
     if (restore != null) {
@@ -1644,15 +1627,13 @@ class PlayerController extends ChangeNotifier {
           'buf=$isBuf play=$isPlay done=$done size=${vw}x$vh state=$_state');
     }
 
-    // 持续 buffering 超过 20 秒：流已断但内核没报错，干净重建
-    // （长视频起播缓冲可能较久，阈值放宽避免误恢复）。
-    // 与位置看门狗共用同一个重建标志，任一途径触发后不再重复重建。
+    // 持续 buffering 超过 10 秒：流已断但内核没报错，干净重建
     if (isBuf &&
-        !_stallReinitTried &&
+        !_bufferReinitTried &&
         _bufferingSince != null &&
-        now.difference(_bufferingSince!).inSeconds >= 20) {
-      _stallReinitTried = true;
-      CastLog.write('cast buffering >20s, trigger recovery');
+        now.difference(_bufferingSince!).inSeconds >= 10) {
+      _bufferReinitTried = true;
+      CastLog.write('cast buffering >10s, trigger recovery');
       _recoverCastPlayback();
       return;
     }
@@ -1691,9 +1672,8 @@ class PlayerController extends ChangeNotifier {
         stalledMs >= 25000) {
       _stallReinitTried = true;
       _recoverCastPlayback();
-    } else if (_stallReinitTried && stalledMs >= 15000) {
-      // 重建后位置仍不推进（流真断了，如同 URL token 失效/直播间关播），
-      // 切回投屏前频道。看门狗在重建时已重置，故这是重建后再等 15 秒。
+    } else if (_stallReinitTried && stalledMs >= 40000) {
+      // 重建后位置仍不推进（流真断了，如直播间关播），切回投屏前频道
       CastLog.write('cast stall persisted after recovery, auto-restore');
       stopCastAndRestore();
     }
@@ -1707,17 +1687,8 @@ class PlayerController extends ChangeNotifier {
     final savedPos = _videoController?.value.position ?? Duration.zero;
     final isLive = duration <= Duration.zero;
     _noVideoSince = null;
-    // 重置位置看门狗：重建后所有判定从新播放器起算，否则旧的 stall
-    // 计时会让第二次重建/断开在几秒内接连误触发
-    _watchPosMs = -1;
-    _watchAdvanceAt = null;
-    _stallNudged = false;
     CastLog.write(
         'cast stall recovery: re-init player (live=$isLive, pos=$savedPos)');
-    // 重建期间上报 TRANSITIONING，避免发送端误判卡死
-    _state = PlayerState.loading;
-    notifyListeners();
-    dlnaService.notifyAvTransportChanged();
     await _playCurrentSource();
     if (!isLive && savedPos > const Duration(seconds: 2)) {
       try {

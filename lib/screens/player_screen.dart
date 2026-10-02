@@ -343,12 +343,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-      return BackButtonListener(
-        onBackButtonPressed: _onBackPressed,
-        child: Focus(
+      // 返回键拦截状态（任一面板/投屏/全屏打开时拦截系统返回）
+      final pc = context.watch<PlayerController>();
+      final interceptBack = _settingsOpen ||
+          pc.isCasting ||
+          _leftDrawerOpen ||
+          _rightEpgOpen ||
+          pc.isFullscreen;
+      return Focus(
         focusNode: _rootFocusNode,
         autofocus: true,
-        child: Scaffold(
+        child: PopScope(
+          canPop: !interceptBack,
+          onPopInvoked: (didPop) {
+            if (!didPop) _handleBackPressed();
+          },
+          child: Scaffold(
       backgroundColor: Colors.black,
       body: MouseRegion(
         cursor: _cursorHidden ? SystemMouseCursors.none : MouseCursor.defer,
@@ -605,55 +615,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverMove: _cancelDrawerHide,
                   ),
 
-                  // 投屏中：顶部悬浮「断开投屏」按钮（手机/平板/TV 通用，
-                  // 接收端主动断开并恢复投屏前频道）
-                  if (controller.isCasting)
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: SafeArea(
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 10),
-                          child: Center(
-                            // heightFactor:1 让高度只包住按钮，不撑满全屏
-                            // （Align/Center 默认会填满有界高度，遮挡下层手势）
-                            heightFactor: 1.0,
-                            child: Material(
-                              color: Colors.black54,
-                              borderRadius: BorderRadius.circular(20),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(20),
-                                onTap: () => controller.userStopCasting(),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 16, vertical: 8),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(20),
-                                    border: Border.all(
-                                        color: Colors.redAccent
-                                            .withOpacity(0.5)),
-                                  ),
-                                  child: const Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.cast_connected,
-                                          color: Colors.redAccent, size: 18),
-                                      SizedBox(width: 8),
-                                      Text('断开投屏',
-                                          style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 13)),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-
                   // 设置面板
                   SettingsPanel(
                     isOpen: _settingsOpen,
@@ -742,35 +703,36 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         ),
       ),
         ),
-      ),
+        ),
       );
   }
 
-  /// 安卓返回键/遥控器返回：按层级关闭（设置→投屏→面板→全屏），
-  /// 无任何可关闭项时放行（系统默认退出应用）
-  Future<bool> _onBackPressed() async {
+  /// 安卓返回键/遥控器返回处理（PopScope 拦截后调用）：
+  /// 按层级关闭 设置→投屏→面板→全屏；都没有时弹退出确认
+  Future<void> _handleBackPressed() async {
     final c = context.read<PlayerController>();
     if (_settingsOpen) {
       setState(() => _settingsOpen = false);
-      return true;
+      return;
     }
     if (c.isCasting) {
-      await c.userStopCasting();
-      return true;
+      // v1.0.98 已有的标准投屏停止/恢复逻辑
+      await c.stopCastAndRestore();
+      return;
     }
     if (_leftDrawerOpen) {
       setState(() => _leftDrawerOpen = false);
-      return true;
+      return;
     }
     if (_rightEpgOpen) {
       setState(() => _rightEpgOpen = false);
-      return true;
+      return;
     }
     if (c.isFullscreen) {
       c.exitFullscreenIfNeeded();
-      return true;
+      return;
     }
-    // 无任何可关闭项：退出 App 前弹确认，避免误触直接退出
+    // 无任何可关闭项：退出前确认，避免误触
     final shouldExit = await showDialog<bool>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
@@ -788,8 +750,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         ],
       ),
     );
-    // 返回 true 拦截系统返回（不退出）；确认退出则放行
-    return shouldExit != true;
+    if (shouldExit == true) {
+      await SystemNavigator.pop();
+    }
   }
 
   // ==================== 硬件按键快捷键 ====================
@@ -820,13 +783,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
 
     if (k == LogicalKeyboardKey.escape) {
-      final pc = context.read<PlayerController>();
-      // 投屏中：Esc 主动断开投屏；否则按原逻辑退出全屏
-      if (pc.isCasting) {
-        pc.userStopCasting();
-      } else {
-        pc.exitFullscreenIfNeeded();
-      }
+      context.read<PlayerController>().exitFullscreenIfNeeded();
       return true;
     }
 
@@ -1876,7 +1833,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             // 允许 iframe 内的视频自动播放（央视频播放器在 iframe 内）
             iframeAllow: "autoplay; fullscreen; encrypted-media",
             iframeAllowFullscreen: true,
-            // 伪装桌面 Chrome，避免移动端 UA 被网站重定向到"下载 App"页
+            // 伪装桌面 Chrome，避免安卓 WebView 被网站检测到移动端
+            // 而重定向到“下载 App”页
             userAgent:
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           ),

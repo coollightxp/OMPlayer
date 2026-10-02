@@ -52,7 +52,7 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
   @override
   Widget build(BuildContext context) {
     final screenW = MediaQuery.of(context).size.width;
-    // 平台 + shortestSide 判断：手机横屏 width 是长边，不能按 width 判
+    // 平台 + 最短边：手机横屏 width 是长边，按 width 会误判
     final isPhone = defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).size.shortestSide < 600;
     final drawerW = isPhone ? (screenW * 0.85).clamp(240.0, 300.0) : 340.0;
@@ -92,7 +92,7 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
         final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
+            MediaQuery.of(context).size.shortestSide < 600;
         return Container(
           padding: EdgeInsets.symmetric(
               horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
@@ -100,7 +100,7 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
             children: [
               Icon(Icons.menu_open,
                   color: Colors.white, size: isPhone ? 20 : 22),
-              const SizedBox(width: 10),
+              SizedBox(width: isPhone ? 8 : 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -213,7 +213,7 @@ class _EpgProgramTile extends StatelessWidget {
         MediaQuery.of(context).size.shortestSide < 600;
     return Container(
       margin: EdgeInsets.symmetric(
-          horizontal: isPhone ? 8 : 12, vertical: isPhone ? 3 : 4),
+          horizontal: isPhone ? 10 : 12, vertical: isPhone ? 3 : 4),
       padding: EdgeInsets.all(isPhone ? 10 : 12),
       decoration: BoxDecoration(
         color: isNow
@@ -232,7 +232,7 @@ class _EpgProgramTile extends StatelessWidget {
             children: [
               Icon(
                 _statusIcon(),
-                size: isPhone ? 12 : 14,
+                size: 14,
                 color: isNow
                     ? Colors.greenAccent
                     : (isPast ? Colors.white38 : Colors.white70),
@@ -242,7 +242,7 @@ class _EpgProgramTile extends StatelessWidget {
                 program.timeRange,
                 style: TextStyle(
                   color: isNow ? Colors.greenAccent : Colors.white60,
-                  fontSize: isPhone ? 11 : 12,
+                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -255,10 +255,9 @@ class _EpgProgramTile extends StatelessWidget {
                     color: Colors.redAccent,
                     borderRadius: BorderRadius.circular(3),
                   ),
-                  child: Text(
+                  child: const Text(
                     '直播中',
-                    style: TextStyle(
-                        color: Colors.white, fontSize: isPhone ? 9 : 10),
+                    style: TextStyle(color: Colors.white, fontSize: 10),
                   ),
                 ),
               const Spacer(),
@@ -273,7 +272,7 @@ class _EpgProgramTile extends StatelessWidget {
                             ? Icons.alarm_on
                             : Icons.alarm_add,
                         color: reserved ? Colors.amber : Colors.white54,
-                        size: isPhone ? 18 : 20,
+                        size: 20,
                       ),
                       onPressed: () {
                         controller.toggleReservation(program);
@@ -299,7 +298,7 @@ class _EpgProgramTile extends StatelessWidget {
             program.title,
             style: TextStyle(
               color: isPast ? Colors.white38 : Colors.white,
-              fontSize: isPhone ? 13 : 14,
+              fontSize: 14,
               fontWeight: isNow ? FontWeight.bold : FontWeight.normal,
             ),
           ),
@@ -311,7 +310,7 @@ class _EpgProgramTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: isPast ? Colors.white24 : Colors.white54,
-                fontSize: isPhone ? 10 : 11,
+                fontSize: 11,
               ),
             ),
           ],

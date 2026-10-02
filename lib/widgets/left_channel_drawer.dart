@@ -103,8 +103,7 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   @override
   Widget build(BuildContext context) {
     final screenW = MediaQuery.of(context).size.width;
-    // 必须用「平台 + shortestSide」判断：手机横屏时屏幕宽度是长边
-    // （800+），按 width 判会被误当成桌面而不自适应
+    // 平台 + 最短边判断：手机横屏时宽度是长边，按 width 会误判成桌面
     final isPhone = defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).size.shortestSide < 600;
     final drawerW = isPhone ? (screenW * 0.85).clamp(240.0, 280.0) : 320.0;
@@ -150,8 +149,9 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
       ),
       child: Row(
         children: [
-          Icon(Icons.live_tv, color: Colors.white, size: isPhone ? 20 : 22),
-          const SizedBox(width: 10),
+          Icon(Icons.live_tv,
+              color: Colors.white, size: isPhone ? 20 : 22),
+          SizedBox(width: isPhone ? 8 : 10),
           Expanded(
             child: Text(
               _selectedCategory == null ? '频道列表' : _selectedCategory!.name,
@@ -201,25 +201,25 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
 
   /// 第一级：分类列表
   Widget _buildCategoryList(List<ChannelCategory> cats) {
-    if (cats.isEmpty) {
-      final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).size.shortestSide < 600;
+    if (cats.isEmpty) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: EdgeInsets.all(isPhone ? 18 : 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(Icons.playlist_add,
                   size: isPhone ? 48 : 56, color: Colors.white38),
-              const SizedBox(height: 16),
+              SizedBox(height: isPhone ? 12 : 16),
               Text(
                 '暂无频道列表',
-                style: TextStyle(
-                    color: Colors.white54, fontSize: isPhone ? 14 : 16),
+                style:
+                    TextStyle(color: Colors.white54, fontSize: isPhone ? 14 : 16),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 '请在设置中添加 M3U/TXT 播放列表',
                 style: TextStyle(color: Colors.white38, fontSize: 12),
                 textAlign: TextAlign.center,
@@ -296,7 +296,7 @@ class _CategoryTile extends StatelessWidget {
               child: Icon(Icons.category,
                   color: Colors.blueAccent, size: isPhone ? 18 : 20),
             ),
-            const SizedBox(width: 12),
+            SizedBox(width: isPhone ? 10 : 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -358,8 +358,7 @@ class _ChannelTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // 频道序号（与数字选台一致）。宽度容下 4 位序号，
-            // 强制单行，超长时等比缩小，避免被折成两行
+            // 频道序号（与数字选台一致）。强制单行等比缩小，避免折行
             SizedBox(
               width: isPhone ? 38 : 42,
               child: FittedBox(
@@ -378,8 +377,8 @@ class _ChannelTile extends StatelessWidget {
               ),
             ),
             Container(
-              width: isPhone ? 36 : 40,
-              height: isPhone ? 36 : 40,
+              width: isPhone ? 34 : 40,
+              height: isPhone ? 34 : 40,
               decoration: BoxDecoration(
                 color: isSelected ? Colors.blueAccent : Colors.white10,
                 borderRadius: BorderRadius.circular(8),
@@ -390,7 +389,7 @@ class _ChannelTile extends StatelessWidget {
                 size: isPhone ? 18 : 20,
               ),
             ),
-            const SizedBox(width: 12),
+            SizedBox(width: isPhone ? 10 : 12),
             Expanded(
               child: Text(
                 channel.name,
