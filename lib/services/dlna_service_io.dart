@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'cast_log.dart';
-
 /// DLNA/UPnP 回调集合：由播放器注入实际控制能力
 class DlnaHooks {
   final void Function(String url, String title) onPlay;
@@ -65,9 +63,6 @@ class DlnaService {
   String? _lastPushedState;
   int _lastPushedPosSec = -1;
 
-  /// 高频轮询动作的诊断日志限频（最多 10 秒一条）
-  final Map<String, DateTime> _lastPollLog = {};
-
   /// 起播确认监视：SetAVTransportURI/Play 后短时间内高频检查状态，
   /// 一旦对外状态变成 PLAYING 立即推送事件。
   /// 抖音极速版等发送端在 SetURI 后只等约 2~3 秒，收不到 PLAYING
@@ -81,13 +76,6 @@ class DlnaService {
   /// 若等播放器真正 init 完（约1秒）才报 PLAYING 会超出其等待窗口，
   /// 触发 Stop+SetURI 无限重试（即"放停放停"闪联）。
   String? _cmdState;
-  static const _noisyActions = {
-    'GetPositionInfo',
-    'GetTransportInfo',
-    'GetVolume',
-    'GetMute',
-    'GetMediaInfo',
-  };
 
   bool get isRunning => _http != null && _ssdp != null;
 
@@ -466,10 +454,6 @@ class DlnaService {
   Future<void> _handleRequest(HttpRequest req) async {
     try {
       final path = req.uri.path;
-      // 记录每一个 HTTP 请求：定位非标准发送端（如抖音极速版）实际发出的
-      // 完整请求序列（订阅/轮询/探测），而不只是 SOAP
-      CastLog.write(
-          'HTTP ${req.method} $path from=${req.connectionInfo?.remoteAddress.address}');
       if (req.method == 'GET' || req.method == 'HEAD') {
         if (path == '/device.xml') {
           await _respondXml(req, _deviceXml());
@@ -523,7 +507,6 @@ class DlnaService {
         sub.expireTimer.cancel();
         _subs.removeWhere((_, s) => s.sid == sub.sid);
       }
-      CastLog.write('GENA unsubscribe sid=$sidHdr found=${sub != null}');
       req.response.statusCode = 200;
       req.response.contentLength = 0;
       await req.response.close();
@@ -534,13 +517,11 @@ class DlnaService {
     if (sidHdr != null && sidHdr.isNotEmpty) {
       final sub = _findSubBySid(sidHdr);
       if (sub == null) {
-        CastLog.write('GENA renew unknown sid=$sidHdr -> 412');
         req.response.statusCode = 412;
         await req.response.close();
         return;
       }
       _armExpiry(sub, path);
-      CastLog.write('GENA renew sid=$sidHdr path=$path');
       req.response.headers.set('SID', sub.sid);
       req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
       req.response.statusCode = 200;
@@ -553,7 +534,6 @@ class DlnaService {
     final cbRaw = h.value('CALLBACK') ?? '';
     final m = RegExp(r'<([^>]+)>').firstMatch(cbRaw);
     if (m == null) {
-      CastLog.write('GENA subscribe without CALLBACK -> 412 (path=$path)');
       req.response.statusCode = 412;
       await req.response.close();
       return;
@@ -567,8 +547,6 @@ class DlnaService {
         sid: sid, callback: callback, peerHost: peerHost);
     _subs[path] = sub;
     _armExpiry(sub, path);
-    CastLog.write(
-        'GENA subscribe path=$path sid=$sid callback=$callback from=$peerHost');
 
     req.response.headers.set('SID', sid);
     req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
@@ -745,8 +723,6 @@ class DlnaService {
         // 用订阅来源 IP 替换 host 兜底一次
         if (sub.peerHost.isNotEmpty && sub.peerHost != uri.host) {
           final alt = uri.replace(host: sub.peerHost);
-          CastLog.write(
-              'GENA callback ${uri.host} unreachable, retry via ${sub.peerHost}');
           sc = await sendTo(alt);
           // 记住可达地址，后续事件直接用
           sub.callback = alt.toString();
@@ -759,7 +735,6 @@ class DlnaService {
       sub.cooldownUntil = null;
       // 412 Precondition Failed：SID 无效，控制点要求重新订阅
       if (sc == 412) {
-        CastLog.write('GENA NOTIFY 412, drop sid=${sub.sid}');
         _subs.removeWhere((_, s) => s.sid == sub.sid);
       }
     } catch (e) {
@@ -769,9 +744,6 @@ class DlnaService {
       final waitSec = waits[(sub.failStreak - 1).clamp(0, waits.length - 1)];
       sub.cooldownUntil =
           DateTime.now().add(Duration(seconds: waitSec));
-      CastLog.write(
-          'GENA NOTIFY failed seq=$seq streak=${sub.failStreak} '
-          'backoff=${waitSec}s -> $e');
     }
   }
 
@@ -791,9 +763,6 @@ class DlnaService {
     final service = hashIdx >= 0 ? soapAction.substring(0, hashIdx) : '';
     final action =
         hashIdx >= 0 ? soapAction.substring(hashIdx + 1).trim() : '';
-
-    _logSoap(service, action, body,
-        req.connectionInfo?.remoteAddress.address ?? '?');
 
     if (service.contains('AVTransport')) {
       switch (action) {
@@ -1030,53 +999,7 @@ class DlnaService {
     }
 
     req.response.statusCode = 404;
-    CastLog.write('SOAP unhandled: $service#$action -> 404');
     await req.response.close();
-  }
-
-  /// SOAP 信令诊断日志：控制类动作全量记录，高频轮询 10 秒限频一条
-  void _logSoap(String service, String action, String body, String fromIp) {
-    final shortSvc = service.contains('AVTransport')
-        ? 'AVT'
-        : service.contains('RenderingControl')
-            ? 'RCS'
-            : service.contains('ConnectionManager')
-                ? 'CM'
-                : service;
-    if (_noisyActions.contains(action)) {
-      final last = _lastPollLog[action];
-      if (last != null &&
-          DateTime.now().difference(last) < const Duration(seconds: 10)) {
-        return;
-      }
-      _lastPollLog[action] = DateTime.now();
-    }
-    String extra = '';
-    switch (action) {
-      case 'SetAVTransportURI':
-        extra = ' uri=${_extract(body, 'CurrentURI')}';
-        // 抖音(乐播SDK)投屏诊断：完整记录媒体元数据。乐播可能把私有确认
-        // 字段/protocolInfo 放在 MetaData 里，这是判断其"哑等"何种确认的
-        // 唯一硬证据（反转义后直接可读 DIDL-Lite 结构）
-        final meta = _extract(body, 'CurrentURIMetaData');
-        CastLog.write(
-            'SOAP[$shortSvc] SetURI metadata=${meta.isEmpty ? "<empty>" : meta}');
-        break;
-      case 'Seek':
-        extra = ' unit=${_extract(body, 'Unit')} '
-            'target=${_extract(body, 'Target')}';
-        break;
-      case 'SetVolume':
-        extra = ' vol=${_extract(body, 'DesiredVolume')}';
-        break;
-      case 'SetMute':
-        extra = ' mute=${_extract(body, 'DesiredMute')}';
-        break;
-      case 'Play':
-        extra = ' speed=${_extract(body, 'Speed')}';
-        break;
-    }
-    CastLog.write('SOAP[$shortSvc] $action$extra from=$fromIp');
   }
 
   // ==================== XML/SOAP 工具 ====================
@@ -1153,19 +1076,6 @@ class DlnaService {
         's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
         '<s:Body><u:$respAction xmlns:u="$service">$argsXml</u:$respAction></s:Body>'
         '</s:Envelope>';
-    // 诊断：把关键查询动作的完整响应写入投屏日志（10 秒限频），
-    // 用于与 Macast 逐字节对比定位抖音"放停放停"重试的触发字段
-    if (action == 'GetTransportInfo' ||
-        action == 'GetPositionInfo' ||
-        action == 'GetMediaInfo') {
-      final key = 'resp-$action';
-      final now = DateTime.now();
-      final last = _lastPollLog[key];
-      if (last == null || now.difference(last).inSeconds >= 10) {
-        _lastPollLog[key] = now;
-        CastLog.write('SOAP-RESP[$action] $body');
-      }
-    }
     await _respondXml(req, body);
   }
 

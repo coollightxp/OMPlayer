@@ -19,7 +19,6 @@ import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../models/reservation.dart';
 import 'auto_launch.dart';
-import 'cast_log.dart';
 import 'dlna_service.dart';
 import 'win_hotkeys.dart';
 import 'fvp_register.dart';
@@ -77,10 +76,6 @@ class PlayerController extends ChangeNotifier {
 
   // NumLock 守护已移至 Windows runner（见文件末说明）
 
-  // 投屏诊断日志路径（设置面板展示给用户反馈问题）
-  String _castLogPath = '';
-  String get castLogPath => _castLogPath;
-
   // 投屏卡顿看门狗：状态仍为"播放中"但播放位置长时间不推进时，
   // 说明网络流被静默掐断（常见于 HTTP-FLV/视频号直播），需要自愈
   int _watchPosMs = -1;
@@ -89,9 +84,7 @@ class PlayerController extends ChangeNotifier {
   // 整场投屏是否已重建过（所有自愈路径统一守门，只重建一次）
   bool _castReinitDone = false;
 
-  // 投屏诊断：1 秒一次状态采样 + buffering 持续超时自愈
-  DateTime? _lastCastTickAt;
-  bool _wasBuffering = false;
+  // buffering 持续超时自愈
   DateTime? _bufferingSince;
 
   // 有声无画面看门狗：音频在播但视频尺寸长时间为 0（解码链视频轨没起来）
@@ -171,13 +164,6 @@ class PlayerController extends ChangeNotifier {
     // 启动网络监控：开机启动时可能网络未就绪，需要检测并重试
     NetworkMonitor.instance.start();
     NetworkMonitor.instance.onNetworkChanged.listen(_onNetworkChanged);
-    // 投屏诊断日志路径（供设置面板展示）
-    CastLog.path().then((p) {
-      if (p.isNotEmpty && _castLogPath != p) {
-        _castLogPath = p;
-        notifyListeners();
-      }
-    });
     // 播放中每 500ms 刷新一次（进度条、倒计时等）
     _tickTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       _checkCastStall();
@@ -570,7 +556,6 @@ class PlayerController extends ChangeNotifier {
         _sourceIndex >= 0 &&
         _sourceIndex < _currentChannel!.streamUrls.length &&
         _currentChannel!.streamUrls[_sourceIndex] == url) {
-      CastLog.write('cast SetURI same url, reload ignored');
       return;
     }
     _preCastChannel ??=
@@ -583,13 +568,9 @@ class PlayerController extends ChangeNotifier {
     _watchAdvanceAt = null;
     _stallNudged = false;
     _castReinitDone = false;
-    _lastCastTickAt = null;
-    _wasBuffering = false;
     _bufferingSince = null;
     _noVideoSince = null;
     _castInitRetried = false;
-    CastLog.write(
-        'cast play: title="$title" url=$url');
     final cast = Channel(
       id: '__dlna_cast__',
       name: title.isEmpty ? 'DLNA 投屏' : title,
@@ -619,7 +600,6 @@ class PlayerController extends ChangeNotifier {
   /// 投屏端断开/停止后的实际恢复逻辑
   Future<void> _doStopCastAndRestore() async {
     if (!_isCasting) return;
-    CastLog.write('cast stopped by sender, restore previous channel');
     _isCasting = false;
     _watchPosMs = -1;
     _watchAdvanceAt = null;
@@ -1155,11 +1135,10 @@ class PlayerController extends ChangeNotifier {
     }
 
     // 代际已过期：静默移除监听并丢弃结果（controller 已被新代 dispose）
-    void discardLate(String why) {
+    void discardLate() {
       try {
         c.removeListener(closure);
       } catch (_) {}
-      if (_isCasting) CastLog.write('cast init late result discarded: $why');
       // 必须真正释放：只移除监听会泄漏整个 native 播放器。
       // 若新代已先行 dispose 过该实例，这里重复操作的异常被吞掉即可。
       c.pause().timeout(const Duration(seconds: 1)).then((_) {},
@@ -1174,7 +1153,7 @@ class PlayerController extends ChangeNotifier {
       // 加超时：流地址失效或后端不支持时显示"播放失败"，避免永远转圈
       await c.initialize().timeout(initTimeout);
       if (gen != _playGeneration) {
-        discardLate('stale generation $gen');
+        discardLate();
         return;
       }
       await c.setLooping(false);
@@ -1182,17 +1161,11 @@ class PlayerController extends ChangeNotifier {
       await WakelockPlus.enable();
 
       _state = PlayerState.playing;
-      if (_isCasting) {
-        CastLog.write(
-            'cast init ok: dur=${c.value.duration.inSeconds}s '
-            'size=${c.value.size.width.toInt()}x'
-            '${c.value.size.height.toInt()}');
-      }
       // 记录当前频道，下次启动时恢复
       await _saveLastChannel();
     } on TimeoutException {
       if (gen != _playGeneration) {
-        discardLate('stale generation $gen after timeout');
+        discardLate();
         return;
       }
       debugPrint('源 ${_sourceIndex + 1}/$sourceCount 初始化超时');
@@ -1201,11 +1174,9 @@ class PlayerController extends ChangeNotifier {
         // 用同一 URL 原地重拉一次，仍失败再走备用源/报错
         if (!_castInitRetried) {
           _castInitRetried = true;
-          CastLog.write('cast init timeout 15s, retry same url once');
           await _playCurrentSource();
           return;
         }
-        CastLog.write('cast init TIMEOUT after retry');
       }
       // 自动尝试下一个源
       if (hasNextSource) {
@@ -1221,11 +1192,10 @@ class PlayerController extends ChangeNotifier {
       _state = PlayerState.error;
     } catch (e) {
       if (gen != _playGeneration) {
-        discardLate('stale generation $gen after error');
+        discardLate();
         return;
       }
       debugPrint('源 ${_sourceIndex + 1}/$sourceCount 播放失败: $e');
-      if (_isCasting) CastLog.write('cast init FAILED: $e');
       // 自动尝试下一个源
       if (hasNextSource) {
         _sourceIndex++;
@@ -1246,7 +1216,6 @@ class PlayerController extends ChangeNotifier {
     final v = self.value;
     if (v.hasError) {
       if (_isCasting) {
-        CastLog.write('cast playback error: ${v.errorDescription}');
         // 投屏只有一个源，出错基本意味着流真的断了（直播间关播/CDN 掐流）。
         // 直接切回投屏前频道，比停在 error 等用户手动操作体验好。
         stopCastAndRestore();
@@ -1267,14 +1236,12 @@ class PlayerController extends ChangeNotifier {
     if (_isCasting &&
         v.isCompleted &&
         _state == PlayerState.playing) {
-      CastLog.write('cast stream completed (end of media)');
       _state = PlayerState.ended;
       notifyListeners();
       _castEndedTimer?.cancel();
       _castEndedTimer = Timer(const Duration(seconds: 5), () {
         _castEndedTimer = null;
         if (_isCasting && _state == PlayerState.ended) {
-          CastLog.write('cast ended 5s without sender Stop, auto-restore');
           stopCastAndRestore();
         }
       });
@@ -1648,7 +1615,6 @@ class PlayerController extends ChangeNotifier {
     final rawDur = _videoController?.value.duration ?? Duration.zero;
     if (_isCasting &&
         (rawDur <= Duration.zero || _isLiveDuration(rawDur))) {
-      CastLog.write('ignore Seek on live cast: $position');
       return;
     }
     await _videoController?.seekTo(position);
@@ -1661,7 +1627,6 @@ class PlayerController extends ChangeNotifier {
   /// - 未重建：位置 12 秒不推进先 play() 轻推，25 秒仍不动则重建；
   ///   buffering 持续 30 秒则重建；有声无画 8 秒则重建
   /// - 已重建：再卡/再缓冲 20 秒即判定流不可恢复，断开并恢复投屏前频道
-  /// - 每秒采样一行状态到诊断日志
   void _checkCastStall() {
     if (!_isCasting) return;
     // 「恢复投屏前频道」的 800ms 延迟已在途时不再做任何检测/触发，
@@ -1672,47 +1637,20 @@ class PlayerController extends ChangeNotifier {
     final now = DateTime.now();
     final v = vc.value;
 
-    // initialize 尚未完成（典型：音频已通但视频尺寸迟迟不上报）：
-    // 每秒记录一行，便于定位"有声无画/重试"
-    if (!v.isInitialized) {
-      if (_lastCastTickAt == null ||
-          now.difference(_lastCastTickAt!).inMilliseconds >= 1000) {
-        _lastCastTickAt = now;
-        CastLog.write(
-            'cast tick pre-init err=${v.hasError} '
-            'size=${v.size.width.toInt()}x${v.size.height.toInt()} '
-            'buf=${v.isBuffering} play=${v.isPlaying} state=$_state');
-      }
-      return;
-    }
+    // initialize 尚未完成时不做任何判定
+    if (!v.isInitialized) return;
 
     final posMs = v.position.inMilliseconds;
     final isBuf = v.isBuffering;
-    final isPlay = v.isPlaying;
-    final done = v.isCompleted;
-    final durSec = v.duration.inSeconds;
     final vw = v.size.width.toInt();
     final vh = v.size.height.toInt();
     final noVideo = vw <= 0 || vh <= 0;
 
-    // buffering 沿变化记录
-    if (isBuf != _wasBuffering) {
-      CastLog.write(isBuf
-          ? 'cast buffering START at ${(posMs / 1000).toStringAsFixed(1)}s'
-          : 'cast buffering END at ${(posMs / 1000).toStringAsFixed(1)}s');
-      _wasBuffering = isBuf;
-      _bufferingSince = isBuf ? now : null;
-    } else if (isBuf) {
+    // buffering 持续计时
+    if (isBuf) {
       _bufferingSince ??= now;
-    }
-
-    // 每秒采样：位置/缓冲/播放/结束标志/视频尺寸
-    if (_lastCastTickAt == null ||
-        now.difference(_lastCastTickAt!).inMilliseconds >= 1000) {
-      _lastCastTickAt = now;
-      CastLog.write(
-          'cast tick pos=${(posMs / 1000).toStringAsFixed(1)}/${durSec}s '
-          'buf=$isBuf play=$isPlay done=$done size=${vw}x$vh state=$_state');
+    } else {
+      _bufferingSince = null;
     }
 
     // buffering：未重建持续 30 秒→重建；已重建再持续 20 秒→放弃。
@@ -1720,12 +1658,10 @@ class PlayerController extends ChangeNotifier {
     if (isBuf && _bufferingSince != null) {
       final bufSecs = now.difference(_bufferingSince!).inSeconds;
       if (!_castReinitDone && bufSecs >= 30) {
-        _triggerCastRecovery('buffering >30s');
+        _triggerCastRecovery();
         return;
       }
       if (_castReinitDone && bufSecs >= 20) {
-        CastLog.write(
-            'cast buffering persists after recovery (${bufSecs}s), auto-restore');
         stopCastAndRestore();
         return;
       }
@@ -1740,9 +1676,8 @@ class PlayerController extends ChangeNotifier {
       _noVideoSince ??= now;
       final nvSecs = now.difference(_noVideoSince!).inSeconds;
       if (!_castReinitDone && nvSecs >= 8) {
-        _triggerCastRecovery('audio-only (size 0) >8s');
+        _triggerCastRecovery();
       } else if (_castReinitDone && nvSecs >= 15) {
-        CastLog.write('cast audio-only persists after recovery, auto-restore');
         stopCastAndRestore();
       }
     } else {
@@ -1761,23 +1696,20 @@ class PlayerController extends ChangeNotifier {
     if (!_castReinitDone) {
       if (!_stallNudged && stalledMs >= 12000) {
         _stallNudged = true;
-        CastLog.write('cast stall detected (${stalledMs}ms), nudge play()');
         vc.play().catchError((_) {});
       } else if (_stallNudged && stalledMs >= 25000) {
-        _triggerCastRecovery('stall >25s');
+        _triggerCastRecovery();
       }
     } else if (stalledMs >= 20000) {
       // 重建后观察期位置仍不推进：流真断了（如直播间关播）
-      CastLog.write('cast stall persists after recovery, auto-restore');
       stopCastAndRestore();
     }
   }
 
   /// 触发投屏自愈重建（整场投屏只允许一次）
-  void _triggerCastRecovery(String reason) {
+  void _triggerCastRecovery() {
     if (_castReinitDone) return;
     _castReinitDone = true;
-    CastLog.write('cast recovery triggered: $reason');
     _recoverCastPlayback();
   }
 
@@ -1788,8 +1720,6 @@ class PlayerController extends ChangeNotifier {
     if (ch == null) return;
     final savedPos = _videoController?.value.position ?? Duration.zero;
     final isLive = duration <= Duration.zero;
-    CastLog.write(
-        'cast recovery: re-init player (live=$isLive, pos=$savedPos)');
     await _playCurrentSource();
     if (!isLive && savedPos > const Duration(seconds: 2)) {
       // 等内核真正开始播放再 seek：
@@ -1813,10 +1743,8 @@ class PlayerController extends ChangeNotifier {
         try {
           await _videoController?.seekTo(savedPos);
         } catch (_) {}
-      } else {
-        // 10 秒都没正常起播：宁可从头播放，也不 seek 进可能挂死的断点
-        CastLog.write('cast recovery: not ready, seek skipped');
       }
+      // 10 秒都没正常起播：宁可从头播放，也不 seek 进可能挂死的断点
     }
     // 重置观察计时，给新流一个干净的开始（不动 _castReinitDone）。
     // 否则 _watchAdvanceAt/_bufferingSince 仍是重建前的旧时间，
@@ -1825,7 +1753,6 @@ class PlayerController extends ChangeNotifier {
     _watchAdvanceAt = null;
     _stallNudged = false;
     _bufferingSince = null;
-    _wasBuffering = false;
     _noVideoSince = null;
   }
 

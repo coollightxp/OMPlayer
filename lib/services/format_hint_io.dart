@@ -1,4 +1,3 @@
-import 'dart:developer';
 import 'dart:io';
 
 /// 无媒体后缀/脚本入口型播放地址的格式预检结果缓存，
@@ -49,15 +48,11 @@ Future<String?> inferStreamFormat({
   String? result;
   try {
     result = await _probe(url, headers, 'HEAD');
-  } catch (e) {
-    log('format hint HEAD probe failed for $url: $e', name: 'FormatHint');
-  }
+  } catch (_) {}
   if (result == null) {
     try {
       result = await _probe(url, headers, 'GET');
-    } catch (e) {
-      log('format hint GET probe failed for $url: $e', name: 'FormatHint');
-    }
+    } catch (_) {}
   }
   if (result != null) _probeCache[url] = result;
   return result;
