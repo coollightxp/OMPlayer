@@ -519,6 +519,10 @@ class DlnaService {
     }
   }
 
+  /// 外部（播放器）状态变化后主动通知：立即向订阅者推送一次
+  /// AVTransport LastChange 事件（如投屏自愈重建期间上报 TRANSITIONING）
+  void notifyAvTransportChanged() => _fireAvtChange();
+
   /// AVTransport 状态变化事件（播放/暂停/停止/切地址后调用）
   void _fireAvtChange() {
     _lastPushedState = null;

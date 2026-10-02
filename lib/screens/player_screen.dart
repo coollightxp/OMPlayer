@@ -1772,6 +1772,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             // 允许 iframe 内的视频自动播放（央视频播放器在 iframe 内）
             iframeAllow: "autoplay; fullscreen; encrypted-media",
             iframeAllowFullscreen: true,
+            // 伪装桌面 Chrome，避免移动端 UA 被网站重定向到"下载 App"页
+            userAgent:
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           ),
           onWebViewCreated: (controller) async {
             _webController = controller;

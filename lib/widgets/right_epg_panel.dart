@@ -50,13 +50,16 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final screenW = MediaQuery.of(context).size.width;
+    final isPhone = screenW < 600;
+    final drawerW = isPhone ? (screenW * 0.85).clamp(240.0, 300.0) : 340.0;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,
-      right: widget.isOpen ? 0 : -340,
+      right: widget.isOpen ? 0 : -drawerW,
       top: 0,
       bottom: 0,
-      width: 340,
+      width: drawerW,
       child: MouseRegion(
         onEnter: (_) => widget.onHoverEnter?.call(),
         onExit: (_) => widget.onHoverExit?.call(),
@@ -85,21 +88,24 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
   Widget _buildHeader() {
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
+        final isPhone = MediaQuery.of(context).size.width < 600;
         return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding: EdgeInsets.symmetric(
+              horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
           child: Row(
             children: [
-              const Icon(Icons.menu_open, color: Colors.white, size: 22),
+              Icon(Icons.menu_open,
+                  color: Colors.white, size: isPhone ? 20 : 22),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       '节目单 EPG',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 17,
+                        fontSize: isPhone ? 15 : 17,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -199,9 +205,11 @@ class _EpgProgramTile extends StatelessWidget {
 
   Widget _buildCard(
       BuildContext context, bool isNow, bool isPast, bool canReserve) {
+    final isPhone = MediaQuery.of(context).size.width < 600;
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      padding: const EdgeInsets.all(12),
+      margin: EdgeInsets.symmetric(
+          horizontal: isPhone ? 8 : 12, vertical: isPhone ? 3 : 4),
+      padding: EdgeInsets.all(isPhone ? 10 : 12),
       decoration: BoxDecoration(
         color: isNow
             ? Colors.blueAccent.withOpacity(0.25)
@@ -219,7 +227,7 @@ class _EpgProgramTile extends StatelessWidget {
             children: [
               Icon(
                 _statusIcon(),
-                size: 14,
+                size: isPhone ? 12 : 14,
                 color: isNow
                     ? Colors.greenAccent
                     : (isPast ? Colors.white38 : Colors.white70),
@@ -229,7 +237,7 @@ class _EpgProgramTile extends StatelessWidget {
                 program.timeRange,
                 style: TextStyle(
                   color: isNow ? Colors.greenAccent : Colors.white60,
-                  fontSize: 12,
+                  fontSize: isPhone ? 11 : 12,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -242,9 +250,10 @@ class _EpgProgramTile extends StatelessWidget {
                     color: Colors.redAccent,
                     borderRadius: BorderRadius.circular(3),
                   ),
-                  child: const Text(
+                  child: Text(
                     '直播中',
-                    style: TextStyle(color: Colors.white, fontSize: 10),
+                    style: TextStyle(
+                        color: Colors.white, fontSize: isPhone ? 9 : 10),
                   ),
                 ),
               const Spacer(),
@@ -259,7 +268,7 @@ class _EpgProgramTile extends StatelessWidget {
                             ? Icons.alarm_on
                             : Icons.alarm_add,
                         color: reserved ? Colors.amber : Colors.white54,
-                        size: 20,
+                        size: isPhone ? 18 : 20,
                       ),
                       onPressed: () {
                         controller.toggleReservation(program);
@@ -285,7 +294,7 @@ class _EpgProgramTile extends StatelessWidget {
             program.title,
             style: TextStyle(
               color: isPast ? Colors.white38 : Colors.white,
-              fontSize: 14,
+              fontSize: isPhone ? 13 : 14,
               fontWeight: isNow ? FontWeight.bold : FontWeight.normal,
             ),
           ),
@@ -297,7 +306,7 @@ class _EpgProgramTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: isPast ? Colors.white24 : Colors.white54,
-                fontSize: 11,
+                fontSize: isPhone ? 10 : 11,
               ),
             ),
           ],

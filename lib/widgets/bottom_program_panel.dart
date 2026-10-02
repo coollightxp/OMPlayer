@@ -51,6 +51,7 @@ class BottomProgramPanel extends StatelessWidget {
     // 宽屏（电视/桌面）：面板做成居中悬浮卡片，两侧留白、底边抬升；
     // 手机窄屏仍贴近两侧，避免内容被挤
     final screenW = MediaQuery.of(context).size.width;
+    final isPhone = screenW < 600;
     final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 10.0);
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 250),
@@ -89,7 +90,9 @@ class BottomProgramPanel extends StatelessWidget {
           child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(22, 16, 18, 10),
+              padding: isPhone
+                  ? const EdgeInsets.fromLTRB(14, 12, 12, 8)
+                  : const EdgeInsets.fromLTRB(22, 16, 18, 10),
               child: Consumer<PlayerController>(
                 builder: (context, c, _) => Column(
                   mainAxisSize: MainAxisSize.min,
@@ -98,15 +101,15 @@ class BottomProgramPanel extends StatelessWidget {
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        _buildLogo(c),
-                        const SizedBox(width: 28),
-                        Expanded(child: _buildInfo(c)),
+                        _buildLogo(c, isPhone),
+                        SizedBox(width: isPhone ? 16 : 28),
+                        Expanded(child: _buildInfo(c, isPhone)),
                         Flexible(
                           flex: 0,
                           child: FittedBox(
                             fit: BoxFit.scaleDown,
                             alignment: Alignment.centerRight,
-                            child: _buildButtons(c),
+                            child: _buildButtons(c, isPhone),
                           ),
                         ),
                       ],
@@ -124,8 +127,8 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 台标 ====================
 
-  Widget _buildLogo(PlayerController c) {
-    const double size = 128;
+  Widget _buildLogo(PlayerController c, bool isPhone) {
+    final double size = isPhone ? 80 : 128;
     final logo = c.currentLogo;
     Widget placeholder() => Container(
           width: size,
@@ -134,7 +137,8 @@ class BottomProgramPanel extends StatelessWidget {
             color: Colors.white12,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: const Icon(Icons.live_tv, color: Colors.white54, size: 64),
+          child: Icon(Icons.live_tv,
+              color: Colors.white54, size: isPhone ? 40 : 64),
         );
     if (logo.isEmpty) return placeholder();
     return ClipRRect(
@@ -151,7 +155,7 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 节目信息 ====================
 
-  Widget _buildInfo(PlayerController c) {
+  Widget _buildInfo(PlayerController c, bool isPhone) {
     final info = c.getNowPlayingInfo();
     final current = c.currentProgram;
     final next = c.nextProgram;
@@ -164,9 +168,9 @@ class BottomProgramPanel extends StatelessWidget {
         // 大字：当前节目名（无 EPG 时显示频道名）
         Text(
           current?.title ?? (hasChannel ? info.channelName : '未选择频道'),
-          style: const TextStyle(
+          style: TextStyle(
             color: Colors.white,
-            fontSize: 22,
+            fontSize: isPhone ? 18 : 22,
             fontWeight: FontWeight.bold,
           ),
           maxLines: 1,
@@ -180,11 +184,11 @@ class BottomProgramPanel extends StatelessWidget {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             if (current != null)
-              _metaText(_range(current), Colors.amber),
-            if (hasChannel) _metaText(info.channelName, Colors.white70),
+              _metaText(_range(current), Colors.amber, isPhone),
+            if (hasChannel) _metaText(info.channelName, Colors.white70, isPhone),
             if (c.resolutionText.isNotEmpty)
-              _badge(c.resolutionText),
-            _badge('线路 ${c.sourceIndex + 1}/${c.sourceCount}'),
+              _badge(c.resolutionText, isPhone),
+            _badge('线路 ${c.sourceIndex + 1}/${c.sourceCount}', isPhone),
           ],
         ),
         const SizedBox(height: 3),
@@ -192,7 +196,8 @@ class BottomProgramPanel extends StatelessWidget {
         if (next != null)
           Text(
             '${_range(next)}  ${next.title}',
-            style: const TextStyle(color: Colors.white54, fontSize: 12.5),
+            style: TextStyle(
+                color: Colors.white54, fontSize: isPhone ? 11.5 : 12.5),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           )
@@ -205,12 +210,15 @@ class BottomProgramPanel extends StatelessWidget {
     );
   }
 
-  Widget _metaText(String text, Color color) {
+  Widget _metaText(String text, Color color, bool isPhone) {
     return Text(text,
-        style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500));
+        style: TextStyle(
+            color: color,
+            fontSize: isPhone ? 12 : 13,
+            fontWeight: FontWeight.w500));
   }
 
-  Widget _badge(String text) {
+  Widget _badge(String text, bool isPhone) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
       decoration: BoxDecoration(
@@ -218,7 +226,8 @@ class BottomProgramPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(text,
-          style: const TextStyle(color: Colors.white70, fontSize: 11.5)),
+          style: TextStyle(
+              color: Colors.white70, fontSize: isPhone ? 11 : 11.5)),
     );
   }
 
@@ -262,25 +271,25 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 控制按钮 ====================
 
-  Widget _buildButtons(PlayerController c) {
+  Widget _buildButtons(PlayerController c, bool isPhone) {
     final hasVideo = c.currentChannel != null;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         _btn(Icons.skip_previous, '上一个源',
-            c.hasPrevSource ? c.prevSource : null),
+            c.hasPrevSource ? c.prevSource : null, isPhone),
         Text('源${c.sourceIndex + 1}/${c.sourceCount}',
             style: const TextStyle(color: Colors.white54, fontSize: 11)),
         _btn(Icons.skip_next, '下一个源',
-            c.hasNextSource ? c.nextSource : null),
+            c.hasNextSource ? c.nextSource : null, isPhone),
         IconButton(
           icon: Icon(c.isPlaying ? Icons.pause : Icons.play_arrow,
-              color: Colors.white, size: 30),
+              color: Colors.white, size: isPhone ? 26 : 30),
           onPressed: hasVideo ? onTogglePlayPause : null,
         ),
         const SizedBox(width: 4),
         if (c.isDesktop) ...[
-          _btn(Icons.camera_alt, '截图', hasVideo ? onScreenshot : null),
+          _btn(Icons.camera_alt, '截图', hasVideo ? onScreenshot : null, isPhone),
           // 录制：开始=红色圆点，录制中=红色方块（带呼吸感）
           IconButton(
             icon: Icon(
@@ -293,16 +302,17 @@ class BottomProgramPanel extends StatelessWidget {
           ),
           const SizedBox(width: 4),
         ],
-        _btn(Icons.list, '频道列表', onOpenChannels),
-        _btn(Icons.menu_book, '节目单', onOpenEpg),
-        _btn(Icons.settings, '设置', onOpenSettings),
+        _btn(Icons.list, '频道列表', onOpenChannels, isPhone),
+        _btn(Icons.menu_book, '节目单', onOpenEpg, isPhone),
+        _btn(Icons.settings, '设置', onOpenSettings, isPhone),
       ],
     );
   }
 
-  Widget _btn(IconData icon, String tooltip, VoidCallback? onPressed) {
+  Widget _btn(IconData icon, String tooltip, VoidCallback? onPressed,
+      bool isPhone) {
     return IconButton(
-      icon: Icon(icon, color: Colors.white, size: 24),
+      icon: Icon(icon, color: Colors.white, size: isPhone ? 22 : 24),
       onPressed: onPressed,
       tooltip: tooltip,
     );

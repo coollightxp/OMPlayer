@@ -405,6 +405,10 @@ class PlayerController extends ChangeNotifier {
           onSetVolume: (v) => setVolume(v),
           onSetMute: (m) => setMuted(m),
           transportState: () {
+            // 缓冲中必须上报 TRANSITIONING，否则发送端会判定设备卡死并发 Stop
+            if (_videoController?.value.isBuffering == true) {
+              return 'TRANSITIONING';
+            }
             switch (_state) {
               case PlayerState.playing:
                 return 'PLAYING';
@@ -1627,13 +1631,14 @@ class PlayerController extends ChangeNotifier {
           'buf=$isBuf play=$isPlay done=$done size=${vw}x$vh state=$_state');
     }
 
-    // 持续 buffering 超过 10 秒：流已断但内核没报错，干净重建
+    // 持续 buffering 超过 20 秒：流已断但内核没报错，干净重建
+    // （长视频起播缓冲可能较久，阈值放宽避免误恢复）
     if (isBuf &&
         !_bufferReinitTried &&
         _bufferingSince != null &&
-        now.difference(_bufferingSince!).inSeconds >= 10) {
+        now.difference(_bufferingSince!).inSeconds >= 20) {
       _bufferReinitTried = true;
-      CastLog.write('cast buffering >10s, trigger recovery');
+      CastLog.write('cast buffering >20s, trigger recovery');
       _recoverCastPlayback();
       return;
     }
@@ -1689,6 +1694,10 @@ class PlayerController extends ChangeNotifier {
     _noVideoSince = null;
     CastLog.write(
         'cast stall recovery: re-init player (live=$isLive, pos=$savedPos)');
+    // 重建期间上报 TRANSITIONING，避免发送端误判卡死
+    _state = PlayerState.loading;
+    notifyListeners();
+    dlnaService.notifyAvTransportChanged();
     await _playCurrentSource();
     if (!isLive && savedPos > const Duration(seconds: 2)) {
       try {

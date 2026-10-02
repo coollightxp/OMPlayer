@@ -101,13 +101,16 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
 
   @override
   Widget build(BuildContext context) {
+    final screenW = MediaQuery.of(context).size.width;
+    final isPhone = screenW < 600;
+    final drawerW = isPhone ? (screenW * 0.85).clamp(240.0, 280.0) : 320.0;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,
-      left: widget.isOpen ? 0 : -320,
+      left: widget.isOpen ? 0 : -drawerW,
       top: 0,
       bottom: 0,
-      width: 320,
+      width: drawerW,
       child: MouseRegion(
         onEnter: (_) => widget.onHoverEnter?.call(),
         onExit: (_) => widget.onHoverExit?.call(),
@@ -133,21 +136,23 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   }
 
   Widget _buildHeader() {
+    final isPhone = MediaQuery.of(context).size.width < 600;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: EdgeInsets.symmetric(
+          horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: Colors.white12)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.live_tv, color: Colors.white, size: 22),
+          Icon(Icons.live_tv, color: Colors.white, size: isPhone ? 20 : 22),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               _selectedCategory == null ? '频道列表' : _selectedCategory!.name,
-              style: const TextStyle(
+              style: TextStyle(
                 color: Colors.white,
-                fontSize: 17,
+                fontSize: isPhone ? 15 : 17,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -192,17 +197,20 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   /// 第一级：分类列表
   Widget _buildCategoryList(List<ChannelCategory> cats) {
     if (cats.isEmpty) {
+      final isPhone = MediaQuery.of(context).size.width < 600;
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.playlist_add, size: 56, color: Colors.white38),
+              Icon(Icons.playlist_add,
+                  size: isPhone ? 48 : 56, color: Colors.white38),
               const SizedBox(height: 16),
-              const Text(
+              Text(
                 '暂无频道列表',
-                style: TextStyle(color: Colors.white54, fontSize: 16),
+                style: TextStyle(
+                    color: Colors.white54, fontSize: isPhone ? 14 : 16),
               ),
               const SizedBox(height: 8),
               const Text(
@@ -263,21 +271,23 @@ class _CategoryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isPhone = MediaQuery.of(context).size.width < 600;
     return InkWell(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: EdgeInsets.symmetric(
+            horizontal: isPhone ? 12 : 16, vertical: isPhone ? 12 : 14),
         child: Row(
           children: [
             Container(
-              width: 36,
-              height: 36,
+              width: isPhone ? 32 : 36,
+              height: isPhone ? 32 : 36,
               decoration: BoxDecoration(
                 color: Colors.blueAccent.withOpacity(0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(Icons.category,
-                  color: Colors.blueAccent, size: 20),
+              child: Icon(Icons.category,
+                  color: Colors.blueAccent, size: isPhone ? 18 : 20),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -286,9 +296,9 @@ class _CategoryTile extends StatelessWidget {
                 children: [
                   Text(
                     category.name,
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: Colors.white,
-                      fontSize: 15,
+                      fontSize: isPhone ? 14 : 15,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
@@ -323,10 +333,12 @@ class _ChannelTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isPhone = MediaQuery.of(context).size.width < 600;
     return InkWell(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: EdgeInsets.symmetric(
+            horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
         decoration: BoxDecoration(
           color: isSelected
               ? Colors.blueAccent.withOpacity(0.2)
@@ -341,7 +353,7 @@ class _ChannelTile extends StatelessWidget {
             // 频道序号（与数字选台一致）。宽度容下 4 位序号，
             // 强制单行，超长时等比缩小，避免被折成两行
             SizedBox(
-              width: 42,
+              width: isPhone ? 38 : 42,
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
@@ -358,8 +370,8 @@ class _ChannelTile extends StatelessWidget {
               ),
             ),
             Container(
-              width: 40,
-              height: 40,
+              width: isPhone ? 36 : 40,
+              height: isPhone ? 36 : 40,
               decoration: BoxDecoration(
                 color: isSelected ? Colors.blueAccent : Colors.white10,
                 borderRadius: BorderRadius.circular(8),
@@ -367,7 +379,7 @@ class _ChannelTile extends StatelessWidget {
               child: Icon(
                 Icons.tv,
                 color: isSelected ? Colors.white : Colors.white70,
-                size: 20,
+                size: isPhone ? 18 : 20,
               ),
             ),
             const SizedBox(width: 12),
@@ -376,7 +388,7 @@ class _ChannelTile extends StatelessWidget {
                 channel.name,
                 style: TextStyle(
                   color: isSelected ? Colors.blueAccent : Colors.white,
-                  fontSize: 14,
+                  fontSize: isPhone ? 13 : 14,
                   fontWeight:
                       isSelected ? FontWeight.bold : FontWeight.normal,
                 ),

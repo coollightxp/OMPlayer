@@ -41,4 +41,6 @@ class DlnaService {
   void stop() {}
 
   void clearCurrentMedia() {}
+
+  void notifyAvTransportChanged() {}
 }
