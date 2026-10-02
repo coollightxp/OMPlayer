@@ -80,11 +80,22 @@ class DlnaService {
   /// 这样发送端轮询 GetMediaInfo/GetPositionInfo 时看到无媒体，
   /// 即使 GENA 通知因跨网段发不出去，发送端也能知道投屏已结束
   /// （否则发送端会一直显示"已连接"，点断开也无反应）。
+  /// 同时立即向订阅者推一条 STOPPED 事件——这是接收端主动断开时
+  /// 通知投送端的关键：不推的话它那边还显示"投屏中"。
   void clearCurrentMedia() {
+    final wasActive = _currentUri != null && _currentUri!.isNotEmpty;
     _currentUri = null;
     _currentTitle = '';
-    _lastPushedState = null;
     _lastPushedPosSec = -1;
+    if (wasActive) {
+      final sub = _subs['/event/AVTransport'];
+      if (sub != null) {
+        _lastPushedState = 'STOPPED';
+        _notify(sub, _avtEventBody());
+        return;
+      }
+    }
+    _lastPushedState = null;
   }
 
   /// 设备名称（OMPlayer + 机器标识）
@@ -125,7 +136,7 @@ class DlnaService {
   void _pushTick() {
     final sub = _subs['/event/AVTransport'];
     if (sub == null || _hooks == null) return;
-    final state = _hooks!.transportState();
+    final state = _exposedState;
     final posSec = _hooks!.position().inSeconds;
     if (state != _lastPushedState) {
       _lastPushedState = state;
@@ -135,6 +146,16 @@ class DlnaService {
       _lastPushedPosSec = posSec;
       _notify(sub, _avtEventBody());
     }
+  }
+
+  /// 对外（投送端/控制点）暴露的传输状态。
+  /// 无投屏媒体时一律 STOPPED：投屏断开后本地会恢复之前的频道，
+  /// 但那是本机的事，不能把本地的 PLAYING 报给投送端，
+  /// 否则它一直认为投屏还在进行、UI 停在"投屏中"。
+  String get _exposedState {
+    final uri = _currentUri;
+    if (uri == null || uri.isEmpty) return 'STOPPED';
+    return _hooks?.transportState() ?? 'STOPPED';
   }
 
   void stop() {
@@ -537,14 +558,17 @@ class DlnaService {
 
   String _avtEventBody() {
     final hooks = _hooks;
-    final state = hooks == null ? 'STOPPED' : hooks.transportState();
+    final hasMedia = _currentUri != null && _currentUri!.isNotEmpty;
+    final state = _exposedState;
     final pos = hooks == null ? '0:00:00' : _fmtTime(hooks.position());
     final dur = hooks == null ? '0:00:00' : _fmtTime(hooks.duration());
     final uri = _xmlEscape(_currentUri ?? '');
+    // 无媒体时 CurrentTrack=0（DLNA 规范：Track 0 表示无加载的媒体）
+    final track = hasMedia ? '1' : '0';
     final inner = '<InstanceID val="0">'
         '<TransportState val="$state"/>'
         '<TransportStatus val="OK"/>'
-        '<CurrentTrack val="1"/>'
+        '<CurrentTrack val="$track"/>'
         '<AVTransportURI val="$uri"/>'
         '<AVTransportURIMetaData val=""/>'
         '<CurrentTrackURI val="$uri"/>'
@@ -727,18 +751,33 @@ class DlnaService {
           return;
         case 'GetTransportInfo':
           await _soapResponse(req, service, action,
-              '<CurrentTransportState>${hooks.transportState()}</CurrentTransportState>'
+              '<CurrentTransportState>$_exposedState</CurrentTransportState>'
               '<CurrentTransportStatus>OK</CurrentTransportStatus>'
               '<CurrentSpeed>1</CurrentSpeed>');
           return;
         case 'GetPositionInfo':
+          final hasMedia =
+              _currentUri != null && _currentUri!.isNotEmpty;
+          final uri = _xmlEscape(_currentUri ?? '');
+          if (!hasMedia) {
+            // 无媒体：Track=0、URI/时长/位置全空，投送端据此结束投屏 UI
+            await _soapResponse(req, service, action,
+                '<Track>0</Track>'
+                '<TrackDuration></TrackDuration>'
+                '<TrackMetaData></TrackMetaData>'
+                '<TrackURI></TrackURI>'
+                '<RelTime></RelTime>'
+                '<AbsTime></AbsTime>'
+                '<RelCount>2147483647</RelCount>'
+                '<AbsCount>2147483647</AbsCount>');
+            return;
+          }
           final pos = _fmtTime(hooks.position());
           // 直播流/时长未知时按规范返回空串，不能返回 0:00:00，
           // 否则部分发送端会把进度算成 100% 或判定异常
           final dur = hooks.duration() > Duration.zero
               ? _fmtTime(hooks.duration())
               : '';
-          final uri = _xmlEscape(_currentUri ?? '');
           await _soapResponse(req, service, action,
               '<Track>1</Track>'
               '<TrackDuration>$dur</TrackDuration>'
@@ -750,10 +789,25 @@ class DlnaService {
               '<AbsCount>2147483647</AbsCount>');
           return;
         case 'GetMediaInfo':
+          final uri = _xmlEscape(_currentUri ?? '');
+          final hasMedia =
+              _currentUri != null && _currentUri!.isNotEmpty;
+          if (!hasMedia) {
+            await _soapResponse(req, service, action,
+                '<NrTracks>0</NrTracks>'
+                '<MediaDuration></MediaDuration>'
+                '<CurrentURI></CurrentURI>'
+                '<CurrentURIMetaData></CurrentURIMetaData>'
+                '<NextURI></NextURI>'
+                '<NextURIMetaData></NextURIMetaData>'
+                '<PlayMedium>NONE</PlayMedium>'
+                '<RecordMedium>NOT_IMPLEMENTED</RecordMedium>'
+                '<WriteStatus>NOT_IMPLEMENTED</WriteStatus>');
+            return;
+          }
           final dur = hooks.duration() > Duration.zero
               ? _fmtTime(hooks.duration())
               : '';
-          final uri = _xmlEscape(_currentUri ?? '');
           await _soapResponse(req, service, action,
               '<NrTracks>1</NrTracks>'
               '<MediaDuration>$dur</MediaDuration>'
@@ -766,7 +820,12 @@ class DlnaService {
               '<WriteStatus>NOT_IMPLEMENTED</WriteStatus>');
           return;
         case 'GetCurrentTransportActions':
-          // 直播流不可 Seek；点播/投屏文件支持完整操作
+          // 无媒体时只报 Play；有媒体时直播流不可 Seek；点播支持完整操作
+          if (_currentUri == null || _currentUri!.isEmpty) {
+            await _soapResponse(req, service, action,
+                '<Actions>Play</Actions>');
+            return;
+          }
           final canSeek = hooks.duration() > Duration.zero;
           final actions = canSeek
               ? 'Play,Pause,Stop,Seek,X_DLNA_SeekTime'

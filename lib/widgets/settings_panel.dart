@@ -127,7 +127,6 @@ class _SettingsPanelState extends State<SettingsPanel>
         duration: const Duration(milliseconds: 200),
         opacity: widget.isOpen ? 1.0 : 0.0,
         child: ScaledPanel(
-          designWidth: MediaQuery.of(context).size.width,
           alignment: Alignment.bottomCenter,
           scale: panelScaleOf(context),
           child: Material(

@@ -20,6 +20,9 @@ class LeftChannelDrawer extends StatefulWidget {
   /// 点击频道后回调（用于重置光标隐藏定时器等）
   final VoidCallback? onChannelTap;
 
+  /// 空列表时「去设置添加」按钮回调
+  final VoidCallback? onOpenSettings;
+
   const LeftChannelDrawer({
     super.key,
     required this.isOpen,
@@ -28,6 +31,7 @@ class LeftChannelDrawer extends StatefulWidget {
     this.onHoverExit,
     this.onHoverMove,
     this.onChannelTap,
+    this.onOpenSettings,
   });
 
   @override
@@ -220,6 +224,15 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
                 '请在设置中添加 M3U/TXT 播放列表',
                 style: TextStyle(color: Colors.white38, fontSize: 12),
                 textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 20),
+              OutlinedButton.icon(
+                onPressed: widget.onOpenSettings,
+                icon: const Icon(Icons.settings, size: 18),
+                label: const Text('去设置添加'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white70,
+                ),
               ),
             ],
           ),

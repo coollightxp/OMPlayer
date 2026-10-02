@@ -17,15 +17,18 @@ double panelScaleOf(BuildContext context) {
 
 /// 面板【整体】等比缩放。
 ///
-/// 与只改 textScaler（字小框大）不同：child 先以设计宽度 [designWidth]
-/// 布局，再用 Transform.scale 把外框/内边距/图标/文字一起等比缩小，
-/// 命中区域同步缩放。
+/// 与只改 textScaler（字小框大）不同：Transform.scale 把外框/内边距/
+/// 图标/文字一起等比缩小，命中区域同步缩放。
 ///
 /// 面板内文字只受用户在设置里的「界面缩放」(uiScale) 控制，
 /// 形态缩放全部交给 Transform，避免与 app.dart 的全局缩放叠加。
 class ScaledPanel extends StatelessWidget {
-  /// 设计稿宽度（child 按此宽度布局）
-  final double designWidth;
+  /// 设计稿宽度：
+  /// - 抽屉：child 需要按固定宽度（如 320）布局而外框只占 230，
+  ///   传入此值时内部用 OverflowBox；
+  /// - 底部/设置面板：传 null（或不传），child 正常布局后直接缩放，
+  ///   命中行为与 v1.0.98 一致
+  final double? designWidth;
 
   /// 缩放对齐方向：左抽屉 centerLeft、右抽屉 centerRight、
   /// 底部面板 bottomCenter
@@ -38,7 +41,7 @@ class ScaledPanel extends StatelessWidget {
 
   const ScaledPanel({
     super.key,
-    required this.designWidth,
+    this.designWidth,
     required this.alignment,
     required this.scale,
     required this.child,
@@ -56,17 +59,25 @@ class ScaledPanel extends StatelessWidget {
       child: child,
     );
     if (scale == 1.0) return content;
-    // OverflowBox：让 child 以设计宽度布局（忽略被缩小的实际宽度），
-    // 高度约束沿用父级；再整体 Transform 缩放
-    return OverflowBox(
-      minWidth: designWidth,
-      maxWidth: designWidth,
-      alignment: alignment,
-      child: Transform.scale(
-        scale: scale,
+    final dw = designWidth;
+    if (dw != null) {
+      // 抽屉：child 按设计宽度布局（外框比设计宽度窄）
+      return OverflowBox(
+        minWidth: dw,
+        maxWidth: dw,
         alignment: alignment,
-        child: content,
-      ),
+        child: Transform.scale(
+          scale: scale,
+          alignment: alignment,
+          child: content,
+        ),
+      );
+    }
+    // 底部/设置面板：正常布局 + 整体缩放
+    return Transform.scale(
+      scale: scale,
+      alignment: alignment,
+      child: content,
     );
   }
 }

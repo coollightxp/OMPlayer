@@ -595,6 +595,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverEnter: _cancelDrawerHide,
                     onHoverExit: _startDrawerHideTimer,
                     onHoverMove: _cancelDrawerHide,
+                    onOpenSettings: () {
+                      setState(() => _leftDrawerOpen = false);
+                      _toggleSettings();
+                    },
                   ),
 
                   // 右侧 EPG 面板
@@ -829,32 +833,42 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   // ==================== 边缘点击区 ====================
 
   Widget _buildEdgeTapZones() {
+    // 移动端边缘热区：左右竖条点击开抽屉，底部横条点击呼出信息面板
+    //（网页播放等面板自动隐藏后，底部始终有一个可以呼出的入口）
     return Positioned.fill(
-      child: IgnorePointer(
-        ignoring: false,
-        child: Row(
-          children: [
-            GestureDetector(
+      child: Stack(
+        children: [
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: _edgeWidth.toDouble(),
+            child: GestureDetector(
               behavior: HitTestBehavior.translucent,
               onTap: () => _openDrawer(left: true),
-              child: Container(
-                width: _edgeWidth.toDouble(),
-                alignment: Alignment.centerLeft,
-                child: const SizedBox.expand(),
-              ),
             ),
-            const Spacer(),
-            GestureDetector(
+          ),
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            width: _edgeWidth.toDouble(),
+            child: GestureDetector(
               behavior: HitTestBehavior.translucent,
               onTap: () => _openDrawer(left: false),
-              child: Container(
-                width: _edgeWidth.toDouble(),
-                alignment: Alignment.centerRight,
-                child: const SizedBox.expand(),
-              ),
             ),
-          ],
-        ),
+          ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 28,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: _showBottomPanel,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1026,14 +1040,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         return Row(
           children: [
             // 左侧：亮度调节 + 左边缘滑出抽屉
-            //（网页模式下无 child 的 GestureDetector 命中行为为 translucent，
-            // 滑动归 App、点击穿透给网页）
+            //（与 v1.0.98 一致：不设 onTap，避免与底部面板的按钮
+            // 在手势竞技场竞争，导致面板上的按钮点不动）
             Expanded(
               child: GestureDetector(
-                // 手机/触控：点左半屏呼出信息面板（否则只有中间
-                // 1/3 响应，点偏就没反应）。网页模式也保留：网页播放时
-                // 需要一个呼出面板的入口，中间区域仍穿透给网页
-                onTap: _toggleBottomPanel,
                 onVerticalDragStart: (details) {
                   _isHorizontalDrag = false;
                   _dragStartY = details.globalPosition.dy;
@@ -1062,11 +1072,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
               ),
             ),
             // 中间：点击切换面板，双击播放暂停（桌面端双击全屏，按住拖动窗口）。
-            // 网页模式下完全穿透：点击/滑动全部交给网页播放器，
-            // 面板改由底部边缘 hover 弹出，双击全屏由 _WebDoubleTapFullScreen 接管
+            // 网页模式：桌面端完全穿透（点击/滑动全交给网页，面板由边缘
+            // hover 与底部点击区触发，双击全屏由 _WebDoubleTapFullScreen 接管）；
+            // 移动端保留点击呼出信息面板
             Expanded(
               child: webMode
-                  ? const SizedBox.expand()
+                  ? (controller.isDesktop
+                      ? const SizedBox.expand()
+                      : GestureDetector(onTap: _toggleBottomPanel))
                   : GestureDetector(
                       onTap: _toggleBottomPanel,
                       onDoubleTap: controller.isDesktop
@@ -1079,11 +1092,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                               : null,
                     ),
             ),
-            // 右侧：音量调节 + 右边缘滑出 EPG
+            // 右侧：音量调节 + 右边缘滑出 EPG（与 v1.0.98 一致：不设 onTap）
             Expanded(
               child: GestureDetector(
-                // 手机/触控：点右半屏呼出信息面板；网页模式也保留
-                onTap: _toggleBottomPanel,
                 onVerticalDragStart: (details) {
                   _isHorizontalDrag = false;
                   _dragStartY = details.globalPosition.dy;

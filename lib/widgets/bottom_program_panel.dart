@@ -69,7 +69,6 @@ class BottomProgramPanel extends StatelessWidget {
           duration: const Duration(milliseconds: 200),
           opacity: isVisible ? 1.0 : 0.0,
           child: ScaledPanel(
-            designWidth: screenW - 2 * hPad,
             alignment: Alignment.bottomCenter,
             scale: scale,
             child: Container(
