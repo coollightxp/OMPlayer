@@ -456,17 +456,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                                               style: TextStyle(
                                                   color: Colors.white70,
                                                   fontSize: 14)),
-                                          const SizedBox(height: 16),
-                                          TextButton.icon(
-                                            onPressed: () => controller
-                                                .setWebForeground(true),
-                                            icon: const Icon(Icons.open_in_new,
-                                                size: 18,
-                                                color: Colors.white70),
-                                            label: const Text('立即显示网页',
-                                                style: TextStyle(
-                                                    color: Colors.white70)),
-                                          ),
                                         ],
                                       ),
                                     ),

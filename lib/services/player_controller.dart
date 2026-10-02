@@ -558,6 +558,21 @@ class PlayerController extends ChangeNotifier {
     _castRestoreTimer = null;
     _castEndedTimer?.cancel();
     _castEndedTimer = null;
+    // 幂等：投屏进行中且 URL 与当前源完全相同（抖音等乐播 SDK 在等待
+    // 确认窗口内会 Stop+SetURI+Play 反复推送同一地址），不重建播放器。
+    // 单 controller 模型下重复 dispose+initialize：① dispose 遇到内核
+    // 繁忙超时放弃 → 孤儿内核继续播放出声（双声音）；② 正在进行的
+    // initialize 被打断（投屏自动退出）。Macast 的 mpv 单实例换源无此代价，
+    // 我们以"同 URL 忽略重载"对齐其行为。
+    if (_isCasting &&
+        _currentChannel != null &&
+        _currentChannel!.streamUrls.isNotEmpty &&
+        _sourceIndex >= 0 &&
+        _sourceIndex < _currentChannel!.streamUrls.length &&
+        _currentChannel!.streamUrls[_sourceIndex] == url) {
+      CastLog.write('cast SetURI same url, reload ignored');
+      return;
+    }
     _preCastChannel ??=
         (_currentChannel?.id.startsWith('__dlna_cast__') ?? false)
             ? null
@@ -1145,6 +1160,14 @@ class PlayerController extends ChangeNotifier {
         c.removeListener(closure);
       } catch (_) {}
       if (_isCasting) CastLog.write('cast init late result discarded: $why');
+      // 必须真正释放：只移除监听会泄漏整个 native 播放器。
+      // 若新代已先行 dispose 过该实例，这里重复操作的异常被吞掉即可。
+      c.pause().timeout(const Duration(seconds: 1)).then((_) {},
+          onError: (_) {});
+      c.dispose().timeout(const Duration(seconds: 3)).then((_) {},
+          onError: (_) {
+        _orphanControllers.add(c);
+      });
     }
 
     try {
@@ -2258,6 +2281,8 @@ class PlayerController extends ChangeNotifier {
   // 注入「启动保存状态 + 15 秒定时器恢复」代码，见 Patch Windows runner 步骤。
 
   Future<void> _disposeVideoController() async {
+    // 先尝试释放上一轮 dispose 挂起的孤儿实例
+    _retryOrphanDispose();
     final c = _videoController;
     if (c != null) {
       final closure = _videoListenerClosure;
@@ -2268,11 +2293,36 @@ class PlayerController extends ChangeNotifier {
           c.removeListener(closure);
         } catch (_) {}
       }
+      // 先暂停：即使后续 dispose 在内核卡死时超时放弃，孤儿实例也
+      // 不会继续播放出声（双声音防线）。pause 本身可能挂，限时 1 秒
+      try {
+        await c.pause().timeout(const Duration(seconds: 1));
+      } catch (_) {}
       try {
         // 播放器卡死时 native dispose 也可能挂起：最多等 3 秒，
         // 超时就放弃该实例，绝不能阻塞后续播放（重试按钮"没反应"的防线）
         await c.dispose().timeout(const Duration(seconds: 3));
-      } catch (_) {}
+      } catch (_) {
+        // dispose 挂起：登记为孤儿，下次播放前再次尝试释放，
+        // 避免 native 实例永久泄漏
+        _orphanControllers.add(c);
+      }
+    }
+  }
+
+  /// dispose 超时挂起的孤儿控制器：不阻塞当前流程，后续重试释放
+  final List<VideoPlayerController> _orphanControllers = [];
+
+  void _retryOrphanDispose() {
+    if (_orphanControllers.isEmpty) return;
+    final list = List<VideoPlayerController>.from(_orphanControllers);
+    _orphanControllers.clear();
+    for (final c in list) {
+      c.dispose().timeout(const Duration(seconds: 2)).then((_) {
+        // 释放成功
+      }, onError: (_) {
+        _orphanControllers.add(c); // 仍失败：留待下轮
+      });
     }
   }
 
