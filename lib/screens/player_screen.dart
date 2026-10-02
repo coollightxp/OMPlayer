@@ -343,7 +343,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-      return Focus(
+      return BackButtonListener(
+        onBackButtonPressed: _onBackPressed,
+        child: Focus(
         focusNode: _rootFocusNode,
         autofocus: true,
         child: Scaffold(
@@ -603,6 +605,53 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverMove: _cancelDrawerHide,
                   ),
 
+                  // 投屏中：顶部悬浮「断开投屏」按钮（手机/平板/TV 通用，
+                  // 接收端主动断开并恢复投屏前频道）
+                  if (controller.isCasting)
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: SafeArea(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Align(
+                            alignment: Alignment.topCenter,
+                            child: Material(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(20),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(20),
+                                onTap: () => controller.userStopCasting(),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: Border.all(
+                                        color: Colors.redAccent
+                                            .withOpacity(0.5)),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.cast_connected,
+                                          color: Colors.redAccent, size: 18),
+                                      SizedBox(width: 8),
+                                      Text('断开投屏',
+                                          style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 13)),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
                   // 设置面板
                   SettingsPanel(
                     isOpen: _settingsOpen,
@@ -691,7 +740,35 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         ),
       ),
         ),
+      ),
       );
+  }
+
+  /// 安卓返回键/遥控器返回：按层级关闭（设置→投屏→面板→全屏），
+  /// 无任何可关闭项时放行（系统默认退出应用）
+  Future<bool> _onBackPressed() async {
+    final c = context.read<PlayerController>();
+    if (_settingsOpen) {
+      setState(() => _settingsOpen = false);
+      return true;
+    }
+    if (c.isCasting) {
+      await c.userStopCasting();
+      return true;
+    }
+    if (_leftDrawerOpen) {
+      setState(() => _leftDrawerOpen = false);
+      return true;
+    }
+    if (_rightEpgOpen) {
+      setState(() => _rightEpgOpen = false);
+      return true;
+    }
+    if (c.isFullscreen) {
+      c.exitFullscreenIfNeeded();
+      return true;
+    }
+    return false;
   }
 
   // ==================== 硬件按键快捷键 ====================
@@ -722,7 +799,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
 
     if (k == LogicalKeyboardKey.escape) {
-      context.read<PlayerController>().exitFullscreenIfNeeded();
+      final pc = context.read<PlayerController>();
+      // 投屏中：Esc 主动断开投屏；否则按原逻辑退出全屏
+      if (pc.isCasting) {
+        pc.userStopCasting();
+      } else {
+        pc.exitFullscreenIfNeeded();
+      }
       return true;
     }
 
