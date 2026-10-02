@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -51,7 +52,9 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
   @override
   Widget build(BuildContext context) {
     final screenW = MediaQuery.of(context).size.width;
-    final isPhone = screenW < 600;
+    // 平台 + shortestSide 判断：手机横屏 width 是长边，不能按 width 判
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
     final drawerW = isPhone ? (screenW * 0.85).clamp(240.0, 300.0) : 340.0;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
@@ -88,7 +91,8 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
   Widget _buildHeader() {
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
-        final isPhone = MediaQuery.of(context).size.width < 600;
+        final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
         return Container(
           padding: EdgeInsets.symmetric(
               horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
@@ -205,7 +209,8 @@ class _EpgProgramTile extends StatelessWidget {
 
   Widget _buildCard(
       BuildContext context, bool isNow, bool isPast, bool canReserve) {
-    final isPhone = MediaQuery.of(context).size.width < 600;
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
     return Container(
       margin: EdgeInsets.symmetric(
           horizontal: isPhone ? 8 : 12, vertical: isPhone ? 3 : 4),

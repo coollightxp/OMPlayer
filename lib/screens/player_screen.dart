@@ -615,8 +615,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       child: SafeArea(
                         child: Padding(
                           padding: const EdgeInsets.only(top: 10),
-                          child: Align(
-                            alignment: Alignment.topCenter,
+                          child: Center(
+                            // heightFactor:1 让高度只包住按钮，不撑满全屏
+                            // （Align/Center 默认会填满有界高度，遮挡下层手势）
+                            heightFactor: 1.0,
                             child: Material(
                               color: Colors.black54,
                               borderRadius: BorderRadius.circular(20),
@@ -768,7 +770,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       c.exitFullscreenIfNeeded();
       return true;
     }
-    return false;
+    // 无任何可关闭项：退出 App 前弹确认，避免误触直接退出
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('退出 OMPlayer'),
+        content: const Text('确定要退出 OMPlayer 吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            child: const Text('退出'),
+          ),
+        ],
+      ),
+    );
+    // 返回 true 拦截系统返回（不退出）；确认退出则放行
+    return shouldExit != true;
   }
 
   // ==================== 硬件按键快捷键 ====================

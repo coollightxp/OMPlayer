@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -102,7 +103,10 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   @override
   Widget build(BuildContext context) {
     final screenW = MediaQuery.of(context).size.width;
-    final isPhone = screenW < 600;
+    // 必须用「平台 + shortestSide」判断：手机横屏时屏幕宽度是长边
+    // （800+），按 width 判会被误当成桌面而不自适应
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
     final drawerW = isPhone ? (screenW * 0.85).clamp(240.0, 280.0) : 320.0;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
@@ -136,7 +140,8 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   }
 
   Widget _buildHeader() {
-    final isPhone = MediaQuery.of(context).size.width < 600;
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
     return Container(
       padding: EdgeInsets.symmetric(
           horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
@@ -197,7 +202,8 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   /// 第一级：分类列表
   Widget _buildCategoryList(List<ChannelCategory> cats) {
     if (cats.isEmpty) {
-      final isPhone = MediaQuery.of(context).size.width < 600;
+      final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -271,7 +277,8 @@ class _CategoryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPhone = MediaQuery.of(context).size.width < 600;
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
     return InkWell(
       onTap: onTap,
       child: Container(
@@ -333,7 +340,8 @@ class _ChannelTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPhone = MediaQuery.of(context).size.width < 600;
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
     return InkWell(
       onTap: onTap,
       child: Container(

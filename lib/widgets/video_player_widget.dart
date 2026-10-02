@@ -98,14 +98,35 @@ class VideoPlayerWidget extends StatelessWidget {
         final w = vc.value.size.width;
         final h = vc.value.size.height;
         final hasSize = w > 0 && h > 0;
+        // 首帧未到（尺寸未上报 / 播放位置尚未推进）时，底层纹理可能是
+        // 纯灰色并铺满整屏。用黑色加载层盖住直到画面真正出现，避免“灰屏”。
+        final firstFrameArrived =
+            hasSize && vc.value.position > Duration.zero;
         return SizedBox.expand(
-          child: FittedBox(
-            fit: BoxFit.contain,
-            child: SizedBox(
-              width: hasSize ? w : 16,
-              height: hasSize ? h : 9,
-              child: VideoPlayer(vc),
-            ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              FittedBox(
+                fit: BoxFit.contain,
+                child: SizedBox(
+                  width: hasSize ? w : 16,
+                  height: hasSize ? h : 9,
+                  child: VideoPlayer(vc),
+                ),
+              ),
+              if (!firstFrameArrived)
+                const ColoredBox(
+                  color: Colors.black,
+                  child: Center(
+                    child: SizedBox(
+                      width: 30,
+                      height: 30,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2.5, color: Colors.blueAccent),
+                    ),
+                  ),
+                ),
+            ],
           ),
         );
       },

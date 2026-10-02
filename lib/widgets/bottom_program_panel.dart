@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -51,7 +52,9 @@ class BottomProgramPanel extends StatelessWidget {
     // 宽屏（电视/桌面）：面板做成居中悬浮卡片，两侧留白、底边抬升；
     // 手机窄屏仍贴近两侧，避免内容被挤
     final screenW = MediaQuery.of(context).size.width;
-    final isPhone = screenW < 600;
+    // 平台 + shortestSide 判断：手机横屏 width 是长边，不能按 width 判
+    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
+        MediaQuery.of(context).size.shortestSide < 600;
     final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 10.0);
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 250),
