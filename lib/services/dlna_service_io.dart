@@ -1120,10 +1120,13 @@ class DlnaService {
 
   Future<void> _soapResponse(
       HttpRequest req, String service, String action, String argsXml) async {
+    // UPnP SOAP 响应元素名必须是 ActionNameResponse，
+    // 漏掉 Response 后缀会导致抖音等发送端解析失败、判定连接错误。
+    final respAction = '${action}Response';
     final body = '<?xml version="1.0" encoding="utf-8"?>'
         '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
         's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
-        '<s:Body><u:$action xmlns:u="$service">$argsXml</u:$action></s:Body>'
+        '<s:Body><u:$respAction xmlns:u="$service">$argsXml</u:$respAction></s:Body>'
         '</s:Envelope>';
     await _respondXml(req, body);
   }

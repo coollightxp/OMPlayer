@@ -1,10 +1,30 @@
+import 'dart:developer';
 import 'dart:io';
 
 /// 无媒体后缀/脚本入口型播放地址的格式预检结果缓存，
 /// 避免每次切台都多发一次 HTTP 请求
 final Map<String, String> _probeCache = {};
 
-/// 发起轻量 GET 预检（自动跟随重定向），依据最终响应的 Content-Type
+/// IPTV 常见脚本入口：绝大多数实际 302 到 HLS，直接判定减少预检依赖
+bool _isKnownHlsEntry(String url) {
+  final lower = url.toLowerCase();
+  const patterns = [
+    '/live.php',
+    '/play.php',
+    '/stream.php',
+    '/hls.php',
+    '/tv.php',
+    '/m3u8.php',
+    '/api/live',
+    '/api/stream',
+  ];
+  for (final p in patterns) {
+    if (lower.contains(p)) return true;
+  }
+  return false;
+}
+
+/// 发起轻量预检（HEAD 优先，GET fallback），依据最终响应的 Content-Type
 /// 判断真实封装格式。
 ///
 /// 返回 'hls' / 'dash'；无法判断时返回 null。
@@ -19,30 +39,53 @@ Future<String?> inferStreamFormat({
   final cached = _probeCache[url];
   if (cached != null) return cached;
 
+  // 常见脚本入口直接判定为 HLS，避免网络预检失败导致播放不了
+  if (_isKnownHlsEntry(url)) {
+    _probeCache[url] = 'hls';
+    return 'hls';
+  }
+
+  // 先尝试 HEAD（只读头、不下载 body），失败再 fallback GET
+  String? result;
+  try {
+    result = await _probe(url, headers, 'HEAD');
+  } catch (e) {
+    log('format hint HEAD probe failed for $url: $e', name: 'FormatHint');
+  }
+  if (result == null) {
+    try {
+      result = await _probe(url, headers, 'GET');
+    } catch (e) {
+      log('format hint GET probe failed for $url: $e', name: 'FormatHint');
+    }
+  }
+  if (result != null) _probeCache[url] = result;
+  return result;
+}
+
+Future<String?> _probe(
+  String url,
+  Map<String, String> headers,
+  String method,
+) async {
   HttpClient? client;
   try {
     client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 8)
-      ..idleTimeout = const Duration(seconds: 8);
-    final req = await client.openUrl('GET', Uri.parse(url));
+      ..connectionTimeout = const Duration(seconds: 6)
+      ..idleTimeout = const Duration(seconds: 6);
+    final req = await client.openUrl(method, Uri.parse(url));
     headers.forEach(req.headers.set);
-    final resp = await req.close().timeout(const Duration(seconds: 8));
+    final resp = await req.close().timeout(const Duration(seconds: 6));
 
-    // 只需要响应头：直接中止，不下载 body（直播流会持续推数据）
     final mime = resp.headers.contentType?.mimeType ??
         resp.headers.value('content-type') ??
         '';
     final probe = mime.toLowerCase();
-
-    String? result;
     if (probe.contains('mpegurl') || probe.contains('m3u8')) {
-      result = 'hls';
+      return 'hls';
     } else if (probe.contains('dash+xml') || probe.contains('mpd')) {
-      result = 'dash';
+      return 'dash';
     }
-    if (result != null) _probeCache[url] = result;
-    return result;
-  } catch (_) {
     return null;
   } finally {
     client?.close(force: true);
