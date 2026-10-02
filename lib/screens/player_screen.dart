@@ -415,78 +415,63 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // - 网页频道后台缓冲中：黑屏占位（网页在其下方缓冲）
                   // - 网页频道前台播放：空层（让下方网页全屏显露）
                   // - 等待网络：显示网络等待提示
-                  Selector<PlayerController,
-                      ({bool webActive, bool webFg, PlayerState state})>(
-                    // 视频层只关心这三个字段。切时钟等设置改动时它们
-                    // 不变，shouldRebuild=false，视频层（含纹理）完全不
-                    // 重建，避免被外层大 Consumer 的整树重建牵连变灰
-                    selector: (_, c) => (
-                      webActive: c.webPageActive,
-                      webFg: c.webPageForeground,
-                      state: c.state,
-                    ),
-                    shouldRebuild: (p, n) => p != n,
-                    builder: (context, v, __) => Positioned.fill(
-                      child: v.state == PlayerState.waitingForNetwork
-                          ? Container(
-                              color: Colors.black,
-                              child: Center(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: const [
-                                    CircularProgressIndicator(
-                                        color: Colors.blueAccent),
-                                    SizedBox(height: 16),
-                                    Text('正在等待网络连接...',
-                                        style: TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 16)),
-                                    SizedBox(height: 8),
-                                    Text('网络恢复后将自动开始播放',
-                                        style: TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 13)),
-                                  ],
-                                ),
+                  Positioned.fill(
+                    child: controller.state == PlayerState.waitingForNetwork
+                        ? Container(
+                            color: Colors.black,
+                            child: Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: const [
+                                  CircularProgressIndicator(
+                                      color: Colors.blueAccent),
+                                  SizedBox(height: 16),
+                                  Text('正在等待网络连接...',
+                                      style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 16)),
+                                  SizedBox(height: 8),
+                                  Text('网络恢复后将自动开始播放',
+                                      style: TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13)),
+                                ],
                               ),
-                            )
-                          : !v.webActive
-                              ? const VideoPlayerWidget()
-                              : (!v.webFg
-                                  ? Container(
-                                      color: Colors.black,
-                                      child: Center(
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const CircularProgressIndicator(
-                                                color: Colors.blueAccent),
-                                            const SizedBox(height: 12),
-                                            const Text(
-                                                '网页频道缓冲中，起播后自动切换...',
+                            ),
+                          )
+                        : !controller.webPageActive
+                            ? const VideoPlayerWidget()
+                            : (!controller.webPageForeground
+                                ? Container(
+                                    color: Colors.black,
+                                    child: Center(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const CircularProgressIndicator(
+                                              color: Colors.blueAccent),
+                                          const SizedBox(height: 12),
+                                          const Text(
+                                              '网页频道缓冲中，起播后自动切换...',
+                                              style: TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 14)),
+                                          const SizedBox(height: 16),
+                                          TextButton.icon(
+                                            onPressed: () => controller
+                                                .setWebForeground(true),
+                                            icon: const Icon(Icons.open_in_new,
+                                                size: 18,
+                                                color: Colors.white70),
+                                            label: const Text('立即显示网页',
                                                 style: TextStyle(
-                                                    color: Colors.white70,
-                                                    fontSize: 14)),
-                                            const SizedBox(height: 16),
-                                            TextButton.icon(
-                                              onPressed: () => context
-                                                  .read<PlayerController>()
-                                                  .setWebForeground(true),
-                                              icon: const Icon(
-                                                  Icons.open_in_new,
-                                                  size: 18,
-                                                  color: Colors.white70),
-                                              label: const Text('立即显示网页',
-                                                  style: TextStyle(
-                                                      color:
-                                                          Colors.white70)),
-                                            ),
-                                          ],
-                                        ),
+                                                    color: Colors.white70)),
+                                          ),
+                                        ],
                                       ),
-                                    )
-                                  : const SizedBox.shrink()),
-                    ),
+                                    ),
+                                  )
+                                : const SizedBox.shrink()),
                   ),
 
                   // 亮度说明：不再使用全屏遮罩——它与 ScreenBrightness 的
@@ -498,10 +483,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 避免 OSD 卡片挡住频道面板顶部的返回按钮
                   _buildChannelOsd(controller),
 
-                  // 右上角系统时间：在视频画面之上、所有弹出面板之下
-                  // 时钟槽位常驻：开关只切换槽内内容，不在 Stack 中增删
-                  // 节点，避免 Stack 结构性重排牵连视频纹理变灰
-                  _buildClock(controller),
+                  // 右上角系统时间：独立自治，切换不重建整棵 Stack
+                  const ClockOverlay(),
 
                   // 手势检测层：普通模式全功能；网页模式仅保留左右两侧
                   // 垂直滑动（亮度/音量），中间区域完全穿透不拦截网页点击，
@@ -1007,44 +990,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       ),
     );
   }
-
-  Widget _buildClock(PlayerController controller) {
-    return Positioned(
-      top: 0,
-      right: 0,
-      // 关闭时 Positioned 槽位仍常驻、内部为空，不在 Stack 中增删节点
-      child: !controller.settings.showClock
-          ? const SizedBox.shrink()
-          : SafeArea(
-              child: Padding(
-                // 与屏幕上边、右边保持约一行的距离（桌面无 SafeArea 边距，
-                // 这里显式留白）
-                padding:
-                    const EdgeInsets.only(top: 20, right: 28, bottom: 8),
-                child: StreamBuilder<int>(
-                  stream: _clockStream,
-                  builder: (context, _) {
-                    final now = DateTime.now();
-                    return Text(
-                      DateFormat('HH:mm').format(now),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w500,
-                        shadows: [
-                          Shadow(color: Colors.black87, blurRadius: 6)
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-    );
-  }
-
-  static final Stream<int> _clockStream =
-      Stream.periodic(const Duration(seconds: 1), (i) => i);
 
   // ==================== 手势层 ====================
 
@@ -2016,6 +1961,76 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// 右上角系统时钟。
+///
+/// 完全独立自治：
+/// - 显隐由 [PlayerController.clockVisible] 驱动（ValueListenableBuilder），
+///   只重建时钟自身；
+/// - 走时由内部定时器每秒刷新。
+///
+/// 因此切换「显示时间」不会触发 PlayerController.notifyListeners，整棵
+/// 播放 Stack 不重建。旧实现复用 updateSettings，反复切换会反复整树重建，
+/// 导致画面出现灰屏。
+class ClockOverlay extends StatefulWidget {
+  const ClockOverlay({super.key});
+
+  @override
+  State<ClockOverlay> createState() => _ClockOverlayState();
+}
+
+class _ClockOverlayState extends State<ClockOverlay> {
+  Timer? _timer;
+  String _text = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _tick();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+
+  void _tick() {
+    final t = DateFormat('HH:mm').format(DateTime.now());
+    if (t != _text && mounted) setState(() => _text = t);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.read<PlayerController>();
+    return Positioned(
+      top: 0,
+      right: 0,
+      child: ValueListenableBuilder<bool>(
+        valueListenable: controller.clockVisible,
+        builder: (context, visible, child) =>
+            visible ? child! : const SizedBox.shrink(),
+        child: SafeArea(
+          child: Padding(
+            // 与屏幕上边、右边保持约一行距离（桌面无 SafeArea 边距，
+            // 显式留白）
+            padding: const EdgeInsets.only(top: 20, right: 28, bottom: 8),
+            child: Text(
+              _text,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w500,
+                shadows: [Shadow(color: Colors.black87, blurRadius: 6)],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

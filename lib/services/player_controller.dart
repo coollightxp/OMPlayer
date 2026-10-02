@@ -39,6 +39,10 @@ class PlayerController extends ChangeNotifier {
   VideoPlayerController? _videoController;
   PlayerSettings _settings = const PlayerSettings();
 
+  /// 时钟显隐的独立通知器：切换它只重建时钟本身，不触发整棵播放
+  /// Stack 的 notifyListeners（避免反复重建导致灰屏）
+  final ValueNotifier<bool> clockVisible = ValueNotifier<bool>(false);
+
   PlayerState _state = PlayerState.idle;
   Channel? _currentChannel;
   double _volume = 0.8;
@@ -1390,6 +1394,8 @@ class PlayerController extends ChangeNotifier {
         uiScaleAuto: p.getBool(_kUiScaleAuto) ?? true,
         remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
       );
+      // 同步独立时钟通知器的初值
+      clockVisible.value = _settings.showClock;
     } catch (_) {}
   }
 
@@ -1440,8 +1446,6 @@ class PlayerController extends ChangeNotifier {
 
   /// 更新设置并持久化（开机启动项会同步到系统）
   void updateSettings(PlayerSettings settings) {
-    final clockChanged = settings.showClock != _settings.showClock;
-    if (clockChanged) _logVideoTexture('showClock->${settings.showClock}');
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
     final topChanged = settings.alwaysOnTop != _settings.alwaysOnTop;
     final dlnaChanged = settings.dlnaEnabled != _settings.dlnaEnabled;
@@ -1470,21 +1474,18 @@ class PlayerController extends ChangeNotifier {
       }
     }
     notifyListeners();
-    if (clockChanged) {
-      WidgetsBinding.instance.addPostFrameCallback(
-          (_) => _logVideoTexture('postframe showClock'));
-    }
   }
 
-  /// 诊断：记录当前视频纹理关键状态（仅写文件日志，无界面探针）
-  void _logVideoTexture(String tag) {
-    try {
-      final vc = _videoController;
-      CastLog.write(
-          '$tag state=$_state playing=${vc?.value.isPlaying} init=${vc?.value.isInitialized} size=${vc?.value.size}');
-    } catch (e) {
-      CastLog.write('$tag texture log failed: $e');
-    }
+  /// 单独切换「显示时间」。
+  ///
+  /// 时钟的显隐走独立的 [clockVisible]，只通知时钟本身，不调用
+  /// [notifyListeners]——因此切换时整棵播放 Stack 不会重建。旧实现复用
+  /// updateSettings，反复切换会反复整树重建，导致画面出现灰死。
+  void setShowClock(bool value) {
+    if (_settings.showClock == value) return;
+    _settings = _settings.copyWith(showClock: value);
+    _saveSettings();
+    clockVisible.value = value;
   }
 
   /// 应用窗口置顶设置（全屏时强制置顶，退出全屏后按设置恢复）
@@ -2246,6 +2247,7 @@ class PlayerController extends ChangeNotifier {
     dlnaService.stop();
     remoteAdminService.stop();
     reservationManager.dispose();
+    clockVisible.dispose();
     super.dispose();
   }
 }

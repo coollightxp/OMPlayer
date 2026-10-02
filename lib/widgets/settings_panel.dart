@@ -1017,16 +1017,21 @@ class _SystemSettingsTab extends StatelessWidget {
                 activeColor: Colors.blueAccent,
               ),
             ],
-            SwitchListTile(
-              secondary: const Icon(Icons.access_time, color: Colors.white70),
-              title: const Text('显示时间',
-                  style: TextStyle(color: Colors.white, fontSize: 15)),
-              subtitle: const Text('右上角一直显示实时系统时间',
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
-              value: s.showClock,
-              onChanged: (v) =>
-                  controller.updateSettings(s.copyWith(showClock: v)),
-              activeColor: Colors.blueAccent,
+            // 开关状态由独立 clockVisible 驱动：切换只重建时钟，不触发
+            // 整棵播放 Stack 重建（旧做法反复切换会灰屏）
+            ValueListenableBuilder<bool>(
+              valueListenable: controller.clockVisible,
+              builder: (context, showClock, _) => SwitchListTile(
+                secondary:
+                    const Icon(Icons.access_time, color: Colors.white70),
+                title: const Text('显示时间',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+                subtitle: const Text('右上角一直显示实时系统时间',
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                value: showClock,
+                onChanged: controller.setShowClock,
+                activeColor: Colors.blueAccent,
+              ),
             ),
             // DLNA 投屏接收状态 + 开关
             ListTile(

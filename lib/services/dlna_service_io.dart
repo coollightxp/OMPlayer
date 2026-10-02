@@ -979,6 +979,12 @@ class DlnaService {
     switch (action) {
       case 'SetAVTransportURI':
         extra = ' uri=${_extract(body, 'CurrentURI')}';
+        // 抖音(乐播SDK)投屏诊断：完整记录媒体元数据。乐播可能把私有确认
+        // 字段/protocolInfo 放在 MetaData 里，这是判断其"哑等"何种确认的
+        // 唯一硬证据（反转义后直接可读 DIDL-Lite 结构）
+        final meta = _extract(body, 'CurrentURIMetaData');
+        CastLog.write(
+            'SOAP[$shortSvc] SetURI metadata=${meta.isEmpty ? "<empty>" : meta}');
         break;
       case 'Seek':
         extra = ' unit=${_extract(body, 'Unit')} '
