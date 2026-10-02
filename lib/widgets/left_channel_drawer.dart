@@ -1,9 +1,9 @@
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/channel.dart';
 import '../services/player_controller.dart';
+import 'scaled_panel.dart';
 
 /// 左侧两级抽屉式频道面板
 /// 第一级：频道分类列表
@@ -38,6 +38,9 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
   ChannelCategory? _selectedCategory;
   final ScrollController _categoryScroll = ScrollController();
   final ScrollController _channelScroll = ScrollController();
+
+  /// 设计稿宽度（面板内容按此尺寸设计，缩放交给 ScaledPanel）
+  static const double _designWidth = 320;
 
   @override
   void dispose() {
@@ -102,11 +105,8 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    final screenW = MediaQuery.of(context).size.width;
-    // 平台 + 最短边判断：手机横屏时宽度是长边，按 width 会误判成桌面
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
-    final drawerW = isPhone ? (screenW * 0.78).clamp(220.0, 260.0) : 320.0;
+    final scale = panelScaleOf(context);
+    final drawerW = _designWidth * scale;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,
@@ -121,43 +121,44 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
           opacity: widget.isOpen ? 1.0 : 0.0,
-          child: Material(
-            color: Colors.black87,
-            elevation: 16,
-            child: SafeArea(
-              child: Column(
-              children: [
-                _buildHeader(),
-                Expanded(child: _buildBody()),
-              ],
+          child: ScaledPanel(
+            designWidth: _designWidth,
+            alignment: Alignment.centerLeft,
+            scale: scale,
+            child: Material(
+              color: Colors.black87,
+              elevation: 16,
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    _buildHeader(),
+                    Expanded(child: _buildBody()),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
         ),
       ),
     );
   }
 
   Widget _buildHeader() {
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
     return Container(
-      padding: EdgeInsets.symmetric(
-          horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: Colors.white12)),
       ),
       child: Row(
         children: [
-          Icon(Icons.live_tv,
-              color: Colors.white, size: isPhone ? 20 : 22),
-          SizedBox(width: isPhone ? 8 : 10),
+          const Icon(Icons.live_tv, color: Colors.white, size: 22),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
               _selectedCategory == null ? '频道列表' : _selectedCategory!.name,
-              style: TextStyle(
+              style: const TextStyle(
                 color: Colors.white,
-                fontSize: isPhone ? 15 : 17,
+                fontSize: 17,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -201,24 +202,20 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
 
   /// 第一级：分类列表
   Widget _buildCategoryList(List<ChannelCategory> cats) {
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
     if (cats.isEmpty) {
-      return Center(
+      return const Center(
         child: Padding(
-          padding: EdgeInsets.all(isPhone ? 18 : 24),
+          padding: EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.playlist_add,
-                  size: isPhone ? 48 : 56, color: Colors.white38),
-              SizedBox(height: isPhone ? 12 : 16),
+              Icon(Icons.playlist_add, size: 56, color: Colors.white38),
+              SizedBox(height: 16),
               Text(
                 '暂无频道列表',
-                style:
-                    TextStyle(color: Colors.white54, fontSize: isPhone ? 14 : 16),
+                style: TextStyle(color: Colors.white54, fontSize: 16),
               ),
-              const SizedBox(height: 8),
+              SizedBox(height: 8),
               Text(
                 '请在设置中添加 M3U/TXT 播放列表',
                 style: TextStyle(color: Colors.white38, fontSize: 12),
@@ -277,35 +274,32 @@ class _CategoryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
     return InkWell(
       onTap: onTap,
       child: Container(
-        padding: EdgeInsets.symmetric(
-            horizontal: isPhone ? 12 : 16, vertical: isPhone ? 12 : 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         child: Row(
           children: [
             Container(
-              width: isPhone ? 32 : 36,
-              height: isPhone ? 32 : 36,
+              width: 36,
+              height: 36,
               decoration: BoxDecoration(
                 color: Colors.blueAccent.withOpacity(0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(Icons.category,
-                  color: Colors.blueAccent, size: isPhone ? 18 : 20),
+              child: const Icon(Icons.category,
+                  color: Colors.blueAccent, size: 20),
             ),
-            SizedBox(width: isPhone ? 10 : 12),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     category.name,
-                    style: TextStyle(
+                    style: const TextStyle(
                       color: Colors.white,
-                      fontSize: isPhone ? 14 : 15,
+                      fontSize: 15,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
@@ -340,13 +334,10 @@ class _ChannelTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
     return InkWell(
       onTap: onTap,
       child: Container(
-        padding: EdgeInsets.symmetric(
-            horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           color: isSelected
               ? Colors.blueAccent.withOpacity(0.2)
@@ -358,9 +349,9 @@ class _ChannelTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // 频道序号（与数字选台一致）。强制单行等比缩小，避免折行
+            // 频道序号（与数字选台）。强制单行等比缩小，避免折行
             SizedBox(
-              width: isPhone ? 38 : 42,
+              width: 42,
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
@@ -377,8 +368,8 @@ class _ChannelTile extends StatelessWidget {
               ),
             ),
             Container(
-              width: isPhone ? 34 : 40,
-              height: isPhone ? 34 : 40,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: isSelected ? Colors.blueAccent : Colors.white10,
                 borderRadius: BorderRadius.circular(8),
@@ -386,16 +377,16 @@ class _ChannelTile extends StatelessWidget {
               child: Icon(
                 Icons.tv,
                 color: isSelected ? Colors.white : Colors.white70,
-                size: isPhone ? 18 : 20,
+                size: 20,
               ),
             ),
-            SizedBox(width: isPhone ? 10 : 12),
+            const SizedBox(width: 12),
             Expanded(
               child: Text(
                 channel.name,
                 style: TextStyle(
                   color: isSelected ? Colors.blueAccent : Colors.white,
-                  fontSize: isPhone ? 13 : 14,
+                  fontSize: 14,
                   fontWeight:
                       isSelected ? FontWeight.bold : FontWeight.normal,
                 ),

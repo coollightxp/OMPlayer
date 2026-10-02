@@ -494,10 +494,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 右上角系统时间：在视频画面之上、所有弹出面板之下
                   if (controller.settings.showClock) _buildClock(),
 
-                  // 投屏接收时：顶部居中「断开投屏」按钮（接收端主动断开）。
-                  // 只包住按钮本身，不做全屏遮罩，不遮挡其它操作
-                  if (controller.isCasting) _buildStopCastButton(),
-
                   // 手势检测层：普通模式全功能；网页模式仅保留左右两侧
                   // 垂直滑动（亮度/音量），中间区域完全穿透不拦截网页点击，
                   // 面板由边缘触发区弹出
@@ -1020,54 +1016,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   static final Stream<int> _clockStream =
       Stream.periodic(const Duration(seconds: 1), (i) => i);
 
-  /// 投屏接收时顶部的「断开投屏」按钮：接收端主动结束投屏并恢复投屏前频道。
-  /// 用 Positioned + 顶部定位，尺寸只包住按钮，不撑满全屏（不做遮罩）
-  Widget _buildStopCastButton() {
-    return Positioned(
-      top: 0,
-      left: 0,
-      right: 0,
-      child: SafeArea(
-        bottom: false,
-        child: Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: Center(
-            // heightFactor:1 高度只包住按钮，避免 Center 填满有界高度挡手势
-            heightFactor: 1,
-            child: Material(
-              color: Colors.black54,
-              borderRadius: BorderRadius.circular(20),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(20),
-                onTap: () =>
-                    context.read<PlayerController>().stopCastAndRestore(),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    border:
-                        Border.all(color: Colors.redAccent.withOpacity(0.5)),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.cast_connected,
-                          color: Colors.redAccent, size: 18),
-                      SizedBox(width: 8),
-                      Text('断开投屏',
-                          style: TextStyle(color: Colors.white, fontSize: 13)),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   // ==================== 手势层 ====================
 
   Widget _buildGestureLayer(PlayerController controller,
@@ -1082,9 +1030,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
             // 滑动归 App、点击穿透给网页）
             Expanded(
               child: GestureDetector(
-                // 手机/触控：点左半屏也要能呼出信息面板（否则只有中间
-                // 1/3 响应，点偏就没反应）。网页模式下不加，避免拦截网页
-                onTap: webMode ? null : _toggleBottomPanel,
+                // 手机/触控：点左半屏呼出信息面板（否则只有中间
+                // 1/3 响应，点偏就没反应）。网页模式也保留：网页播放时
+                // 需要一个呼出面板的入口，中间区域仍穿透给网页
+                onTap: _toggleBottomPanel,
                 onVerticalDragStart: (details) {
                   _isHorizontalDrag = false;
                   _dragStartY = details.globalPosition.dy;
@@ -1133,8 +1082,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
             // 右侧：音量调节 + 右边缘滑出 EPG
             Expanded(
               child: GestureDetector(
-                // 手机/触控：点右半屏也能呼出信息面板；网页模式下不加
-                onTap: webMode ? null : _toggleBottomPanel,
+                // 手机/触控：点右半屏呼出信息面板；网页模式也保留
+                onTap: _toggleBottomPanel,
                 onVerticalDragStart: (details) {
                   _isHorizontalDrag = false;
                   _dragStartY = details.globalPosition.dy;

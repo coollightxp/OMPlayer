@@ -1,9 +1,9 @@
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/epg_program.dart';
 import '../services/player_controller.dart';
+import 'scaled_panel.dart';
 
 /// 右侧隐藏式 EPG 节目菜单面板
 /// 显示与当前直播频道对应的节目单
@@ -34,6 +34,9 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
   // 记录已定位过的节目单首项，避免每次 tick 都重复滚动
   String? _lastScrolledKey;
 
+  /// 设计稿宽度
+  static const double _designWidth = 340;
+
   @override
   void dispose() {
     _scrollController.dispose();
@@ -51,11 +54,8 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final screenW = MediaQuery.of(context).size.width;
-    // 平台 + 最短边：手机横屏 width 是长边，按 width 会误判
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
-    final drawerW = isPhone ? (screenW * 0.78).clamp(220.0, 270.0) : 340.0;
+    final scale = panelScaleOf(context);
+    final drawerW = _designWidth * scale;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,
@@ -70,19 +70,24 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
           opacity: widget.isOpen ? 1.0 : 0.0,
-          child: Material(
-            color: Colors.black87,
-            elevation: 16,
-            child: SafeArea(
-              child: Column(
-              children: [
-                _buildHeader(),
-                const Divider(height: 1, color: Colors.white12),
-                Expanded(child: _buildEpgList()),
-              ],
+          child: ScaledPanel(
+            designWidth: _designWidth,
+            alignment: Alignment.centerRight,
+            scale: scale,
+            child: Material(
+              color: Colors.black87,
+              elevation: 16,
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    _buildHeader(),
+                    const Divider(height: 1, color: Colors.white12),
+                    Expanded(child: _buildEpgList()),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
         ),
       ),
     );
@@ -91,25 +96,21 @@ class _RightEpgPanelState extends State<RightEpgPanel> {
   Widget _buildHeader() {
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
-        final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-            MediaQuery.of(context).size.shortestSide < 600;
         return Container(
-          padding: EdgeInsets.symmetric(
-              horizontal: isPhone ? 12 : 16, vertical: isPhone ? 10 : 12),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Row(
             children: [
-              Icon(Icons.menu_open,
-                  color: Colors.white, size: isPhone ? 20 : 22),
-              SizedBox(width: isPhone ? 8 : 10),
+              const Icon(Icons.menu_open, color: Colors.white, size: 22),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    const Text(
                       '节目单 EPG',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: isPhone ? 15 : 17,
+                        fontSize: 17,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -209,12 +210,9 @@ class _EpgProgramTile extends StatelessWidget {
 
   Widget _buildCard(
       BuildContext context, bool isNow, bool isPast, bool canReserve) {
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
     return Container(
-      margin: EdgeInsets.symmetric(
-          horizontal: isPhone ? 10 : 12, vertical: isPhone ? 3 : 4),
-      padding: EdgeInsets.all(isPhone ? 10 : 12),
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: isNow
             ? Colors.blueAccent.withOpacity(0.25)

@@ -9,6 +9,7 @@ import '../models/epg_source.dart';
 import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../services/player_controller.dart';
+import 'scaled_panel.dart';
 
 /// 选择本地文件。
 /// Windows 上主窗口默认置顶（全屏时强制置顶），而 file_picker 的系统
@@ -125,85 +126,92 @@ class _SettingsPanelState extends State<SettingsPanel>
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 200),
         opacity: widget.isOpen ? 1.0 : 0.0,
-        child: Material(
-          color: Colors.black87,
-          elevation: 24,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-          child: SafeArea(
-            top: false,
-            child: Builder(builder: (context) {
-              // 横屏手机等矮屏（高度<500）时面板几乎占满全高，避免太短无法操作
-              final screenH = MediaQuery.of(context).size.height;
-              return SizedBox(
-                height: screenH * (screenH < 500 ? 0.95 : 0.7),
-                child: Column(
-                children: [
-                  // 顶部拖拽条 + 标题
-                  Container(
-                    padding: const EdgeInsets.only(top: 10, bottom: 8),
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 40,
-                          height: 4,
-                          decoration: BoxDecoration(
-                            color: Colors.white30,
-                            borderRadius: BorderRadius.circular(2),
+        child: ScaledPanel(
+          designWidth: MediaQuery.of(context).size.width,
+          alignment: Alignment.bottomCenter,
+          scale: panelScaleOf(context),
+          child: Material(
+            color: Colors.black87,
+            elevation: 24,
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(16)),
+            child: SafeArea(
+              top: false,
+              child: Builder(builder: (context) {
+                // 横屏手机等矮屏（高度<500）时面板几乎占满全高，避免太短无法操作
+                final screenH = MediaQuery.of(context).size.height;
+                return SizedBox(
+                  height: screenH * (screenH < 500 ? 0.95 : 0.7),
+                  child: Column(
+                  children: [
+                    // 顶部拖拽条 + 标题
+                    Container(
+                      padding:
+                          const EdgeInsets.only(top: 10, bottom: 8),
+                      child: Column(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: Colors.white30,
+                              borderRadius: BorderRadius.circular(2),
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            const SizedBox(width: 16),
-                            const Text(
-                              '设置',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              const SizedBox(width: 16),
+                              const Text(
+                                '设置',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                            ),
-                            const Spacer(),
-                            IconButton(
-                              icon:
-                                  const Icon(Icons.close, color: Colors.white70),
-                              onPressed: widget.onClose,
-                            ),
-                          ],
-                        ),
-                      ],
+                              const Spacer(),
+                              IconButton(
+                                icon: const Icon(Icons.close,
+                                    color: Colors.white70),
+                                onPressed: widget.onClose,
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  // Tab 栏
-                  TabBar(
-                    controller: _tabController,
-                    indicatorColor: Colors.blueAccent,
-                    labelColor: Colors.blueAccent,
-                    unselectedLabelColor: Colors.white54,
-                    tabs: const [
-                      Tab(text: '播放列表'),
-                      Tab(text: 'EPG'),
-                      Tab(text: '播放器'),
-                      Tab(text: '系统'),
-                    ],
-                  ),
-                  const Divider(color: Colors.white12, height: 1),
-                  // Tab 内容
-                  Expanded(
-                    child: TabBarView(
+                    // Tab 栏
+                    TabBar(
                       controller: _tabController,
-                      children: [
-                        _PlaylistTab(),
-                        _EpgTab(),
-                        _PlayerSettingsTab(),
-                        _SystemSettingsTab(),
+                      indicatorColor: Colors.blueAccent,
+                      labelColor: Colors.blueAccent,
+                      unselectedLabelColor: Colors.white54,
+                      tabs: const [
+                        Tab(text: '播放列表'),
+                        Tab(text: 'EPG'),
+                        Tab(text: '播放器'),
+                        Tab(text: '系统'),
                       ],
                     ),
-                  ),
-                ],
-              ),
-              );
-            }),
+                    const Divider(color: Colors.white12, height: 1),
+                    // Tab 内容
+                    Expanded(
+                      child: TabBarView(
+                        controller: _tabController,
+                        children: [
+                          _PlaylistTab(),
+                          _EpgTab(),
+                          _PlayerSettingsTab(),
+                          _SystemSettingsTab(),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                );
+              }),
+            ),
           ),
         ),
       ),

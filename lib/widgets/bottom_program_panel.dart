@@ -1,10 +1,10 @@
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/epg_program.dart';
 import '../services/player_controller.dart';
+import 'scaled_panel.dart';
 
 /// 底部信息/控制面板
 /// 布局（参考电视播放器）：台标 | 当前节目(大字)+时段/频道/分辨率/线路 | 控制按钮
@@ -39,7 +39,8 @@ class BottomProgramPanel extends StatelessWidget {
 
   static final _hm = DateFormat('HH:mm');
 
-  String _range(EpgProgram p) => '${_hm.format(p.startTime)} - ${_hm.format(p.endTime)}';
+  String _range(EpgProgram p) =>
+      '${_hm.format(p.startTime)} - ${_hm.format(p.endTime)}';
   String _clock(Duration d) {
     final h = d.inHours;
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
@@ -50,18 +51,16 @@ class BottomProgramPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // 宽屏（电视/桌面）：面板做成居中悬浮卡片，两侧留白、底边抬升；
-    // 手机窄屏仍贴近两侧，避免内容被挤
+    // 窄屏贴近两侧，避免内容被挤
     final screenW = MediaQuery.of(context).size.width;
-    // 平台 + 最短边：手机横屏 width 是长边，按 width 会误判
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
+    final scale = panelScaleOf(context);
     final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 10.0);
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
       left: hPad,
       right: hPad,
-      bottom: isVisible ? (screenW > 900 ? 16 : 8) : -300,
+      bottom: isVisible ? (screenW > 900 ? 16 : 8) : -320,
       child: MouseRegion(
         onEnter: (_) => onHoverEnter?.call(),
         onExit: (_) => onHoverExit?.call(),
@@ -69,60 +68,63 @@ class BottomProgramPanel extends StatelessWidget {
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
           opacity: isVisible ? 1.0 : 0.0,
-          child: Container(
-          decoration: BoxDecoration(
-            // 悬浮卡片：深色半透明 + 圆角 + 细边框 + 上方渐隐遮罩衔接视频
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.black.withOpacity(0.55),
-                Colors.black.withOpacity(0.85),
-              ],
-            ),
-            borderRadius: BorderRadius.circular(isPhone ? 16 : 20),
-            border: Border.all(color: Colors.white.withOpacity(0.08)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.45),
-                blurRadius: 24,
-                offset: const Offset(0, 8),
+          child: ScaledPanel(
+            designWidth: screenW - 2 * hPad,
+            alignment: Alignment.bottomCenter,
+            scale: scale,
+            child: Container(
+              decoration: BoxDecoration(
+                // 悬浮卡片：深色半透明 + 圆角 + 细边框 + 上方渐隐衔接视频
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.55),
+                    Colors.black.withOpacity(0.85),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white.withOpacity(0.08)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.45),
+                    blurRadius: 24,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
               ),
-            ],
-          ),
-          child: SafeArea(
-            top: false,
-            child: Padding(
-              padding: isPhone
-                  ? const EdgeInsets.fromLTRB(16, 12, 14, 8)
-                  : const EdgeInsets.fromLTRB(22, 16, 18, 10),
-              child: Consumer<PlayerController>(
-                builder: (context, c, _) => Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (c.isSeekable) _buildSeekBar(c),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(22, 16, 18, 10),
+                  child: Consumer<PlayerController>(
+                    builder: (context, c, _) => Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        _buildLogo(context, c),
-                        SizedBox(width: isPhone ? 16 : 28),
-                        Expanded(child: _buildInfo(context, c)),
-                        Flexible(
-                          flex: 0,
-                          child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            alignment: Alignment.centerRight,
-                            child: _buildButtons(c),
-                          ),
+                        if (c.isSeekable) _buildSeekBar(c),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            _buildLogo(c),
+                            const SizedBox(width: 28),
+                            Expanded(child: _buildInfo(c)),
+                            Flexible(
+                              flex: 0,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                alignment: Alignment.centerRight,
+                                child: _buildButtons(c),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
         ),
       ),
     );
@@ -130,24 +132,21 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 台标 ====================
 
-  Widget _buildLogo(BuildContext context, PlayerController c) {
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
-    final double size = isPhone ? 72 : 128;
+  Widget _buildLogo(PlayerController c) {
+    const size = 128.0;
     final logo = c.currentLogo;
     Widget placeholder() => Container(
           width: size,
           height: size,
           decoration: BoxDecoration(
             color: Colors.white12,
-            borderRadius: BorderRadius.circular(isPhone ? 12 : 16),
+            borderRadius: BorderRadius.circular(16),
           ),
-          child: Icon(Icons.live_tv,
-              color: Colors.white54, size: isPhone ? 36 : 64),
+          child: const Icon(Icons.live_tv, color: Colors.white54, size: 64),
         );
     if (logo.isEmpty) return placeholder();
     return ClipRRect(
-      borderRadius: BorderRadius.circular(isPhone ? 12 : 16),
+      borderRadius: BorderRadius.circular(16),
       child: Image.network(
         logo,
         width: size,
@@ -160,9 +159,7 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 节目信息 ====================
 
-  Widget _buildInfo(BuildContext context, PlayerController c) {
-    final isPhone = defaultTargetPlatform == TargetPlatform.android &&
-        MediaQuery.of(context).size.shortestSide < 600;
+  Widget _buildInfo(PlayerController c) {
     final info = c.getNowPlayingInfo();
     final current = c.currentProgram;
     final next = c.nextProgram;
@@ -175,9 +172,9 @@ class BottomProgramPanel extends StatelessWidget {
         // 大字：当前节目名（无 EPG 时显示频道名）
         Text(
           current?.title ?? (hasChannel ? info.channelName : '未选择频道'),
-          style: TextStyle(
+          style: const TextStyle(
             color: Colors.white,
-            fontSize: isPhone ? 17 : 22,
+            fontSize: 22,
             fontWeight: FontWeight.bold,
           ),
           maxLines: 1,
@@ -209,7 +206,7 @@ class BottomProgramPanel extends StatelessWidget {
           )
         else if (!hasChannel)
           const Text(
-            '点击左侧边缘或 ≡ 按钮打开频道列表',
+            '点击屏幕或 ≡ 按钮打开频道列表',
             style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
       ],
@@ -218,7 +215,8 @@ class BottomProgramPanel extends StatelessWidget {
 
   Widget _metaText(String text, Color color) {
     return Text(text,
-        style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500));
+        style:
+            TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500));
   }
 
   Widget _badge(String text) {
@@ -239,7 +237,8 @@ class BottomProgramPanel extends StatelessWidget {
     final total = c.duration;
     final pos = c.position;
     final max = total.inMilliseconds.toDouble();
-    final value = pos.inMilliseconds.clamp(0, max <= 0 ? 1 : max).toDouble();
+    final value =
+        pos.inMilliseconds.clamp(0, max <= 0 ? 1 : max).toDouble();
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
@@ -250,8 +249,10 @@ class BottomProgramPanel extends StatelessWidget {
             child: SliderTheme(
               data: SliderThemeData(
                 trackHeight: 3,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                thumbShape:
+                    const RoundSliderThumbShape(enabledThumbRadius: 6),
+                overlayShape:
+                    const RoundSliderOverlayShape(overlayRadius: 12),
                 activeTrackColor: Colors.blueAccent,
                 inactiveTrackColor: Colors.white24,
                 thumbColor: Colors.blueAccent,
@@ -292,7 +293,7 @@ class BottomProgramPanel extends StatelessWidget {
         const SizedBox(width: 4),
         if (c.isDesktop) ...[
           _btn(Icons.camera_alt, '截图', hasVideo ? onScreenshot : null),
-          // 录制：开始=红色圆点，录制中=红色方块（带呼吸感）
+          // 录制：开始=红色圆点，录制中=红色方块
           IconButton(
             icon: Icon(
               c.isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
@@ -307,6 +308,17 @@ class BottomProgramPanel extends StatelessWidget {
         _btn(Icons.list, '频道列表', onOpenChannels),
         _btn(Icons.menu_book, '节目单', onOpenEpg),
         _btn(Icons.settings, '设置', onOpenSettings),
+        // 投屏：投屏连接时红色高亮，点击断开并恢复投屏前频道；
+        // 未投屏时灰色不可点
+        IconButton(
+          icon: Icon(
+            c.isCasting ? Icons.cast_connected : Icons.cast,
+            color: c.isCasting ? Colors.redAccent : Colors.white24,
+            size: 24,
+          ),
+          onPressed: c.isCasting ? c.stopCastAndRestore : null,
+          tooltip: c.isCasting ? '断开投屏' : '未投屏',
+        ),
       ],
     );
   }

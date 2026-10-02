@@ -74,21 +74,25 @@ jobs:
           find "$HOME/.pub-cache" -path "*flutter_inappwebview_android-*/android/build.gradle" -print0 \
             | xargs -0 -r sed -i "s/proguard-android\.txt/proguard-android-optimize.txt/g"
 
-      - name: Cache Android debug keystore
+      - name: Cache Android keystore
+        id: ks-cache
         uses: actions/cache@v4
         with:
           path: /home/runner/.android/debug.keystore
-          key: omplayer-debug-keystore-v1
+          key: omplayer-keystore-v2
 
-      - name: Ensure stable debug keystore
+      - name: Ensure stable keystore
         run: |
           mkdir -p "$HOME/.android"
-          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+          # 仅在缓存未命中时生成：runner 镜像自带的 debug.keystore 随镜像
+          # 版本变化（每次签名不同导致无法覆盖安装），先删掉再用固定参数生成
+          if [ "${{ steps.ks-cache.outputs.cache-hit }}" != "true" ]; then
+            rm -f "$HOME/.android/debug.keystore"
             keytool -genkey -v \
               -keystore "$HOME/.android/debug.keystore" \
               -storepass android -alias androiddebugkey -keypass android \
               -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+              -dname "CN=OMPlayer,O=OMPlayer,C=CN"
           fi
 
       - name: Build APK

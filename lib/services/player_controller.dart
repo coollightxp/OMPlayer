@@ -72,19 +72,16 @@ class PlayerController extends ChangeNotifier {
   int _watchPosMs = -1;
   DateTime? _watchAdvanceAt;
   bool _stallNudged = false;
-  bool _stallReinitTried = false;
-  // 防止投屏重建并发（上一次重建未完成又触发）
-  bool _castRecovering = false;
+  // 整场投屏是否已重建过（所有自愈路径统一守门，只重建一次）
+  bool _castReinitDone = false;
 
   // 投屏诊断：1 秒一次状态采样 + buffering 持续超时自愈
   DateTime? _lastCastTickAt;
   bool _wasBuffering = false;
   DateTime? _bufferingSince;
-  bool _bufferReinitTried = false;
 
   // 有声无画面看门狗：音频在播但视频尺寸长时间为 0（解码链视频轨没起来）
   DateTime? _noVideoSince;
-  bool _noVideoReinitTried = false;
   // 投屏 initialize 15s 超时后，用同一 URL 原地重拉一次（偶发首拉视频轨不起）
   bool _castInitRetried = false;
 
@@ -555,13 +552,11 @@ class PlayerController extends ChangeNotifier {
     _watchPosMs = -1;
     _watchAdvanceAt = null;
     _stallNudged = false;
-    _stallReinitTried = false;
+    _castReinitDone = false;
     _lastCastTickAt = null;
     _wasBuffering = false;
     _bufferingSince = null;
-    _bufferReinitTried = false;
     _noVideoSince = null;
-    _noVideoReinitTried = false;
     _castInitRetried = false;
     CastLog.write(
         'cast play: title="$title" url=$url');
@@ -580,9 +575,11 @@ class PlayerController extends ChangeNotifier {
   /// 初始化会覆盖点播（进度条消失、假重试、有声无画的根因）。
   Future<void> stopCastAndRestore() async {
     if (!_isCasting) return;
+    // 恢复延迟已在途：保持原 timer，不取消/重置。
+    // 看门狗或重复点击若不断重置这个 timer，会导致几十秒无法真正断开
+    if (_castRestoreTimer != null) return;
     _castEndedTimer?.cancel();
     _castEndedTimer = null;
-    _castRestoreTimer?.cancel();
     _castRestoreTimer = Timer(const Duration(milliseconds: 800), () {
       _castRestoreTimer = null;
       _doStopCastAndRestore();
@@ -1574,13 +1571,18 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 投屏卡顿看门狗（500ms 一次）：
-  /// - 播放中位置超过 12 秒不推进，先尝试 play() 轻推；25 秒仍不动则重新拉流
-  /// - isBuffering 持续超过 10 秒（网络断流但未报错）直接重新拉流
-  /// - 播放中视频尺寸持续 8 秒为 0（有声无画）重新拉流
-  /// - 每秒采样一行状态到诊断日志（含视频尺寸，定位解码层卡死/有声无画）
+  /// 投屏卡顿看门狗（500ms 一次）。
+  ///
+  /// 整场投屏【只重建一次】（[_castReinitDone] 统一守门，所有路径共用）：
+  /// - 未重建：位置 12 秒不推进先 play() 轻推，25 秒仍不动则重建；
+  ///   buffering 持续 30 秒则重建；有声无画 8 秒则重建
+  /// - 已重建：再卡/再缓冲 20 秒即判定流不可恢复，断开并恢复投屏前频道
+  /// - 每秒采样一行状态到诊断日志
   void _checkCastStall() {
     if (!_isCasting) return;
+    // 「恢复投屏前频道」的 800ms 延迟已在途时不再做任何检测/触发，
+    // 否则重复调用会把恢复 timer 无限重置（表现为几十秒无法真正断开）
+    if (_castRestoreTimer != null) return;
     final vc = _videoController;
     if (vc == null) return;
     final now = DateTime.now();
@@ -1629,96 +1631,103 @@ class PlayerController extends ChangeNotifier {
           'buf=$isBuf play=$isPlay done=$done size=${vw}x$vh state=$_state');
     }
 
-    // 持续 buffering 超过 20 秒：流已断但内核没报错，干净重建。
-    // 长视频（视频号 1 小时等）正常网络缓冲可能持续 10~15 秒，超时不能太短
-    if (isBuf &&
-        !_bufferReinitTried &&
-        _bufferingSince != null &&
-        now.difference(_bufferingSince!).inSeconds >= 20) {
-      _bufferReinitTried = true;
-      CastLog.write('cast buffering >20s, trigger recovery');
-      _recoverCastPlayback();
-      return;
+    // buffering：未重建持续 30 秒→重建；已重建再持续 20 秒→放弃。
+    // 长视频（视频号 1 小时等）正常网络缓冲可能持续 10~20 秒，超时不能太短
+    if (isBuf && _bufferingSince != null) {
+      final bufSecs = now.difference(_bufferingSince!).inSeconds;
+      if (!_castReinitDone && bufSecs >= 30) {
+        _triggerCastRecovery('buffering >30s');
+        return;
+      }
+      if (_castReinitDone && bufSecs >= 20) {
+        CastLog.write(
+            'cast buffering persists after recovery (${bufSecs}s), auto-restore');
+        stopCastAndRestore();
+        return;
+      }
     }
 
     if (_state != PlayerState.playing) return;
-    // 正在缓冲时不判 stall：缓冲时位置本就不推进，已有上面的缓冲超时
-    // 专门处理；若再叠加 stall 计时会在正常缓冲时误触发重建
+    // 正在缓冲时不判 stall：缓冲时位置本就不推进，已有上面的缓冲超时处理
     if (isBuf) return;
 
-    // 有声无画：位置时钟照走但视频尺寸长时间为 0，视频解码轨没恢复，
-    // 重建一次拉流（整场投屏只重建一次，避免死循环）
+    // 有声无画：位置时钟照走但视频尺寸长时间为 0
     if (noVideo) {
       _noVideoSince ??= now;
-      if (!_noVideoReinitTried &&
-          now.difference(_noVideoSince!).inSeconds >= 8) {
-        _noVideoReinitTried = true;
-        CastLog.write('cast audio-only (video size 0) >8s, trigger recovery');
-        _recoverCastPlayback();
+      final nvSecs = now.difference(_noVideoSince!).inSeconds;
+      if (!_castReinitDone && nvSecs >= 8) {
+        _triggerCastRecovery('audio-only (size 0) >8s');
+      } else if (_castReinitDone && nvSecs >= 15) {
+        CastLog.write('cast audio-only persists after recovery, auto-restore');
+        stopCastAndRestore();
       }
     } else {
       _noVideoSince = null;
     }
 
+    // stall：位置不推进（非缓冲）
     if (posMs != _watchPosMs) {
       _watchPosMs = posMs;
       _watchAdvanceAt = now;
       _stallNudged = false;
-      _stallReinitTried = false;
       return;
     }
     _watchAdvanceAt ??= now;
     final stalledMs = now.difference(_watchAdvanceAt!).inMilliseconds;
-    if (!_stallNudged && stalledMs >= 12000) {
-      _stallNudged = true;
-      CastLog.write('cast stall detected (${stalledMs}ms), nudge play()');
-      vc.play().catchError((_) {});
-    } else if (_stallNudged &&
-        !_stallReinitTried &&
-        stalledMs >= 25000) {
-      _stallReinitTried = true;
-      _recoverCastPlayback();
-    } else if (_stallReinitTried && stalledMs >= 40000) {
-      // 重建后位置仍不推进（流真断了，如直播间关播），切回投屏前频道
-      CastLog.write('cast stall persisted after recovery, auto-restore');
+    if (!_castReinitDone) {
+      if (!_stallNudged && stalledMs >= 12000) {
+        _stallNudged = true;
+        CastLog.write('cast stall detected (${stalledMs}ms), nudge play()');
+        vc.play().catchError((_) {});
+      } else if (_stallNudged && stalledMs >= 25000) {
+        _triggerCastRecovery('stall >25s');
+      }
+    } else if (stalledMs >= 20000) {
+      // 重建后观察期位置仍不推进：流真断了（如直播间关播）
+      CastLog.write('cast stall persists after recovery, auto-restore');
       stopCastAndRestore();
     }
   }
 
+  /// 触发投屏自愈重建（整场投屏只允许一次）
+  void _triggerCastRecovery(String reason) {
+    if (_castReinitDone) return;
+    _castReinitDone = true;
+    CastLog.write('cast recovery triggered: $reason');
+    _recoverCastPlayback();
+  }
+
   /// 投屏流卡死的最终自愈：销毁内核、用同一 URL 重新拉流。
-  /// 点播从上次位置续播，直播从头缓冲。整场投屏只重建一次，避免死循环。
+  /// 点播等内核 ready 后从上次位置续播，直播从头缓冲。
   Future<void> _recoverCastPlayback() async {
-    // 重建并发保护：上一次重建未完成直接忽略，避免连续两次 initialize
-    if (_castRecovering) return;
     final ch = _currentChannel;
     if (ch == null) return;
-    _castRecovering = true;
     final savedPos = _videoController?.value.position ?? Duration.zero;
     final isLive = duration <= Duration.zero;
     CastLog.write(
-        'cast stall recovery: re-init player (live=$isLive, pos=$savedPos)');
-    try {
-      await _playCurrentSource();
-      if (!isLive && savedPos > const Duration(seconds: 2)) {
-        try {
-          await _videoController?.seekTo(savedPos);
-        } catch (_) {}
+        'cast recovery: re-init player (live=$isLive, pos=$savedPos)');
+    await _playCurrentSource();
+    if (!isLive && savedPos > const Duration(seconds: 2)) {
+      // 等内核真正 ready（initialized 且不缓冲）再 seek，最多等 10 秒。
+      // init 刚完成立即 seek 可能挂起内核（新流在 62 秒处永久缓冲的根因）
+      for (var i = 0; i < 20; i++) {
+        final nv = _videoController?.value;
+        if (nv != null && nv.isInitialized && !nv.isBuffering) break;
+        await Future.delayed(const Duration(milliseconds: 500));
       }
-      // 关键：重建后重置全部看门狗状态，给新流一个干净的开始。
-      // 否则 _watchAdvanceAt/_bufferingSince 仍是重建前的旧时间，
-      // 新流正常缓冲会被立即误判为 stall，几十秒内连锁误断开
-      _watchPosMs = -1;
-      _watchAdvanceAt = null;
-      _stallNudged = false;
-      _stallReinitTried = false;
-      _bufferReinitTried = false;
-      _bufferingSince = null;
-      _wasBuffering = false;
-      _noVideoSince = null;
-      _noVideoReinitTried = false;
-    } finally {
-      _castRecovering = false;
+      try {
+        await _videoController?.seekTo(savedPos);
+      } catch (_) {}
     }
+    // 重置观察计时，给新流一个干净的开始（不动 _castReinitDone）。
+    // 否则 _watchAdvanceAt/_bufferingSince 仍是重建前的旧时间，
+    // 新流正常缓冲会被立即误判
+    _watchPosMs = -1;
+    _watchAdvanceAt = null;
+    _stallNudged = false;
+    _bufferingSince = null;
+    _wasBuffering = false;
+    _noVideoSince = null;
   }
 
   /// 获取当前播放节目信息
