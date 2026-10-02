@@ -1708,16 +1708,31 @@ class PlayerController extends ChangeNotifier {
         'cast recovery: re-init player (live=$isLive, pos=$savedPos)');
     await _playCurrentSource();
     if (!isLive && savedPos > const Duration(seconds: 2)) {
-      // 等内核真正 ready（initialized 且不缓冲）再 seek，最多等 10 秒。
-      // init 刚完成立即 seek 可能挂起内核（新流在 62 秒处永久缓冲的根因）
+      // 等内核真正开始播放再 seek：
+      // 仅 isInitialized && !isBuffering 不够——init 完成后有极短的
+      // 非缓冲窗口，此时 seek 会挂死内核（新流在断点处永久缓冲）。
+      // 要求位置已实际推进（>0.3s）且在播放中，最多等 10 秒。
+      var ready = false;
       for (var i = 0; i < 20; i++) {
         final nv = _videoController?.value;
-        if (nv != null && nv.isInitialized && !nv.isBuffering) break;
+        if (nv != null &&
+            nv.isInitialized &&
+            !nv.isBuffering &&
+            nv.isPlaying &&
+            nv.position.inMilliseconds > 300) {
+          ready = true;
+          break;
+        }
         await Future.delayed(const Duration(milliseconds: 500));
       }
-      try {
-        await _videoController?.seekTo(savedPos);
-      } catch (_) {}
+      if (ready) {
+        try {
+          await _videoController?.seekTo(savedPos);
+        } catch (_) {}
+      } else {
+        // 10 秒都没正常起播：宁可从头播放，也不 seek 进可能挂死的断点
+        CastLog.write('cast recovery: not ready, seek skipped');
+      }
     }
     // 重置观察计时，给新流一个干净的开始（不动 _castReinitDone）。
     // 否则 _watchAdvanceAt/_bufferingSince 仍是重建前的旧时间，

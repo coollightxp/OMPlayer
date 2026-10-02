@@ -98,6 +98,15 @@ jobs:
       - name: Build APK
         run: flutter build apk --release --split-per-abi
 
+      - name: Rename APKs for release
+        run: |
+          cd build/app/outputs/flutter-apk
+          for abi in armeabi-v7a arm64-v8a x86_64; do
+            if [ -f "app-$abi-release.apk" ]; then
+              mv "app-$abi-release.apk" "OMPlayer-android-$abi.apk"
+            fi
+          done
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -108,7 +117,7 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: build/app/outputs/flutter-apk/*.apk
+          files: build/app/outputs/flutter-apk/OMPlayer-android-*.apk
 
   # ==================== Web ====================
   build-web:

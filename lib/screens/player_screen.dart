@@ -1133,8 +1133,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   void _toggleBottomPanel() {
     final c = context.read<PlayerController>();
-    // 未播放时面板常驻，不响应点击隐藏
-    if (c.state != PlayerState.playing) return;
+    // 网页模式下没有原生播放状态（_state 通常仍是 loading），
+    // 不能用 state==playing 拦截，否则左右点击永远呼不出面板
+    if (!c.webPageActive && c.state != PlayerState.playing) return;
     setState(() {
       _bottomPanelVisible = !_bottomPanelVisible;
       if (_bottomPanelVisible) {

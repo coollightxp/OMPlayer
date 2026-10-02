@@ -48,38 +48,27 @@ class OMPlayerApp extends StatelessWidget {
           ),
           builder: (context, child) {
             final mq = MediaQuery.of(context);
-            // 两级缩放相乘：
-            //  formFactor（设备形态，用最短边判断——手机横屏宽是长边）：
-            //    安卓手机<600 → 0.72；小平板<720 → 0.9；其余 → 1.0
-            //  userFactor（用户在设置里的「界面缩放」）：
-            //    自动 → TV 按物理宽度放大；手动 → 用户选定值
+            // 全局文字缩放只反映用户在设置里的「界面缩放」：
+            //   自动 → 大屏按物理宽度放大（TV 1080p=1.0/2K≈1.33/4K=2.0/8K=3.0），
+            //          手机/小平板不放大（1.0）；
+            //   手动 → 用户选定值（0.8~3.0）
+            // 设备形态（手机面板整体缩小）不在这里做，否则会与各面板的
+            // ScaledPanel Transform 缩放叠加（面板里文字被缩两次，变得极小）。
             final shortest = mq.size.shortestSide;
             final isAndroid = !kIsWeb &&
                 defaultTargetPlatform == TargetPlatform.android;
-            double formFactor;
-            if (isAndroid && shortest < 600) {
-              formFactor = 0.72;
-            } else if (isAndroid && shortest < 720) {
-              formFactor = 0.9;
-            } else {
-              formFactor = 1.0;
-            }
-            double userFactor;
+            final isSmallAndroid = isAndroid && shortest < 720;
+            double scale;
             if (controller.settings.uiScaleAuto) {
-              if (formFactor < 1.0) {
-                // 手机/小平板：自动模式不做 TV 物理宽度放大
-                userFactor = 1.0;
+              if (isSmallAndroid) {
+                scale = 1.0;
               } else {
-                // 按屏幕【物理像素】宽度（乘 devicePixelRatio，不受系统 DPI 影响）：
-                // 1080p=1.0，2K≈1.33，4K=2.0，8K=3.0
                 final physicalW = mq.size.width * mq.devicePixelRatio;
-                userFactor = (physicalW / 1920.0).clamp(1.0, 3.0);
+                scale = (physicalW / 1920.0).clamp(1.0, 3.0);
               }
             } else {
-              userFactor =
-                  controller.settings.uiScale.clamp(0.8, 3.0);
+              scale = controller.settings.uiScale.clamp(0.8, 3.0);
             }
-            final scale = formFactor * userFactor;
             return MediaQuery(
               data: mq.copyWith(textScaler: TextScaler.linear(scale)),
               child: child!,
