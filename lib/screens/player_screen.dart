@@ -416,7 +416,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // - 网页频道前台播放：空层（让下方网页全屏显露）
                   // - 等待网络：显示网络等待提示
                   Positioned.fill(
-                    child: controller.state == PlayerState.waitingForNetwork
+                    // 隔离视频纹理：切换设置（如时钟）导致 Stack 重建/重排时，
+                    // 视频层独立合成，避免纹理被牵连重绘出现灰死
+                    child: RepaintBoundary(
+                      child: controller.state == PlayerState.waitingForNetwork
                         ? Container(
                             color: Colors.black,
                             child: Center(
@@ -471,20 +474,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                                     ),
                                   )
                                 : const SizedBox.shrink()),
+                    ),
                   ),
 
-                  // 桌面端亮度调节遮罩：仅普通视频层生效。
-                  // 网页频道用 WebView2 原生 HWND，Flutter 半透明层盖上去
-                  // 会变成灰蒙蒙，所以网页频道走系统亮度调节，不叠 Flutter 遮罩
-                  if (controller.isDesktop && !controller.webPageActive)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: Container(
-                          color: Colors.black.withOpacity(
-                              (1.0 - controller.brightness) * 0.9),
-                        ),
-                      ),
-                    ),
+                  // 亮度说明：不再使用全屏遮罩——它与 ScreenBrightness 的
+  // 原生亮度调节重复，且会让视频画面常驻一层灰蒙蒙；桌面（gamma ramp）与
+  // 安卓（系统亮度）统一走原生亮度，网页频道同理。
 
                   // 切台 OSD（左上角序号/台名/节目名）
                   // 放在手势层与各面板【之下】：面板滑出时盖住它，

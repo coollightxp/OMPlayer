@@ -424,9 +424,15 @@ class DlnaService {
   Future<void> _handleRequest(HttpRequest req) async {
     try {
       final path = req.uri.path;
+      // 记录每一个 HTTP 请求：定位非标准发送端（如抖音极速版）实际发出的
+      // 完整请求序列（订阅/轮询/探测），而不只是 SOAP
+      CastLog.write(
+          'HTTP ${req.method} $path from=${req.connectionInfo?.remoteAddress.address}');
       if (req.method == 'GET' || req.method == 'HEAD') {
         if (path == '/device.xml') {
           await _respondXml(req, _deviceXml());
+        } else if (path == '/icon.png') {
+          await _respondBytes(req, _iconPng, 'image/png');
         } else if (path == '/scpd/AVTransport.xml') {
           await _respondXml(req, _scpdAvTransport);
         } else if (path == '/scpd/RenderingControl.xml') {
@@ -1071,7 +1077,21 @@ class DlnaService {
     await req.response.close();
   }
 
+  Future<void> _respondBytes(
+      HttpRequest req, List<int> data, String mime) async {
+    req.response.headers.set(HttpHeaders.contentTypeHeader, mime);
+    req.response.headers.set('SERVER', 'OMPlayer/1.0 UPnP/1.0');
+    req.response.contentLength = data.length;
+    req.response.add(data);
+    await req.response.close();
+  }
+
   // ==================== 描述文件 ====================
+
+  /// device.xml 中 iconList 引用的 48x48 图标
+  static final List<int> _iconPng = base64Decode(_iconPngB64);
+  static const String _iconPngB64 =
+      'iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAQNSURBVGhD7ZjfS1RBFMf7OyzNMrUfumlpbRlaEbURJGGBUIktvYhZYigG/YCCkOjB6sGHihDBQiTqRSmQIHwRoQgfCoIFH3oqgnwSejjt93pnPc6eO3fu3ZVLcAc+sHvvzJn5zpw5c+ZuKClJ0P9MLCBqYgFREwuImlhA1BRVwKbyJqpuHqDa0yPUcGmG9nfN52i8POs833HsHm2uTontw1CwAAx6V+oBHbj2jQ7fJWua+n/Q7rNjBYsJLQADT5x5Ts03l8QBBmHP+TehhYQSUJnsokODP8XBYCUgrKqplyoa0muAC8GVpHYtd5Zp+5FbYn8mAgvA4PTOMWh0jlWR2khAIPaGbmtvxzRtLG0U20gEEgCf5Z3BfbAaUl1bttZdoIN9mTV2sUpSXQlrAVh+3knyyhcq23ZUrBsUrBz2AbeP/1JdHSsBmCVl+ONX8i1TUzM0N/fJ/UdUV5cvdHz8tft29b3ungi5ejsdXwHwRx4iP3z+7XbrXSCgp+eG+4+c37pdVSCUP+crARf1W2VfAYjxyiAiBTeYSrW7wyDnN55V1ayEQ8yqKpht1UZvp4vDhPE94edKvgK4MYjh7yQBJ9Mj1PUkQ8kTvc5KqFJZmcy1Gxp67D6V3QshV/WJSTNFN6MA7vtYTj28eQkYnCCHR5Pf3bdEbW3pXLtMZtF5prsPB0FC9W06H4wC+KaSltJPwO3VfUrPXkw677lrSXtDwV3XFFaNApCQKSM4ePT3fgLAfMatkC2t3WPUN3Df/bfWrXTKd7bm+kbeJNUBRgE8+sCd9Pc2AkZn3QrZ8nCaaGHxr/P75au3efY4cFfVN5DqAKMAnu9IyZaNAO5G7xbcH9ny9P0fqmk8l2eT49c/MArgEQhLqr+3EQC4G6myr+Vinj0d1Tfwyo+MAnjmKOU8tgK4G6Ho54IEzhvVN1ZCqgOMAurbJ3JGkAvp720FDIz+cmutlM7Oq3m2dHCzU30jpEp1gFEAIo8yYooEHC7g+ugSHe8YptIy+/RYwSOgNHkKowD4Hb9x2aTOENA/vuyEzPIK+/sBB+6DE1j1a7qtGQUAfgfApvbaTIr65nQuHwoLn32T+wBfAZgNvgo4naV6xYL7PpDOH46vAIC8nBu1ydPDgCSOuw6CiFSPYyUA6JfxYovATPOVRtCwuWNbC4Ax/dsPErwgF3kv9JsYBm/7mcVaAMB+gHHeGQ4ZhLmgQhAMkHHq9rAKW2rNKQYnkACAgfJrHwefSWpODXvOHiYArocoI31XgpuijtTWi8ACFDgT9NmTQBjkG1MCYsLuqdACFF4fqGzABGDgfmeLiYIFKLD0uPrhy5q+2fmA4SbwfSm7DUPRBHiB2F7IDPux7gLWm1hA1MQCoiYWEC0J+gfTHkI1puDBvgAAAABJRU5ErkJggg==';
 
   static const String _scpdAvTransport =
       '''<?xml version="1.0" encoding="utf-8"?>
@@ -1267,7 +1287,8 @@ class DlnaService {
 </scpd>''';
 
   String _deviceXml() => '<?xml version="1.0" encoding="utf-8"?>'
-      '<root xmlns="urn:schemas-upnp-org:device-1-0">'
+      '<root xmlns="urn:schemas-upnp-org:device-1-0" '
+      'xmlns:dlna="urn:schemas-dlna-org:device-1-0">'
       '<specVersion><major>1</major><minor>0</minor></specVersion>'
       '<device>'
       '<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>'
@@ -1277,6 +1298,15 @@ class DlnaService {
       '<modelName>OMPlayer</modelName>'
       '<modelNumber>1.0</modelNumber>'
       '<UDN>uuid:$_uuid</UDN>'
+      // DLNA 互操作声明：标识为完整的 DMR-1.50 数字媒体渲染器。
+      // 抖音/乐播等国产投屏 SDK 据此启用清晰度选择等完整控制能力，
+      // 缺失时仅按基础 UPnP 设备降级投屏
+      '<dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC>'
+      '<dlna:X_DLNACAP/>'
+      '<iconList>'
+      '<icon><mimetype>image/png</mimetype><width>48</width><height>48</height>'
+      '<depth>32</depth><url>/icon.png</url></icon>'
+      '</iconList>'
       '<serviceList>'
       '<service>'
       '<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>'
