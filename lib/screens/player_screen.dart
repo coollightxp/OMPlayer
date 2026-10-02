@@ -946,19 +946,20 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     children: [
                       Text(
                         number != null ? number.toString().padLeft(2, '0') : '--',
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.blueAccent,
-                          fontSize: 48,
+                          // 手机上 48 过大，缩到 30
+                          fontSize: isPhone ? 30 : 48,
                           fontWeight: FontWeight.bold,
                           height: 1,
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      SizedBox(width: isPhone ? 8 : 12),
                       Text(
                         ch?.name ?? '',
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.white,
-                          fontSize: 18,
+                          fontSize: isPhone ? 15 : 18,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -967,24 +968,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 第二行：正在直播 + 当前节目
                   if (program != null && program.isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(top: 8),
+                      padding: EdgeInsets.only(top: isPhone ? 5 : 8),
                       child: Text(
                         '正在直播 · $program',
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.white70,
-                          fontSize: 14,
+                          fontSize: isPhone ? 12 : 14,
                         ),
                       ),
                     ),
                   // 数字选台输入提示
                   if (_numBuffer.isNotEmpty)
                     Padding(
-                      padding: const EdgeInsets.only(top: 8),
+                      padding: EdgeInsets.only(top: isPhone ? 5 : 8),
                       child: Text(
                         '输入: $_numBuffer',
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.blueAccent,
-                          fontSize: 14,
+                          fontSize: isPhone ? 12 : 14,
                           fontWeight: FontWeight.bold,
                         ),
                       ),

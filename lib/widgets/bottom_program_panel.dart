@@ -95,7 +95,10 @@ class BottomProgramPanel extends StatelessWidget {
               child: SafeArea(
                 top: false,
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(22, 16, 18, 10),
+                  // 手机上收紧内边距，把空间留给节目信息文字
+                  padding: scale < 1
+                      ? const EdgeInsets.fromLTRB(14, 10, 10, 8)
+                      : const EdgeInsets.fromLTRB(22, 16, 18, 10),
                   child: Consumer<PlayerController>(
                     builder: (context, c, _) => Column(
                       mainAxisSize: MainAxisSize.min,
@@ -104,9 +107,9 @@ class BottomProgramPanel extends StatelessWidget {
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            _buildLogo(c),
-                            const SizedBox(width: 28),
-                            Expanded(child: _buildInfo(c)),
+                            _buildLogo(c, scale),
+                            SizedBox(width: scale < 1 ? 10 : 28),
+                            Expanded(child: _buildInfo(c, scale)),
                             Flexible(
                               flex: 0,
                               child: FittedBox(
@@ -131,21 +134,23 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 台标 ====================
 
-  Widget _buildLogo(PlayerController c) {
-    const size = 128.0;
+  Widget _buildLogo(PlayerController c, double scale) {
+    // 手机上台标 128 过大、严重挤占节目信息：缩到 64
+    final size = scale < 1 ? 64.0 : 128.0;
     final logo = c.currentLogo;
     Widget placeholder() => Container(
           width: size,
           height: size,
           decoration: BoxDecoration(
             color: Colors.white12,
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
           ),
-          child: const Icon(Icons.live_tv, color: Colors.white54, size: 64),
+          child: Icon(Icons.live_tv,
+              color: Colors.white54, size: scale < 1 ? 32 : 64),
         );
     if (logo.isEmpty) return placeholder();
     return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
       child: Image.network(
         logo,
         width: size,
@@ -158,7 +163,7 @@ class BottomProgramPanel extends StatelessWidget {
 
   // ==================== 节目信息 ====================
 
-  Widget _buildInfo(PlayerController c) {
+  Widget _buildInfo(PlayerController c, double scale) {
     final info = c.getNowPlayingInfo();
     final current = c.currentProgram;
     final next = c.nextProgram;
@@ -171,15 +176,15 @@ class BottomProgramPanel extends StatelessWidget {
         // 大字：当前节目名（无 EPG 时显示频道名）
         Text(
           current?.title ?? (hasChannel ? info.channelName : '未选择频道'),
-          style: const TextStyle(
+          style: TextStyle(
             color: Colors.white,
-            fontSize: 22,
+            fontSize: scale < 1 ? 17 : 22,
             fontWeight: FontWeight.bold,
           ),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        const SizedBox(height: 5),
+        SizedBox(height: scale < 1 ? 3 : 5),
         // 时段 / 频道 / 分辨率 / 线路
         Wrap(
           spacing: 10,
