@@ -1481,7 +1481,7 @@ class PlayerController extends ChangeNotifier {
     try {
       final vc = _videoController;
       CastLog.write(
-          '$tag state=$_state playing=${vc?.value.isPlaying} init=${vc?.value.isInitialized} tex=${vc?.textureId} size=${vc?.value.size}');
+          '$tag state=$_state playing=${vc?.value.isPlaying} init=${vc?.value.isInitialized} size=${vc?.value.size}');
     } catch (e) {
       CastLog.write('$tag texture log failed: $e');
     }
