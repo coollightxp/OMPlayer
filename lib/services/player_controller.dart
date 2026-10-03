@@ -1625,6 +1625,10 @@ class PlayerController extends ChangeNotifier {
     CastLog.write('seekTo(${position.inSeconds}s) dur=${rawDur.inSeconds}s');
     await _videoController?.seekTo(position);
     CastLog.write('seekTo(${position.inSeconds}s) done pos=${_videoController?.value.position.inSeconds}s');
+    // seek 后位置会立即变化，重置看门狗观察计时，避免误判为卡顿
+    _watchPosMs = -1;
+    _watchAdvanceAt = null;
+    _stallNudged = false;
     notifyListeners();
   }
 
