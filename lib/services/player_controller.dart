@@ -82,6 +82,9 @@ class PlayerController extends ChangeNotifier {
   int _watchPosMs = -1;
   DateTime? _watchAdvanceAt;
   bool _stallNudged = false;
+  // seek 后给看门狗 30 秒宽限期：长视频 seek 到远处缓冲慢，期间 position
+  // 暂时停在目标点不动，若按正常 12 秒计时会被误判为卡顿而触发重建
+  DateTime? _seekGraceUntil;
   // 整场投屏是否已重建过（所有自愈路径统一守门，只重建一次）
   bool _castReinitDone = false;
 
@@ -1629,6 +1632,8 @@ class PlayerController extends ChangeNotifier {
     _watchPosMs = -1;
     _watchAdvanceAt = null;
     _stallNudged = false;
+    // 长视频 seek 到远处缓冲慢（可能超过 12 秒），给看门狗 30 秒宽限期
+    _seekGraceUntil = DateTime.now().add(const Duration(seconds: 30));
     notifyListeners();
   }
 
@@ -1704,6 +1709,8 @@ class PlayerController extends ChangeNotifier {
     }
     _watchAdvanceAt ??= now;
     final stalledMs = now.difference(_watchAdvanceAt!).inMilliseconds;
+    // seek 后宽限期：长视频缓冲慢，期间不检查卡顿
+    if (_seekGraceUntil != null && now.isBefore(_seekGraceUntil!)) return;
     if (!_castReinitDone) {
       if (!_stallNudged && stalledMs >= 12000) {
         _stallNudged = true;
