@@ -94,6 +94,11 @@ class PlayerController extends ChangeNotifier {
   // 推进（只是慢），不应判定卡死；-1 表示尚无观测
   int _lastBufferedEndMs = -1;
 
+  // 诊断探针：投屏 seek 后每 5 秒采样位置/缓冲/已缓冲末尾，最长 2 分钟
+  Timer? _castSeekProbeTimer;
+  DateTime? _castSeekProbeStart;
+  int _castSeekProbeTargetMs = 0;
+
   // 有声无画面看门狗：音频在播但视频尺寸长时间为 0（解码链视频轨没起来）
   DateTime? _noVideoSince;
   // 投屏 initialize 15s 超时后，用同一 URL 原地重拉一次（偶发首拉视频轨不起）
@@ -567,6 +572,14 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     CastLog.write('cast play url: $title');
+    // 诊断：记录 URL 类型与 host（不落完整 URL 里的鉴权参数）
+    try {
+      final u = Uri.parse(url);
+      final lu = url.toLowerCase();
+      CastLog.write('cast url host=${u.host} '
+          'isHls=${lu.contains('.m3u8') || lu.contains('.m3u')} '
+          'len=${url.length}');
+    } catch (_) {}
     _preCastChannel ??=
         (_currentChannel?.id.startsWith('__dlna_cast__') ?? false)
             ? null
@@ -579,6 +592,8 @@ class PlayerController extends ChangeNotifier {
     _castReinitDone = false;
     _bufferingSince = null;
     _lastBufferedEndMs = -1;
+    _castSeekProbeTimer?.cancel();
+    _castSeekProbeTimer = null;
     _noVideoSince = null;
     _castInitRetried = false;
     final cast = Channel(
@@ -1644,7 +1659,49 @@ class PlayerController extends ChangeNotifier {
     // 也不累积 buffering 超时（见 _checkCastStall）。
     _seekGraceUntil =
         DateTime.now().add(Duration(seconds: _isCasting ? 60 : 30));
+    if (_isCasting) _startCastSeekProbe(position.inMilliseconds);
     notifyListeners();
+  }
+
+  /// 诊断探针：投屏 seek 后每 5 秒采样一次播放状态，最长 2 分钟。
+  /// 用于定位「seek 后迟迟不开播」时内核到底在干什么：
+  /// pos 不动 + bufEnd 增长缓慢 = 下载限速；bufEnd 不动 = 下载停滞；
+  /// pos 越过目标且不再缓冲 = 已续播，停止采样。
+  void _startCastSeekProbe(int targetMs) {
+    _castSeekProbeTimer?.cancel();
+    _castSeekProbeStart = DateTime.now();
+    _castSeekProbeTargetMs = targetMs;
+    CastLog.write('probe start target=${(targetMs / 1000).round()}s');
+    _castSeekProbeTimer =
+        Timer.periodic(const Duration(seconds: 5), (t) {
+      final vc = _videoController;
+      final start = _castSeekProbeStart;
+      if (vc == null || start == null || !_isCasting) {
+        t.cancel();
+        _castSeekProbeTimer = null;
+        return;
+      }
+      final v = vc.value;
+      var bufEnd = 0;
+      for (final r in v.buffered) {
+        if (r.end.inMilliseconds > bufEnd) bufEnd = r.end.inMilliseconds;
+      }
+      final el = DateTime.now().difference(start).inSeconds;
+      CastLog.write('probe +${el}s pos=${v.position.inSeconds}s '
+          'buf=${v.isBuffering} playing=${v.isPlaying} '
+          'bufEnd=${(bufEnd / 1000).round()}s '
+          'size=${v.size.width.toInt()}x${v.size.height.toInt()}');
+      if (v.position.inMilliseconds > _castSeekProbeTargetMs + 2000 &&
+          !v.isBuffering) {
+        CastLog.write('probe resumed pos=${v.position.inSeconds}s');
+        t.cancel();
+        _castSeekProbeTimer = null;
+      } else if (el >= 120) {
+        CastLog.write('probe timeout(120s)');
+        t.cancel();
+        _castSeekProbeTimer = null;
+      }
+    });
   }
 
   /// 投屏卡顿看门狗（500ms 一次）。
