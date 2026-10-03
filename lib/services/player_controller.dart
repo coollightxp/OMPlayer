@@ -1106,6 +1106,16 @@ class PlayerController extends ChangeNotifier {
     final headers = <String, String>{};
     if (channel.userAgent.trim().isNotEmpty) {
       headers['User-Agent'] = channel.userAgent.trim();
+    } else if (_isCasting && rawUrl.contains('finder.video.qq.com')) {
+      // 实验：视频号 CDN 断点续传请求有约 10~25 秒「死寂期」才回数据
+      // （疑似无 UA 裸请求被挂起后超时重试）。补微信 UA + Referer
+      // 模拟手机端，验证能否消除死寂。仅投屏且该域名生效，不影响其他源。
+      headers['User-Agent'] =
+          'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, '
+          'like Gecko) Version/4.0 Chrome/107.0.0.0 Mobile Safari/537.36 '
+          'MicroMessenger/8.0.32';
+      headers['Referer'] = 'https://channels.weixin.qq.com/';
+      CastLog.write('cast headers: finder UA experiment');
     }
 
     // ExoPlayer（安卓）不嗅探内容：live.php?id=... 这类脚本入口 302 跳到
