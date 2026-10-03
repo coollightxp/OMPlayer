@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'cast_log.dart';
+
 /// DLNA/UPnP 回调集合：由播放器注入实际控制能力
 class DlnaHooks {
   final void Function(String url, String title) onPlay;
@@ -770,6 +772,7 @@ class DlnaService {
           _currentUri = _extract(body, 'CurrentURI');
           _currentTitle = _extractCastTitle(body);
           _currentMetaData = _extract(body, 'CurrentURIMetaData');
+          CastLog.write('DLNA SetURI title="$_currentTitle" uri=${_currentUri?.length ?? 0}ch');
           // 命令驱动状态：Macast 同款，SetURI 后先报 PAUSED 等 Play
           _cmdState = 'PAUSED_PLAYBACK';
           // 新地址：重置进度推送缓存
@@ -810,6 +813,7 @@ class DlnaService {
         case 'Seek':
           final target = _extract(body, 'Target');
           final d = _parseTime(target);
+          CastLog.write('DLNA Seek target="$target" parsed=$d');
           if (d != null) hooks.onSeek(d);
           await _soapResponse(req, service, action, '');
           _fireAvtChange();

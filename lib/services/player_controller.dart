@@ -22,6 +22,7 @@ import 'auto_launch.dart';
 import 'dlna_service.dart';
 import 'win_hotkeys.dart';
 import 'fvp_register.dart';
+import 'cast_log.dart';
 import 'format_hint.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
@@ -556,8 +557,10 @@ class PlayerController extends ChangeNotifier {
         _sourceIndex >= 0 &&
         _sourceIndex < _currentChannel!.streamUrls.length &&
         _currentChannel!.streamUrls[_sourceIndex] == url) {
+      CastLog.write('cast play SAME URL ignored: $title');
       return;
     }
+    CastLog.write('cast play url: $title');
     _preCastChannel ??=
         (_currentChannel?.id.startsWith('__dlna_cast__') ?? false)
             ? null
@@ -1615,9 +1618,13 @@ class PlayerController extends ChangeNotifier {
     final rawDur = _videoController?.value.duration ?? Duration.zero;
     if (_isCasting &&
         (rawDur <= Duration.zero || _isLiveDuration(rawDur))) {
+      CastLog.write(
+          'seekTo(${position.inSeconds}s) IGNORED rawDur=${rawDur.inSeconds}s (live/unknown)');
       return;
     }
+    CastLog.write('seekTo(${position.inSeconds}s) dur=${rawDur.inSeconds}s');
     await _videoController?.seekTo(position);
+    CastLog.write('seekTo(${position.inSeconds}s) done pos=${_videoController?.value.position.inSeconds}s');
     notifyListeners();
   }
 
@@ -1720,6 +1727,8 @@ class PlayerController extends ChangeNotifier {
     if (ch == null) return;
     final savedPos = _videoController?.value.position ?? Duration.zero;
     final isLive = duration <= Duration.zero;
+    CastLog.write(
+        'cast RECOVERY triggered savedPos=${savedPos.inSeconds}s isLive=$isLive');
     await _playCurrentSource();
     if (!isLive && savedPos > const Duration(seconds: 2)) {
       // 等内核真正开始播放再 seek：
@@ -1740,9 +1749,17 @@ class PlayerController extends ChangeNotifier {
         await Future.delayed(const Duration(milliseconds: 500));
       }
       if (ready) {
+        CastLog.write(
+            'cast RECOVERY resume seek ${savedPos.inSeconds}s');
         try {
           await _videoController?.seekTo(savedPos);
-        } catch (_) {}
+          CastLog.write(
+              'cast RECOVERY seek done pos=${_videoController?.value.position.inSeconds}s');
+        } catch (e) {
+          CastLog.write('cast RECOVERY seek FAILED: $e');
+        }
+      } else {
+        CastLog.write('cast RECOVERY ready timeout (10s), keeping from start');
       }
       // 10 秒都没正常起播：宁可从头播放，也不 seek 进可能挂死的断点
     }
