@@ -1103,19 +1103,11 @@ class PlayerController extends ChangeNotifier {
 
     // 频道声明的自定义 UA（M3U http-user-agent）：部分源（如 APTV）
     // 必须带指定 UA，否则返回 404/广告。fvp 经 ffmpeg 透传 HTTP 头。
+    // 注意：不要给投屏 URL 主动补 UA/Referer——视频号 CDN 实测对
+    // 带微信 UA 的断点请求直接挂死（v1.0.131 实验证伪，已回滚）。
     final headers = <String, String>{};
     if (channel.userAgent.trim().isNotEmpty) {
       headers['User-Agent'] = channel.userAgent.trim();
-    } else if (_isCasting && rawUrl.contains('finder.video.qq.com')) {
-      // 实验：视频号 CDN 断点续传请求有约 10~25 秒「死寂期」才回数据
-      // （疑似无 UA 裸请求被挂起后超时重试）。补微信 UA + Referer
-      // 模拟手机端，验证能否消除死寂。仅投屏且该域名生效，不影响其他源。
-      headers['User-Agent'] =
-          'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, '
-          'like Gecko) Version/4.0 Chrome/107.0.0.0 Mobile Safari/537.36 '
-          'MicroMessenger/8.0.32';
-      headers['Referer'] = 'https://channels.weixin.qq.com/';
-      CastLog.write('cast headers: finder UA experiment');
     }
 
     // ExoPlayer（安卓）不嗅探内容：live.php?id=... 这类脚本入口 302 跳到
