@@ -1938,6 +1938,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.white, fontSize: 14),
                   ),
+                  if (webEnvLastError.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    SelectableText(
+                      webEnvLastError,
+                      maxLines: 4,
+                      style: const TextStyle(
+                          color: Colors.white38, fontSize: 10),
+                    ),
+                  ],
                   const SizedBox(height: 14),
                   ElevatedButton.icon(
                     icon: const Icon(Icons.download, size: 18),
