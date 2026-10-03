@@ -239,41 +239,9 @@ class BottomProgramPanel extends StatelessWidget {
   // ==================== 点播进度条 ====================
 
   Widget _buildSeekBar(PlayerController c) {
-    final total = c.duration;
-    final pos = c.position;
-    final max = total.inMilliseconds.toDouble();
-    final value =
-        pos.inMilliseconds.clamp(0, max <= 0 ? 1 : max).toDouble();
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        children: [
-          Text(_clock(pos),
-              style: const TextStyle(color: Colors.white70, fontSize: 11)),
-          Expanded(
-            child: SliderTheme(
-              data: SliderThemeData(
-                trackHeight: 3,
-                thumbShape:
-                    const RoundSliderThumbShape(enabledThumbRadius: 6),
-                overlayShape:
-                    const RoundSliderOverlayShape(overlayRadius: 12),
-                activeTrackColor: Colors.blueAccent,
-                inactiveTrackColor: Colors.white24,
-                thumbColor: Colors.blueAccent,
-              ),
-              child: Slider(
-                value: value,
-                max: max <= 0 ? 1 : max,
-                onChanged: (v) =>
-                    c.seekTo(Duration(milliseconds: v.round())),
-              ),
-            ),
-          ),
-          Text(_clock(total),
-              style: const TextStyle(color: Colors.white70, fontSize: 11)),
-        ],
-      ),
+      child: _SeekBar(controller: c, clock: _clock),
     );
   }
 
@@ -347,6 +315,70 @@ class BottomProgramPanel extends StatelessWidget {
       icon: Icon(icon, color: Colors.white, size: 24),
       onPressed: onPressed,
       tooltip: tooltip,
+    );
+  }
+}
+
+/// 点播进度条。
+///
+/// 拖动过程中只更新本地预览位置，【松手时】(onChangeEnd) 才真正 seek：
+/// Slider.onChanged 在一次拖动中会连续回调几十次，若每次都 seekTo，
+/// 会反复打断播放内核对长视频远距位置的缓冲（投屏长视频拖动时表现为
+/// 画面卡死、随后被看门狗判定缓冲超时而销毁重建）。
+class _SeekBar extends StatefulWidget {
+  final PlayerController controller;
+  final String Function(Duration) clock;
+
+  const _SeekBar({required this.controller, required this.clock});
+
+  @override
+  State<_SeekBar> createState() => _SeekBarState();
+}
+
+class _SeekBarState extends State<_SeekBar> {
+  /// 拖动中的预览位置（毫秒）；未拖动时为 null，跟随实际播放位置
+  double? _dragMs;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final total = c.duration;
+    final max = total.inMilliseconds.toDouble();
+    final safeMax = max <= 0 ? 1.0 : max;
+    final pos = _dragMs ??
+        c.position.inMilliseconds.clamp(0, safeMax.round()).toDouble();
+    final value = pos.clamp(0, safeMax).toDouble();
+    return Row(
+      children: [
+        Text(widget.clock(Duration(milliseconds: value.round())),
+            style: const TextStyle(color: Colors.white70, fontSize: 11)),
+        Expanded(
+          child: SliderTheme(
+            data: SliderThemeData(
+              trackHeight: 3,
+              thumbShape:
+                  const RoundSliderThumbShape(enabledThumbRadius: 6),
+              overlayShape:
+                  const RoundSliderOverlayShape(overlayRadius: 12),
+              activeTrackColor: Colors.blueAccent,
+              inactiveTrackColor: Colors.white24,
+              thumbColor: Colors.blueAccent,
+            ),
+            child: Slider(
+              value: value,
+              max: safeMax,
+              onChangeStart: (v) => setState(() => _dragMs = v),
+              onChanged: (v) => setState(() => _dragMs = v),
+              onChangeEnd: (v) {
+                c.seekTo(Duration(milliseconds: v.round()));
+                setState(() => _dragMs = null);
+              },
+            ),
+          ),
+        ),
+        Text(widget.clock(total),
+            style: const TextStyle(color: Colors.white70, fontSize: 11)),
+      ],
     );
   }
 }

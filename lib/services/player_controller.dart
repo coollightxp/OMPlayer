@@ -1632,8 +1632,13 @@ class PlayerController extends ChangeNotifier {
     _watchPosMs = -1;
     _watchAdvanceAt = null;
     _stallNudged = false;
-    // 长视频 seek 到远处缓冲慢（可能超过 12 秒），给看门狗 30 秒宽限期
-    _seekGraceUntil = DateTime.now().add(const Duration(seconds: 30));
+    // 长视频 seek 到远处后播放内核要重新发起 Range 请求缓冲。
+    // 投屏点播 bufferSeconds=90，视频号等 CDN 远距 seek 实测缓冲可
+    // 超过 30 秒（旧固定 30 秒宽限刚过就被 buffering 看门狗销毁重建）：
+    // 投屏给 60 秒宽限，普通点播维持 30 秒。宽限期内既不判 stall，
+    // 也不累积 buffering 超时（见 _checkCastStall）。
+    _seekGraceUntil =
+        DateTime.now().add(Duration(seconds: _isCasting ? 60 : 30));
     notifyListeners();
   }
 
@@ -1641,7 +1646,8 @@ class PlayerController extends ChangeNotifier {
   ///
   /// 整场投屏【只重建一次】（[_castReinitDone] 统一守门，所有路径共用）：
   /// - 未重建：位置 12 秒不推进先 play() 轻推，25 秒仍不动则重建；
-  ///   buffering 持续 30 秒则重建；有声无画 8 秒则重建
+  ///   seek 宽限期结束后 buffering 再持续 30 秒则重建（宽限期内
+  ///   长视频远距 seek 的缓冲不计时）；有声无画 8 秒则重建
   /// - 已重建：再卡/再缓冲 20 秒即判定流不可恢复，断开并恢复投屏前频道
   void _checkCastStall() {
     if (!_isCasting) return;
@@ -1662,9 +1668,19 @@ class PlayerController extends ChangeNotifier {
     final vh = v.size.height.toInt();
     final noVideo = vw <= 0 || vh <= 0;
 
-    // buffering 持续计时
+    // buffering 持续计时。
+    // seek 宽限期内持续 buffering 是正常的（seek 到长视频远处后重新
+    // 缓冲，投屏 90 秒缓冲配置下可能持续 30~60 秒）：宽限期内把计时
+    // 基准不断刷新为当前时刻，使 30 秒超时从宽限结束后才开始累积——
+    // 否则「seek 后恰好缓冲 30 秒」会被误判卡死而销毁重建播放器。
+    final inSeekGrace =
+        _seekGraceUntil != null && now.isBefore(_seekGraceUntil!);
     if (isBuf) {
-      _bufferingSince ??= now;
+      if (inSeekGrace) {
+        _bufferingSince = now;
+      } else {
+        _bufferingSince ??= now;
+      }
     } else {
       _bufferingSince = null;
     }
