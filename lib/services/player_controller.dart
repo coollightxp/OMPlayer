@@ -90,6 +90,9 @@ class PlayerController extends ChangeNotifier {
 
   // buffering 持续超时自愈
   DateTime? _bufferingSince;
+  // 上次观察到的已缓冲末尾（ms）：缓冲中若该值仍在增长，说明下载在
+  // 推进（只是慢），不应判定卡死；-1 表示尚无观测
+  int _lastBufferedEndMs = -1;
 
   // 有声无画面看门狗：音频在播但视频尺寸长时间为 0（解码链视频轨没起来）
   DateTime? _noVideoSince;
@@ -575,6 +578,7 @@ class PlayerController extends ChangeNotifier {
     _stallNudged = false;
     _castReinitDone = false;
     _bufferingSince = null;
+    _lastBufferedEndMs = -1;
     _noVideoSince = null;
     _castInitRetried = false;
     final cast = Channel(
@@ -1069,14 +1073,16 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
 
     // 缓冲设置即时生效：每次起播前按当前设置重新注册 fvp 选项，
-    // 不必重启程序（registerWith 的全局选项对之后创建的播放器生效）
-    // 投屏点播（非 HLS）用大缓冲：腾讯视频等单连接下载常有十几秒波动，
-    // 5 秒上限会反复缓冲卡顿（mpv/Macast 大缓存无此问题）；直播/HLS
-    // 投屏仍用用户设置，避免拉长直播延迟
+    // 不必重启程序（registerWith 的全局选项对之后创建的播放器生效）。
+    // 投屏点播（非 HLS）给独立的 15 秒缓冲：旧值 90 秒意味着 seek 后
+    // 要攒够 90 秒的媒体数据才恢复播放——视频号等 CDN 远距 seek 后限速
+    // 下载，实测 90 秒都填不满（看门狗超时重建→重新缓冲→永远播不出来）。
+    // 15 秒兼顾抗抖动与恢复速度（mpv/Macast 同样是小缓冲即开播）；
+    // 直播/HLS 投屏仍用用户设置，避免拉长直播延迟。
     final rawUrl = channel.streamUrls[_sourceIndex].toLowerCase();
     final isHls = rawUrl.contains('.m3u8') || rawUrl.contains('.m3u');
     registerFvp(
-        bufferSeconds: _isCasting && !isHls ? 90 : _settings.bufferSeconds);
+        bufferSeconds: _isCasting && !isHls ? 15 : _settings.bufferSeconds);
 
     await _disposeVideoController();
 
@@ -1632,9 +1638,8 @@ class PlayerController extends ChangeNotifier {
     _watchPosMs = -1;
     _watchAdvanceAt = null;
     _stallNudged = false;
-    // 长视频 seek 到远处后播放内核要重新发起 Range 请求缓冲。
-    // 投屏点播 bufferSeconds=90，视频号等 CDN 远距 seek 实测缓冲可
-    // 超过 30 秒（旧固定 30 秒宽限刚过就被 buffering 看门狗销毁重建）：
+    _lastBufferedEndMs = -1;
+    // 长视频 seek 到远处后播放内核要重新发起 Range 请求缓冲：
     // 投屏给 60 秒宽限，普通点播维持 30 秒。宽限期内既不判 stall，
     // 也不累积 buffering 超时（见 _checkCastStall）。
     _seekGraceUntil =
@@ -1668,15 +1673,23 @@ class PlayerController extends ChangeNotifier {
     final vh = v.size.height.toInt();
     final noVideo = vw <= 0 || vh <= 0;
 
-    // buffering 持续计时。
-    // seek 宽限期内持续 buffering 是正常的（seek 到长视频远处后重新
-    // 缓冲，投屏 90 秒缓冲配置下可能持续 30~60 秒）：宽限期内把计时
-    // 基准不断刷新为当前时刻，使 30 秒超时从宽限结束后才开始累积——
-    // 否则「seek 后恰好缓冲 30 秒」会被误判卡死而销毁重建播放器。
+    // buffering 持续计时。两条豁免规则：
+    // 1. 已缓冲末尾仍在增长 = 下载在推进只是慢（长视频远距 seek 后 CDN
+    //    限速下载），不断刷新计时基准，只要在下就不判卡死；
+    // 2. seek 宽限期内缓冲不计时（见 seekTo）。
+    // 若 buffered 上报为空（部分平台），bufEnd 恒 0 不触发豁免，退化为
+    // 原来的固定超时判定，行为不回归。
     final inSeekGrace =
         _seekGraceUntil != null && now.isBefore(_seekGraceUntil!);
     if (isBuf) {
-      if (inSeekGrace) {
+      var bufEnd = 0;
+      for (final r in v.buffered) {
+        if (r.end.inMilliseconds > bufEnd) bufEnd = r.end.inMilliseconds;
+      }
+      if (bufEnd > _lastBufferedEndMs) {
+        _lastBufferedEndMs = bufEnd;
+        _bufferingSince = now;
+      } else if (inSeekGrace) {
         _bufferingSince = now;
       } else {
         _bufferingSince ??= now;
