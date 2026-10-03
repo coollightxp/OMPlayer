@@ -19,6 +19,7 @@ jobs:
     # fvp 通过 FVP_DEPS_URL 覆盖默认 nightly 下载地址
     env:
       FVP_DEPS_URL: https://github.com/wang-bin/mdk-sdk/releases/download/v0.36.0
+      OMPLAYER_KEYSTORE: /home/runner/.android/omplayer.keystore
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -78,35 +79,81 @@ jobs:
         id: ks-cache
         uses: actions/cache@v4
         with:
-          path: /home/runner/.android/debug.keystore
-          key: omplayer-keystore-v3-${{ runner.os }}
+          path: /home/runner/.android/omplayer.keystore
+          key: omplayer-keystore-v4-${{ runner.os }}
 
-      - name: Ensure stable keystore
+      - name: Ensure stable keystore (validate secret; regenerate when corrupt)
         run: |
+          set -e
+          KS="$HOME/.android/omplayer.keystore"
           mkdir -p "$HOME/.android"
-          # 优先使用仓库 Secret 中固定的 keystore（根治签名漂移）：
-          # 在 GitHub Settings -> Secrets and variables -> Actions -> Repository secrets
-          # 中创建 DEBUG_KEYSTORE_BASE64，值为 base64 编码的 debug.keystore
-          if [ -n "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" ]; then
-            echo "Using keystore from repository secret (stable signature)"
-            echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > "$HOME/.android/debug.keystore"
-          elif [ "${{ steps.ks-cache.outputs.cache-hit }}" != "true" ]; then
-            # 缓存未命中且无 Secret：生成新的，但签名会与历史版本不同
-            echo "Generating new debug.keystore (signature will differ from previous releases)"
-            rm -f "$HOME/.android/debug.keystore"
-            keytool -genkey -v \
-              -keystore "$HOME/.android/debug.keystore" \
-              -storepass android -alias androiddebugkey -keypass android \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=OMPlayer,O=OMPlayer,C=CN"
-            # 输出 base64 供用户一次性保存到 Secret，以后不再漂移
-            echo "=== DEBUG_KEYSTORE_BASE64 (save to GitHub Secret to stabilize) ==="
-            base64 -w 0 "$HOME/.android/debug.keystore"
-            echo ""
-            echo "=== END ==="
-          else
-            echo "Using cached debug.keystore"
+          validate_ks() {
+            keytool -list -keystore "$KS" -storepass android \
+              -alias androiddebugkey >/dev/null 2>&1
+          }
+          SECRET_B64="${{ secrets.DEBUG_KEYSTORE_BASE64 }}"
+          if [ -n "$SECRET_B64" ]; then
+            printf '%s' "$SECRET_B64" | base64 -d > "$KS" || true
+            if validate_ks; then
+              echo "Using keystore from repository secret (stable signature)"
+            else
+              echo "::warning::Secret DEBUG_KEYSTORE_BASE64 已损坏（无法用 android/androiddebugkey 打开），将重新生成；请用本次日志末尾的新值更新 Secret"
+              SECRET_B64=""
+            fi
           fi
+          if [ -z "$SECRET_B64" ]; then
+            if [ "${{ steps.ks-cache.outputs.cache-hit }}" = "true" ] && validate_ks; then
+              echo "Using cached keystore"
+            else
+              echo "Generating new stable keystore (签名与手机上现有版本不同，仍需卸载一次)"
+              rm -f "$KS"
+              keytool -genkey -v \
+                -keystore "$KS" \
+                -storepass android -alias androiddebugkey -keypass android \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=OMPlayer,O=OMPlayer,C=CN"
+              # 输出新 base64：请更新 GitHub Secret，之后所有版本签名固定
+              echo "=== DEBUG_KEYSTORE_BASE64 (用此整行更新 GitHub Secret) ==="
+              base64 -w 0 "$KS"
+              echo ""
+              echo "=== END ==="
+            fi
+          fi
+          echo "Keystore 证书指纹（构建后 APK 必须与此一致）:"
+          keytool -list -v -keystore "$KS" -storepass android \
+            -alias androiddebugkey 2>/dev/null | grep -E 'SHA256:' | head -1
+
+      # android/ 目录由 flutter create 现场生成，无法在仓库里写死
+      # signingConfig。通过 Gradle init 脚本强制 release 变体使用上面
+      # 经验证的 keystore：文件损坏/口令不符时构建直接失败，
+      # 杜绝 AGP 静默生成随机 CN=Android Debug 证书导致签名漂移。
+      - name: Install Gradle init script (explicit release signing)
+        run: |
+          mkdir -p "$HOME/.gradle/init.d"
+          cat > "$HOME/.gradle/init.d/omplayer-signing.gradle" <<'GRADLE'
+          allprojects {
+              afterEvaluate { p ->
+                  if (p.plugins.hasPlugin('com.android.application')) {
+                      def ksPath = System.getenv('OMPLAYER_KEYSTORE')
+                      if (ksPath == null) {
+                          throw new GradleException('OMPLAYER_KEYSTORE env is not set')
+                      }
+                      def ksFile = new File(ksPath)
+                      if (!ksFile.isFile()) {
+                          throw new GradleException("keystore not found: ${ksPath}")
+                      }
+                      def android = p.extensions.getByName('android')
+                      def scs = android.signingConfigs
+                      def sc = scs.findByName('omplayerStable') ?: scs.create('omplayerStable')
+                      sc.storeFile = ksFile
+                      sc.storePassword = 'android'
+                      sc.keyAlias = 'androiddebugkey'
+                      sc.keyPassword = 'android'
+                      android.buildTypes.getByName('release').signingConfig = sc
+                  }
+              }
+          }
+          GRADLE
 
       - name: Build APK
         run: flutter build apk --release --split-per-abi
@@ -119,6 +166,20 @@ jobs:
               mv "app-$abi-release.apk" "OMPlayer-android-$abi.apk"
             fi
           done
+
+      # 构建后核对：APK 实际证书必须与构建前 keystore 指纹一致，
+      # 一旦再次出现 CN=Android Debug 随机证书可立即发现
+      - name: Verify APK signing certificate
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null \
+            | sort -V | tail -1)
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs \
+              build/app/outputs/flutter-apk/OMPlayer-android-arm64-v8a.apk \
+              | grep -E 'signer|Certificate' | head -5
+          else
+            echo "apksigner not found, skipped"
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
