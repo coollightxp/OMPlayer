@@ -1771,8 +1771,9 @@ class PlayerController extends ChangeNotifier {
 
     // buffering：未重建持续 30 秒→先软回退再重建；已重建再持续 20 秒→放弃。
     // 能进到 30 秒分支说明缓冲零增长（增长会不断刷新 _bufferingSince）。
-    // 点播零增长 = CDN 把该位置的 Range 请求挂死（实测多在 >93% 尾部），
-    // 重建只是重发同一请求，照样挂死——先回退到最后可播位置保会话。
+    // 点播零增长 = CDN 把该位置的 Range 请求挂死（实测多在 >93% 尾部）。
+    // 注意：同一内核在挂死的请求上直接 seek 会被拖进永久缓冲（实测），
+    // 所以回退必须走重建（全新连接）并从最后可播位置恢复，保住会话。
     if (isBuf && _bufferingSince != null) {
       final bufSecs = now.difference(_bufferingSince!).inSeconds;
       if (!_castReinitDone && bufSecs >= 30) {
@@ -1781,7 +1782,7 @@ class PlayerController extends ChangeNotifier {
             _lastGoodPosMs >= 0 &&
             (posMs - _lastGoodPosMs).abs() > 5000) {
           _seekFallbackUsed = true;
-          _seekBackToLastGood();
+          _triggerCastRecovery(resumePosMs: _lastGoodPosMs);
           return;
         }
         _triggerCastRecovery();
@@ -1840,43 +1841,28 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  /// 点播 seek 后下载停滞的软回退：回到最后确认可播的位置继续播放。
-  /// 直接操作内核，不走公开 seekTo——避免把停滞位置记成新的回退锚点。
-  Future<void> _seekBackToLastGood() async {
-    final vc = _videoController;
-    if (vc == null) return;
-    final target = _lastGoodPosMs;
-    CastLog.write(
-        'cast seek stall, fallback to lastGood ${(target / 1000).round()}s');
-    try {
-      await vc.seekTo(Duration(milliseconds: target));
-    } catch (_) {}
-    // 与公开 seekTo 同款的看门狗复位（不改写 _lastGoodPosMs）
-    _watchPosMs = -1;
-    _watchAdvanceAt = null;
-    _stallNudged = false;
-    _lastBufferedEndMs = -1;
-    _bufferingSince = null;
-    _seekGraceUntil = DateTime.now().add(const Duration(seconds: 30));
-    _startCastSeekProbe(target);
-  }
-
-  /// 触发投屏自愈重建（整场投屏只允许一次）
-  void _triggerCastRecovery() {
+  /// 触发投屏自愈重建（整场投屏只允许一次）。
+  /// [resumePosMs] 非空时用指定位置作为重建后的恢复点——用于 seek 停滞
+  /// 软回退：CDN 挂死了目标位置的 Range 请求，恢复到那里必然再次挂死，
+  /// 改从最后确认可播的位置恢复。
+  void _triggerCastRecovery({int? resumePosMs}) {
     if (_castReinitDone) return;
     _castReinitDone = true;
-    _recoverCastPlayback();
+    _recoverCastPlayback(resumePosMs: resumePosMs);
   }
 
   /// 投屏流卡死的最终自愈：销毁内核、用同一 URL 重新拉流。
   /// 点播等内核 ready 后从上次位置续播，直播从头缓冲。
-  Future<void> _recoverCastPlayback() async {
+  /// [resumePosMs] 见 _triggerCastRecovery。
+  Future<void> _recoverCastPlayback({int? resumePosMs}) async {
     final ch = _currentChannel;
     if (ch == null) return;
-    final savedPos = _videoController?.value.position ?? Duration.zero;
+    final savedPos = resumePosMs != null
+        ? Duration(milliseconds: resumePosMs)
+        : _videoController?.value.position ?? Duration.zero;
     final isLive = duration <= Duration.zero;
     CastLog.write(
-        'cast RECOVERY triggered savedPos=${savedPos.inSeconds}s isLive=$isLive');
+        'cast RECOVERY triggered savedPos=${savedPos.inSeconds}s isLive=$isLive fallback=${resumePosMs != null}');
     await _playCurrentSource();
     if (!isLive && savedPos > const Duration(seconds: 2)) {
       // 等内核真正开始播放再 seek：
