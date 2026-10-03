@@ -99,6 +99,12 @@ class PlayerController extends ChangeNotifier {
   DateTime? _castSeekProbeStart;
   int _castSeekProbeTargetMs = 0;
 
+  // 最后确认可播的位置（ms）：看门狗在「非缓冲、非宽限、位置推进」时更新。
+  // seek 后下载完全停滞时软回退到这里（重建=重发同一 Range 请求照样挂死）
+  int _lastGoodPosMs = -1;
+  // 本次停滞是否已用过软回退（防止在死位置之间来回弹跳）
+  bool _seekFallbackUsed = false;
+
   // 有声无画面看门狗：音频在播但视频尺寸长时间为 0（解码链视频轨没起来）
   DateTime? _noVideoSince;
   // 投屏 initialize 15s 超时后，用同一 URL 原地重拉一次（偶发首拉视频轨不起）
@@ -594,6 +600,8 @@ class PlayerController extends ChangeNotifier {
     _lastBufferedEndMs = -1;
     _castSeekProbeTimer?.cancel();
     _castSeekProbeTimer = null;
+    _lastGoodPosMs = -1;
+    _seekFallbackUsed = false;
     _noVideoSince = null;
     _castInitRetried = false;
     final cast = Channel(
@@ -1656,11 +1664,11 @@ class PlayerController extends ChangeNotifier {
     _watchAdvanceAt = null;
     _stallNudged = false;
     _lastBufferedEndMs = -1;
-    // 长视频 seek 到远处后播放内核要重新发起 Range 请求缓冲：
-    // 投屏给 60 秒宽限，普通点播维持 30 秒。宽限期内既不判 stall，
-    // 也不累积 buffering 超时（见 _checkCastStall）。
-    _seekGraceUntil =
-        DateTime.now().add(Duration(seconds: _isCasting ? 60 : 30));
+    // 长视频 seek 到远处后播放内核要重新发起 Range 请求缓冲。
+    // 宽限期 30 秒：覆盖 CDN 断点请求的响应死寂（实测 10~25 秒）。
+    // 宽限期内既不判 stall 也不累积 buffering 超时；下载在推进时另有
+    // 缓冲增长豁免（见 _checkCastStall），慢速下载不受影响。
+    _seekGraceUntil = DateTime.now().add(const Duration(seconds: 30));
     if (_isCasting) _startCastSeekProbe(position.inMilliseconds);
     notifyListeners();
   }
@@ -1708,9 +1716,13 @@ class PlayerController extends ChangeNotifier {
 
   /// 投屏卡顿看门狗（500ms 一次）。
   ///
+  /// 点播 seek 后下载【完全停滞】（缓冲零增长满 30 秒）时优先软回退到
+  /// 最后确认可播的位置（[_lastGoodPosMs]）——实测视频号 CDN 对接近
+  /// 结尾的 Range 请求直接挂死，重建=重发同一请求照样挂死，回退才能
+  /// 保住会话；回退后仍停滞才走重建。
   /// 整场投屏【只重建一次】（[_castReinitDone] 统一守门，所有路径共用）：
   /// - 未重建：位置 12 秒不推进先 play() 轻推，25 秒仍不动则重建；
-  ///   seek 宽限期结束后 buffering 再持续 30 秒则重建（宽限期内
+  ///   seek 宽限期结束后 buffering 再持续 30 秒则软回退/重建（宽限期内
   ///   长视频远距 seek 的缓冲不计时）；有声无画 8 秒则重建
   /// - 已重建：再卡/再缓冲 20 秒即判定流不可恢复，断开并恢复投屏前频道
   void _checkCastStall() {
@@ -1757,11 +1769,21 @@ class PlayerController extends ChangeNotifier {
       _bufferingSince = null;
     }
 
-    // buffering：未重建持续 30 秒→重建；已重建再持续 20 秒→放弃。
-    // 长视频（视频号 1 小时等）正常网络缓冲可能持续 10~20 秒，超时不能太短
+    // buffering：未重建持续 30 秒→先软回退再重建；已重建再持续 20 秒→放弃。
+    // 能进到 30 秒分支说明缓冲零增长（增长会不断刷新 _bufferingSince）。
+    // 点播零增长 = CDN 把该位置的 Range 请求挂死（实测多在 >93% 尾部），
+    // 重建只是重发同一请求，照样挂死——先回退到最后可播位置保会话。
     if (isBuf && _bufferingSince != null) {
       final bufSecs = now.difference(_bufferingSince!).inSeconds;
       if (!_castReinitDone && bufSecs >= 30) {
+        if (duration > Duration.zero &&
+            !_seekFallbackUsed &&
+            _lastGoodPosMs >= 0 &&
+            (posMs - _lastGoodPosMs).abs() > 5000) {
+          _seekFallbackUsed = true;
+          _seekBackToLastGood();
+          return;
+        }
         _triggerCastRecovery();
         return;
       }
@@ -1793,6 +1815,12 @@ class PlayerController extends ChangeNotifier {
       _watchPosMs = posMs;
       _watchAdvanceAt = now;
       _stallNudged = false;
+      // 持续播放中的位置推进 = 该位置确认可播，记录为软回退锚点；
+      // 宽限期内的位置跳变（seek 落点）不算可播证据
+      if (!isBuf && !inSeekGrace && v.isPlaying) {
+        _lastGoodPosMs = posMs;
+        _seekFallbackUsed = false;
+      }
       return;
     }
     _watchAdvanceAt ??= now;
@@ -1810,6 +1838,27 @@ class PlayerController extends ChangeNotifier {
       // 重建后观察期位置仍不推进：流真断了（如直播间关播）
       stopCastAndRestore();
     }
+  }
+
+  /// 点播 seek 后下载停滞的软回退：回到最后确认可播的位置继续播放。
+  /// 直接操作内核，不走公开 seekTo——避免把停滞位置记成新的回退锚点。
+  Future<void> _seekBackToLastGood() async {
+    final vc = _videoController;
+    if (vc == null) return;
+    final target = _lastGoodPosMs;
+    CastLog.write(
+        'cast seek stall, fallback to lastGood ${(target / 1000).round()}s');
+    try {
+      await vc.seekTo(Duration(milliseconds: target));
+    } catch (_) {}
+    // 与公开 seekTo 同款的看门狗复位（不改写 _lastGoodPosMs）
+    _watchPosMs = -1;
+    _watchAdvanceAt = null;
+    _stallNudged = false;
+    _lastBufferedEndMs = -1;
+    _bufferingSince = null;
+    _seekGraceUntil = DateTime.now().add(const Duration(seconds: 30));
+    _startCastSeekProbe(target);
   }
 
   /// 触发投屏自愈重建（整场投屏只允许一次）
