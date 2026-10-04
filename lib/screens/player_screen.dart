@@ -845,11 +845,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       _onArrow('prevChannel');
       return true;
     }
-    if (k == LogicalKeyboardKey.audioFastForward) {
+    if (k == LogicalKeyboardKey.mediaFastForward) {
       _seekTick(false);
       return true;
     }
-    if (k == LogicalKeyboardKey.audioRewind) {
+    if (k == LogicalKeyboardKey.mediaRewind) {
       _seekTick(true);
       return true;
     }
