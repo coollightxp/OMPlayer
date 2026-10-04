@@ -95,11 +95,6 @@ class PlayerController extends ChangeNotifier {
   // 推进（只是慢），不应判定卡死；-1 表示尚无观测
   int _lastBufferedEndMs = -1;
 
-  // 诊断探针：投屏 seek 后每 5 秒采样位置/缓冲/已缓冲末尾，最长 2 分钟
-  Timer? _castSeekProbeTimer;
-  DateTime? _castSeekProbeStart;
-  int _castSeekProbeTargetMs = 0;
-
   // 最后确认可播的位置（ms）：看门狗在「非缓冲、非宽限、位置推进」时更新。
   // seek 后下载完全停滞时软回退到这里（重建=重发同一 Range 请求照样挂死）
   int _lastGoodPosMs = -1;
@@ -599,8 +594,6 @@ class PlayerController extends ChangeNotifier {
     _castReinitDone = false;
     _bufferingSince = null;
     _lastBufferedEndMs = -1;
-    _castSeekProbeTimer?.cancel();
-    _castSeekProbeTimer = null;
     _lastGoodPosMs = -1;
     _seekFallbackUsed = false;
     _noVideoSince = null;
@@ -1683,57 +1676,15 @@ class PlayerController extends ChangeNotifier {
     // 宽限期内既不判 stall 也不累积 buffering 超时；下载在推进时另有
     // 缓冲增长豁免（见 _checkCastStall），慢速下载不受影响。
     _seekGraceUntil = DateTime.now().add(const Duration(seconds: 30));
-    if (_isCasting) _startCastSeekProbe(position.inMilliseconds);
     notifyListeners();
-  }
-
-  /// 诊断探针：投屏 seek 后每 5 秒采样一次播放状态，最长 2 分钟。
-  /// 用于定位「seek 后迟迟不开播」时内核到底在干什么：
-  /// pos 不动 + bufEnd 增长缓慢 = 下载限速；bufEnd 不动 = 下载停滞；
-  /// pos 越过目标且不再缓冲 = 已续播，停止采样。
-  void _startCastSeekProbe(int targetMs) {
-    _castSeekProbeTimer?.cancel();
-    _castSeekProbeStart = DateTime.now();
-    _castSeekProbeTargetMs = targetMs;
-    CastLog.write('probe start target=${(targetMs / 1000).round()}s');
-    _castSeekProbeTimer =
-        Timer.periodic(const Duration(seconds: 5), (t) {
-      final vc = _videoController;
-      final start = _castSeekProbeStart;
-      if (vc == null || start == null || !_isCasting) {
-        t.cancel();
-        _castSeekProbeTimer = null;
-        return;
-      }
-      final v = vc.value;
-      var bufEnd = 0;
-      for (final r in v.buffered) {
-        if (r.end.inMilliseconds > bufEnd) bufEnd = r.end.inMilliseconds;
-      }
-      final el = DateTime.now().difference(start).inSeconds;
-      CastLog.write('probe +${el}s pos=${v.position.inSeconds}s '
-          'buf=${v.isBuffering} playing=${v.isPlaying} '
-          'bufEnd=${(bufEnd / 1000).round()}s '
-          'size=${v.size.width.toInt()}x${v.size.height.toInt()}');
-      if (v.position.inMilliseconds > _castSeekProbeTargetMs + 2000 &&
-          !v.isBuffering) {
-        CastLog.write('probe resumed pos=${v.position.inSeconds}s');
-        t.cancel();
-        _castSeekProbeTimer = null;
-      } else if (el >= 120) {
-        CastLog.write('probe timeout(120s)');
-        t.cancel();
-        _castSeekProbeTimer = null;
-      }
-    });
   }
 
   /// 投屏卡顿看门狗（500ms 一次）。
   ///
-  /// 点播 seek 后下载【完全停滞】（缓冲零增长满 30 秒）时优先软回退到
-  /// 最后确认可播的位置（[_lastGoodPosMs]）——实测视频号 CDN 对接近
-  /// 结尾的 Range 请求直接挂死，重建=重发同一请求照样挂死，回退才能
-  /// 保住会话；回退后仍停滞才走重建。
+  /// 点播 seek 后下载【完全停滞】（缓冲零增长满 30 秒）时，重建内核换
+  /// 全新连接并从最后确认可播的位置（[_lastGoodPosMs]）恢复——CDN 挂死了
+  /// seek 目标的 Range 请求，恢复到那里必然再次挂死（同一内核上直接
+  /// seek 也会被拖进永久缓冲，必须重建）。回退性重建后仍停滞才断开。
   /// 整场投屏【只重建一次】（[_castReinitDone] 统一守门，所有路径共用）：
   /// - 未重建：位置 12 秒不推进先 play() 轻推，25 秒仍不动则重建；
   ///   seek 宽限期结束后 buffering 再持续 30 秒则软回退/重建（宽限期内
