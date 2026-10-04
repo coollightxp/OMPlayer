@@ -82,7 +82,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   bool _okHeld = false;
   bool _okLongFired = false;
   Timer? _arrowLongTimer;
-  Timer? _arrowSeekTimer;
   bool _arrowDown = false;
   bool _arrowLongFired = false;
 
@@ -91,17 +90,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   bool _menuHeld = false;
   bool _menuLongFired = false;
 
-  // 点播长按左右键：屏幕中央数字进度 OSD（不弹控制面板，避免面板打开后
-  // 左右键被按钮导航接管、与连续 seek 冲突）。
-  // 以长按起点为基准累计位移，不逐帧读 position（内核 seek 后位置上报有
-  // 延迟，连续读旧值会导致步进距离错误）
+  // 点播点按左右键：屏幕中央数字进度 OSD（不弹控制面板，避免面板打开后
+  // 左右键被按钮导航接管、与连续 seek 冲突）
   Timer? _seekOsdHideTimer;
   bool _seekOsdVisible = false;
   bool _seekOsdForward = true;
   Duration _seekOsdTarget = Duration.zero;
   Duration _seekOsdDuration = Duration.zero;
-  Duration? _seekBase;
-  int _seekDeltaSec = 0;
 
   // 播放加载防抖：按下键到内核真正初始化完成期间，遥控器连按的
   // 切台/切源/面板 OK 全部排队忽略，防止"往下按了一下、松手后才加载完、
@@ -379,7 +374,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _numTimer?.cancel();
     _okLongTimer?.cancel();
     _arrowLongTimer?.cancel();
-    _arrowSeekTimer?.cancel();
     _menuLongTimer?.cancel();
     _seekOsdHideTimer?.cancel();
     _rootFocusNode.dispose();
@@ -913,7 +907,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       if (isUp) {
         _arrowDown = false;
         _arrowLongTimer?.cancel();
-        _arrowSeekTimer?.cancel();
         _arrowLongFired = false;
       }
       return true;
@@ -1193,15 +1186,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _okLongFired = false;
   }
 
-  /// ←/→ 按下边沿。面板打开：转发（左右选级）；网页前台：启动短按
-  /// 切源计时（钩子只给按下边沿，长按由 Dart 侧判定）；
-  /// 普通点播：启动 400ms 长按拖进度计时
+  /// ←/→ 按下边沿。面板打开：转发面板内导航；
+  /// 可 seek（点播）：点按直接 ±60s seek（不再长按，避免面板冲突）；
+  /// 不可 seek（直播/网页）：启动短按切源计时
   void _lrDown(bool isLeft) {
     if (_arrowDown) return;
     _arrowDown = true;
     _arrowLongFired = false;
     _arrowLongTimer?.cancel();
-    _arrowSeekTimer?.cancel();
     if (_navPanelOpen) {
       _panelKey(isLeft ? 'left' : 'right', true);
       return;
@@ -1211,34 +1203,23 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return;
     }
     final c = context.read<PlayerController>();
-    // 不可 seek（直播/网页）：抬起前快速操作即切源（防抖避免按多次切多台）；
-    // 可 seek（点播）：400ms 后转为长按拖进度
-    if (!c.isSeekable || c.webPageActive) {
-      _arrowLongTimer = Timer(const Duration(milliseconds: 400), () {
-        _arrowLongFired = true;
-      });
+    // 可 seek（点播）：点按直接 seek，不再长按——长按会误弹面板、
+    // 与面板打开后的左右导航冲突，体验不好
+    if (c.isSeekable && !c.webPageActive) {
+      _singleSeekStep(isLeft);
       return;
     }
+    // 不可 seek（直播/网页）：抬起前快速操作即切源（防抖避免按多次切多台）
     _arrowLongTimer = Timer(const Duration(milliseconds: 400), () {
       _arrowLongFired = true;
-      // 不弹控制面板（面板一开，后续左右键会被按钮导航接管，seek 中断），
-      // 改为屏幕中央数字进度 OSD：以长按起点为基准，每 0.8 秒走一格
-      _seekBase = c.position;
-      _seekDeltaSec = 0;
-      _remoteSeekStep(isLeft); // 到点先走一格
-      // 之后按住每 0.8 秒走一格：对齐投屏 CDN 的慢响应节奏，
-      // 避免 seek 风暴（与进度条「松手才 seek」同一教训）
-      _arrowSeekTimer = Timer.periodic(
-          const Duration(milliseconds: 800), (_) => _remoteSeekStep(isLeft));
     });
   }
 
-  /// ←/→ 抬起边沿：长按拖进度后收尾；否则短按切源
+  /// ←/→ 抬起边沿：点播点按 seek 后淡出 OSD；直播/网页短按切源
   void _lrUp(bool isLeft) {
     if (!_arrowDown) return;
     _arrowDown = false;
     _arrowLongTimer?.cancel();
-    _arrowSeekTimer?.cancel();
     if (_navPanelOpen) {
       _panelKey(isLeft ? 'left' : 'right', false);
       _arrowLongFired = false;
@@ -1249,9 +1230,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       _arrowLongFired = false;
       return;
     }
-    if (_arrowLongFired) {
-      // 点播长按 seek：OSD 再停留 1.2 秒后淡出；直播/网页长按无动作
+    final c = context.read<PlayerController>();
+    if (c.isSeekable && !c.webPageActive) {
+      // 点播点按 seek：OSD 再停留 1.2 秒后淡出
       if (_seekOsdVisible) _armSeekOsdHide();
+    } else if (_arrowLongFired) {
+      // 直播/网页长按无动作
     } else {
       _onArrow(isLeft ? 'prevSource' : 'nextSource');
     }
@@ -1292,35 +1276,19 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _menuLongFired = false;
   }
 
-  /// 媒体键（⏪/⏩）单步 seek ±10 秒：以当前播放位置为基准，
+  /// 媒体键（⏪/⏩）单步 seek ±60 秒：以当前播放位置为基准，
   /// 屏幕中央显示数字进度 OSD，不弹控制面板
   void _singleSeekStep(bool isLeft) {
     final c = context.read<PlayerController>();
     if (!c.isSeekable) return;
     final dur = c.duration;
     if (dur <= Duration.zero) return;
-    var t = c.position + Duration(seconds: isLeft ? -10 : 10);
+    var t = c.position + Duration(seconds: isLeft ? -60 : 60);
     if (t < Duration.zero) t = Duration.zero;
     if (t > dur) t = dur;
     c.seekTo(t);
     _showSeekOsd(target: t, duration: dur, forward: !isLeft);
     _armSeekOsdHide();
-  }
-
-  /// 长按左右键连续 seek：以长按起点 [_seekBase] 为基准累计位移，
-  /// 每格 ±10 秒（不逐帧读 position——seek 后内核位置上报有延迟，
-  /// 连读旧值会让每格步长失真），结果实时显示在数字进度 OSD 上
-  void _remoteSeekStep(bool isLeft) {
-    final c = context.read<PlayerController>();
-    if (!c.isSeekable) return;
-    final dur = c.duration;
-    if (dur <= Duration.zero) return;
-    _seekDeltaSec += isLeft ? -10 : 10;
-    var t = (_seekBase ?? c.position) + Duration(seconds: _seekDeltaSec);
-    if (t < Duration.zero) t = Duration.zero;
-    if (t > dur) t = dur;
-    c.seekTo(t);
-    _showSeekOsd(target: t, duration: dur, forward: !isLeft);
   }
 
   /// 显示屏幕中央数字进度 OSD（持续到松手后 1.2 秒）
@@ -1340,7 +1308,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 松手后让 seek OSD 停留片刻再淡出
   void _armSeekOsdHide() {
-    _seekBase = null;
     _seekOsdHideTimer?.cancel();
     _seekOsdHideTimer = Timer(const Duration(milliseconds: 1200), () {
       if (mounted) setState(() => _seekOsdVisible = false);
@@ -1401,7 +1368,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '/ ${_fmtClock(_seekOsdDuration)}    每格 10 秒',
+                    '/ ${_fmtClock(_seekOsdDuration)}    每格 60 秒',
                     style: const TextStyle(color: Colors.white60, fontSize: 13),
                   ),
                   const SizedBox(height: 12),
@@ -1825,7 +1792,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         } else if (action == 'left' || action == 'right') {
           _arrowDown = false;
           _arrowLongTimer?.cancel();
-          _arrowSeekTimer?.cancel();
           _arrowLongFired = false;
         } else if (action == 'menu') {
           _menuHeld = false;

@@ -49,11 +49,12 @@ class RightEpgPanelState extends State<RightEpgPanel> {
   /// 避免网络/EPG 数据刷新时连续 toggle 产生混乱提示
   DateTime? _lastToggleAt;
 
+  /// 各条目的 GlobalKey，用于 Scrollable.ensureVisible 精准定位
+  /// （替代固定 _itemHeight 的手算，解决 description/进度条导致的高度差异）
+  final List<GlobalKey> _itemKeys = <GlobalKey>[];
+
   /// 设计稿宽度
   static const double _designWidth = 340;
-
-  /// 单条节目卡片估算高度（外边距 8 + 内边距 24 + 三行文字 ~64）
-  static const double _itemHeight = 96.0;
 
   @override
   void dispose() {
@@ -153,17 +154,20 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     );
   }
 
-  /// 上下移动时让键盘选中节目保持在视口中部附近
+  /// 上下移动时让键盘选中节目可见：用 Scrollable.ensureVisible 精准定位，
+  /// 不再手算 itemHeight（各条目因 description/进度条存在高度差异，
+  /// 手算会累积误差导致选中框滚出视口）
   void _scrollKeyboardTo(int index) {
+    if (index < 0 || index >= _itemKeys.length) return;
+    final key = _itemKeys[index];
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
-      final viewport = _scrollController.position.viewportDimension;
-      final target = (index * _itemHeight - viewport / 2 + _itemHeight / 2)
-          .clamp(0.0, _scrollController.position.maxScrollExtent);
-      _scrollController.animateTo(
-        target,
+      final ctx = key.currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(
+        ctx,
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
+        alignment: 0.5, // 尽量滚到视口中部
       );
     });
   }
@@ -276,12 +280,20 @@ class RightEpgPanelState extends State<RightEpgPanel> {
           final nowIdx = epg.indexWhere((p) => p.isNowPlaying);
           _kbIndex = nowIdx >= 0 ? nowIdx.clamp(0, epg.length - 1) : 0;
         }
+        // 同步维护与条目数一致的 GlobalKey 列表
+        while (_itemKeys.length < epg.length) {
+          _itemKeys.add(GlobalKey());
+        }
+        if (_itemKeys.length > epg.length) {
+          _itemKeys.removeRange(epg.length, _itemKeys.length);
+        }
         final list = ListView.builder(
           controller: _scrollController,
           padding: const EdgeInsets.symmetric(vertical: 8),
           itemCount: epg.length,
           itemBuilder: (context, index) {
             return _EpgProgramTile(
+              key: _itemKeys[index],
               program: epg[index],
               keyboardSelected: index == _kbIndex,
             );
@@ -293,7 +305,8 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     );
   }
 
-  /// 打开节目单时，自动滚动定位到当前正在播放的节目
+  /// 打开节目单时，自动滚动定位到当前正在播放的节目。
+  /// 用 GlobalKey + ensureVisible 精准定位，不再手算 itemHeight
   void _maybeScrollToNow(List<EpgProgram> epg) {
     final key = epg.isEmpty ? '' : epg.first.channelId;
     if (_lastScrolledKey == key) return;
@@ -301,17 +314,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     if (epg.isEmpty) return;
     final idx = epg.indexWhere((p) => p.isNowPlaying);
     if (idx < 0) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      final viewport = _scrollController.position.viewportDimension;
-      final target = (idx * _itemHeight - viewport / 2 + _itemHeight / 2)
-          .clamp(0.0, _scrollController.position.maxScrollExtent);
-      _scrollController.animateTo(
-        target,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeOutCubic,
-      );
-    });
+    _scrollKeyboardTo(idx);
   }
 }
 
@@ -322,6 +325,7 @@ class _EpgProgramTile extends StatelessWidget {
   final bool keyboardSelected;
 
   const _EpgProgramTile({
+    super.key,
     required this.program,
     this.keyboardSelected = false,
   });
