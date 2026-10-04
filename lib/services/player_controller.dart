@@ -19,6 +19,7 @@ import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../models/reservation.dart';
 import 'auto_launch.dart';
+import 'cast_stream_proxy.dart';
 import 'dlna_service.dart';
 import 'win_hotkeys.dart';
 import 'fvp_register.dart';
@@ -636,6 +637,7 @@ class PlayerController extends ChangeNotifier {
     _isCasting = false;
     _watchPosMs = -1;
     _watchAdvanceAt = null;
+    unawaited(CastStreamProxy.instance.stop());
     // 清空 DLNA 服务端当前媒体：发送端轮询 GetMediaInfo 时看到无媒体，
     // 即可知道投屏已结束，不再显示"已连接"。
     dlnaService.clearCurrentMedia();
@@ -1121,7 +1123,19 @@ class PlayerController extends ChangeNotifier {
     // ExoPlayer（安卓）不嗅探内容：live.php?id=... 这类脚本入口 302 跳到
     // m3u8，没有后缀又没有显式 MIME 时会被当作 progressive 文件解析而失败。
     // 依据后缀或轻量预检推断格式，通过 formatHint 让其选择正确的 MediaSource
-    final streamUrl = channel.streamUrls[_sourceIndex];
+    var streamUrl = channel.streamUrls[_sourceIndex];
+    // 投屏点播经本地中转代理：mdk 对视频号 CDN 的 Range 断点请求会挂死
+    // （服务器接受但永不回数据，mpv 无此问题）。代理保证每请求全新连接
+    // + 停滞 15 秒断开/重试，配合 avio.reconnect 实现 mpv 式断点续传。
+    // HLS 不走代理（m3u8 分片相对路径会破）。
+    if (_isCasting && !isHls) {
+      final proxied = await CastStreamProxy.instance.wrapUrl(streamUrl);
+      if (proxied != null) {
+        CastLog.write(
+            'cast proxy: ${Uri.parse(streamUrl).host} -> 127.0.0.1');
+        streamUrl = proxied;
+      }
+    }
     final path = (Uri.tryParse(streamUrl)?.path ?? '').toLowerCase();
     final segName = path.split('/').isEmpty ? '' : path.split('/').last;
     final dotIdx = segName.lastIndexOf('.');
