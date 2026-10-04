@@ -809,49 +809,53 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         // 按钮不获取键盘焦点（canRequestFocus: false），
         // 避免 Enter 同时触发全局 pop + 按钮 onPressed 双 pop
         // 导致弹层和播放器一起被弹掉、出现黑屏死机
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(false),
+        Focus(
           canRequestFocus: false,
-          style: TextButton.styleFrom(
-            backgroundColor: _exitDialogFocusIndex == 0
-                ? Colors.blueAccent.withOpacity(0.25)
-                : null,
-            side: _exitDialogFocusIndex == 0
-                ? const BorderSide(color: Colors.blueAccent, width: 1.5)
-                : null,
-          ),
-          child: Text(
-            '取消',
-            style: TextStyle(
-              color: _exitDialogFocusIndex == 0
-                  ? Colors.blueAccent
-                  : Colors.white70,
-              fontWeight: _exitDialogFocusIndex == 0
-                  ? FontWeight.bold
-                  : FontWeight.normal,
+          child: TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            style: TextButton.styleFrom(
+              backgroundColor: _exitDialogFocusIndex == 0
+                  ? Colors.blueAccent.withOpacity(0.25)
+                  : null,
+              side: _exitDialogFocusIndex == 0
+                  ? const BorderSide(color: Colors.blueAccent, width: 1.5)
+                  : null,
+            ),
+            child: Text(
+              '取消',
+              style: TextStyle(
+                color: _exitDialogFocusIndex == 0
+                    ? Colors.blueAccent
+                    : Colors.white70,
+                fontWeight: _exitDialogFocusIndex == 0
+                    ? FontWeight.bold
+                    : FontWeight.normal,
+              ),
             ),
           ),
         ),
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(true),
+        Focus(
           canRequestFocus: false,
-          style: TextButton.styleFrom(
-            backgroundColor: _exitDialogFocusIndex == 1
-                ? Colors.redAccent.withOpacity(0.25)
-                : null,
-            side: _exitDialogFocusIndex == 1
-                ? const BorderSide(color: Colors.redAccent, width: 1.5)
-                : null,
-          ),
-          child: Text(
-            '退出',
-            style: TextStyle(
-              color: _exitDialogFocusIndex == 1
-                  ? Colors.redAccent
-                  : Colors.white70,
-              fontWeight: _exitDialogFocusIndex == 1
-                  ? FontWeight.bold
-                  : FontWeight.normal,
+          child: TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(
+              backgroundColor: _exitDialogFocusIndex == 1
+                  ? Colors.redAccent.withOpacity(0.25)
+                  : null,
+              side: _exitDialogFocusIndex == 1
+                  ? const BorderSide(color: Colors.redAccent, width: 1.5)
+                  : null,
+            ),
+            child: Text(
+              '退出',
+              style: TextStyle(
+                color: _exitDialogFocusIndex == 1
+                    ? Colors.redAccent
+                    : Colors.white70,
+                fontWeight: _exitDialogFocusIndex == 1
+                    ? FontWeight.bold
+                    : FontWeight.normal,
+              ),
             ),
           ),
         ),
