@@ -1146,11 +1146,11 @@ Future<void> showRemoteAdminQrDialog(BuildContext context, String url) {
                 backgroundColor: Colors.white,
                 padding: EdgeInsets.zero,
                 eyeStyle: const QrEyeStyle(
-                  eyeShape: QrEyeShape.roundedSquare,
+                  eyeShape: QrEyeShape.square,
                   color: Color(0xFF141821),
                 ),
                 dataModuleStyle: const QrDataModuleStyle(
-                  dataModuleShape: QrDataModuleShape.roundedSquare,
+                  dataModuleShape: QrDataModuleShape.square,
                   color: Color(0xFF141821),
                 ),
               ),

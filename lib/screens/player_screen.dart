@@ -76,9 +76,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   // 遥控器/键盘长按检测：OK 短按与长按区分；左右键短按切源、长按拖进度。
   // 部分平台按住时重复发 KeyDownEvent 而非 KeyRepeatEvent，
-  // 用 _okDown/_arrowDown 去重，避免长按计时被反复重置
+  // 用 _okHeld/_arrowDown 去重，避免长按计时被反复重置
+  // （注意：布尔状态名不能与边沿回调方法 _okDown() 同名）
   Timer? _okLongTimer;
-  bool _okDown = false;
+  bool _okHeld = false;
   bool _okLongFired = false;
   Timer? _arrowLongTimer;
   Timer? _arrowSeekTimer;
@@ -87,7 +88,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   // 菜单键：短按=EPG 节目单，长按=设置面板
   Timer? _menuLongTimer;
-  bool _menuDown = false;
+  bool _menuHeld = false;
   bool _menuLongFired = false;
 
   // 两个侧边面板的状态句柄：遥控器/键盘导航由本页统一分发
@@ -943,11 +944,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     return false;
   }
 
-  /// OK 按下边沿（首次按下；系统自动重复由 _okDown 去重）。
+  /// OK 按下边沿（首次按下；系统自动重复由 _okHeld 去重）。
   /// 面板打开：转发面板；否则启动 500ms 长按计时。
   void _okDown() {
-    if (_okDown) return;
-    _okDown = true;
+    if (_okHeld) return;
+    _okHeld = true;
     _okLongFired = false;
     if (_navPanelOpen) {
       _panelKey('ok', true);
@@ -967,8 +968,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// OK 抬起边沿：面板打开时转发；否则长按不触发、短按按播放状态处理
   void _okUp() {
-    if (!_okDown) return;
-    _okDown = false;
+    if (!_okHeld) return;
+    _okHeld = false;
     _okLongTimer?.cancel();
     if (_navPanelOpen) {
       _panelKey('ok', false);
@@ -1064,8 +1065,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 菜单键按下：启动 500ms 长按=设置
   void _menuDown() {
-    if (_menuDown) return;
-    _menuDown = true;
+    if (_menuHeld) return;
+    _menuHeld = true;
     _menuLongFired = false;
     _menuLongTimer?.cancel();
     _menuLongTimer = Timer(const Duration(milliseconds: 500), () {
@@ -1076,8 +1077,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 菜单键抬起：未到长按时长=短按，打开 EPG 节目单
   void _menuUp() {
-    if (!_menuDown) return;
-    _menuDown = false;
+    if (!_menuHeld) return;
+    _menuHeld = false;
     _menuLongTimer?.cancel();
     if (!_menuLongFired) {
       _toggleDrawer(left: false);
