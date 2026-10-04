@@ -80,6 +80,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   // （注意：布尔状态名不能与边沿回调方法 _okDown() 同名）
   Timer? _okLongTimer;
   bool _okHeld = false;
+
+  /// OK 按下边沿发生在面板打开期间：抬起时仍需走面板路径，
+  /// 不能落入「面板外短按」（播放/暂停、重开频道列表）
+  bool _okDownInPanel = false;
   bool _okLongFired = false;
   Timer? _arrowLongTimer;
   bool _arrowDown = false;
@@ -798,55 +802,61 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
           builder: (ctx, setDialogState) {
             _exitDialogRefresh = setDialogState;
             return AlertDialog(
-              title: const Text('退出 OMPlayer'),
-              content: const Text('确定要退出 OMPlayer 吗？'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(false),
-                  style: TextButton.styleFrom(
-                    backgroundColor: _exitDialogFocusIndex == 0
-                        ? Colors.blueAccent.withOpacity(0.25)
-                        : null,
-                    side: _exitDialogFocusIndex == 0
-                        ? const BorderSide(color: Colors.blueAccent, width: 1.5)
-                        : null,
-                  ),
-                  child: Text(
-                    '取消',
-                    style: TextStyle(
-                      color: _exitDialogFocusIndex == 0
-                          ? Colors.blueAccent
-                          : Colors.white70,
-                      fontWeight: _exitDialogFocusIndex == 0
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                  ),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(true),
-                  style: TextButton.styleFrom(
-                    backgroundColor: _exitDialogFocusIndex == 1
-                        ? Colors.redAccent.withOpacity(0.25)
-                        : null,
-                    side: _exitDialogFocusIndex == 1
-                        ? const BorderSide(color: Colors.redAccent, width: 1.5)
-                        : null,
-                  ),
-                  child: Text(
-                    '退出',
-                    style: TextStyle(
-                      color: _exitDialogFocusIndex == 1
-                          ? Colors.redAccent
-                          : Colors.white70,
-                      fontWeight: _exitDialogFocusIndex == 1
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                  ),
-                ),
-              ],
-            );
+      title: const Text('退出 OMPlayer'),
+      content: const Text('确定要退出 OMPlayer 吗？'),
+      actions: [
+        // 遥控器走全局按键 handler（_handleExitDialogKey），
+        // 按钮不获取键盘焦点（canRequestFocus: false），
+        // 避免 Enter 同时触发全局 pop + 按钮 onPressed 双 pop
+        // 导致弹层和播放器一起被弹掉、出现黑屏死机
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          canRequestFocus: false,
+          style: TextButton.styleFrom(
+            backgroundColor: _exitDialogFocusIndex == 0
+                ? Colors.blueAccent.withOpacity(0.25)
+                : null,
+            side: _exitDialogFocusIndex == 0
+                ? const BorderSide(color: Colors.blueAccent, width: 1.5)
+                : null,
+          ),
+          child: Text(
+            '取消',
+            style: TextStyle(
+              color: _exitDialogFocusIndex == 0
+                  ? Colors.blueAccent
+                  : Colors.white70,
+              fontWeight: _exitDialogFocusIndex == 0
+                  ? FontWeight.bold
+                  : FontWeight.normal,
+            ),
+          ),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          canRequestFocus: false,
+          style: TextButton.styleFrom(
+            backgroundColor: _exitDialogFocusIndex == 1
+                ? Colors.redAccent.withOpacity(0.25)
+                : null,
+            side: _exitDialogFocusIndex == 1
+                ? const BorderSide(color: Colors.redAccent, width: 1.5)
+                : null,
+          ),
+          child: Text(
+            '退出',
+            style: TextStyle(
+              color: _exitDialogFocusIndex == 1
+                  ? Colors.redAccent
+                  : Colors.white70,
+              fontWeight: _exitDialogFocusIndex == 1
+                  ? FontWeight.bold
+                  : FontWeight.normal,
+            ),
+          ),
+        ),
+      ],
+    );
           },
         );
       },
@@ -942,8 +952,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     final isLr = k == LogicalKeyboardKey.arrowLeft ||
         k == LogicalKeyboardKey.arrowRight;
     if (isOk) {
-      if (isDown) {
+      if (isDown && _exitDialogOpen) {
         // 确认当前选中按钮（取消=false，退出=true）
+        // 先置标志位，防止同一按键事件被路由双处理（全局 handler + 按钮 Focus）
+        _exitDialogOpen = false;
         Navigator.of(context).pop(_exitDialogFocusIndex == 1);
       }
       return true;
@@ -1146,10 +1158,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _okHeld = true;
     _okLongFired = false;
     if (_navPanelOpen) {
+      _okDownInPanel = true;
       _panelKey('ok', true);
       return;
     }
     if (_bottomPanelActive) {
+      _okDownInPanel = true;
       _bottomPanelRemoteKey('ok', true);
       return;
     }
@@ -1166,6 +1180,19 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (!_okHeld) return;
     _okHeld = false;
     _okLongTimer?.cancel();
+    // 按下时面板是打开的（选台/按钮操作可能在按下边沿已关闭面板），
+    // 这次抬起仍属于面板内操作，绝不能落到短按逻辑里——否则频道列表
+    // 选台后松手会触发「面板外短按」= 播放/暂停切换或重开列表（串台感）
+    if (_okDownInPanel) {
+      _okDownInPanel = false;
+      if (_navPanelOpen) {
+        _panelKey('ok', false);
+      } else if (_bottomPanelActive) {
+        _bottomPanelRemoteKey('ok', false);
+      }
+      _okLongFired = false;
+      return;
+    }
     if (_navPanelOpen) {
       _panelKey('ok', false);
       return;

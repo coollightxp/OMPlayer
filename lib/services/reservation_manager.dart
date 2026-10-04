@@ -72,16 +72,19 @@ class ReservationManager {
     await _saveTriggered();
   }
 
+  /// 时间近似匹配：EPG 数据刷新后毫秒精度可能变化，
+  /// 用 ±60 秒容差代替 isAtSameMomentAs 精确匹配
+  static bool _sameTime(DateTime a, DateTime b) =>
+      (a.millisecondsSinceEpoch - b.millisecondsSinceEpoch).abs() < 60000;
+
   /// 切换某个节目的预约状态（存在则删除，不存在则添加）
   Future<bool> toggleReservation(ProgramReservation r) async {
     final existing = _reservations.any((x) =>
-        x.channelId == r.channelId &&
-        x.startTime.isAtSameMomentAs(r.startTime));
+        x.channelId == r.channelId && _sameTime(x.startTime, r.startTime));
     if (existing) {
       await removeReservation(_reservations
           .firstWhere((x) =>
-              x.channelId == r.channelId &&
-              x.startTime.isAtSameMomentAs(r.startTime))
+              x.channelId == r.channelId && _sameTime(x.startTime, r.startTime))
           .id);
       return false;
     } else {
@@ -90,11 +93,10 @@ class ReservationManager {
     }
   }
 
-  /// 检查某节目是否已预约
+  /// 检查某节目是否已预约（时间用近似匹配，容忍 EPG 刷新精度变化）
   bool isReserved(String channelId, DateTime startTime) {
     return _reservations.any((r) =>
-        r.channelId == channelId &&
-        r.startTime.isAtSameMomentAs(startTime));
+        r.channelId == channelId && _sameTime(r.startTime, startTime));
   }
 
   /// 启动定时检查，每分钟检查一次是否有预约需要触发

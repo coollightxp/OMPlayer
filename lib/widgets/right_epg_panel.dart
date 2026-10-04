@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -40,10 +38,8 @@ class RightEpgPanelState extends State<RightEpgPanel> {
   int _kbIndex = 0;
   bool _kbInitialized = false;
 
-  /// OK 长按判定（500ms 触发预约/取消）
-  Timer? _okHoldTimer;
-  bool _okLongFired = false;
-  static const Duration _okHoldDelay = Duration(milliseconds: 500);
+  /// OK 按下保持标记：按住时系统自动重复的 down 事件只触发一次预约
+  bool _okHeld = false;
 
   /// 上次预约/取消预约的时间，长按期间的二次触发忽略，
   /// 避免网络/EPG 数据刷新时连续 toggle 产生混乱提示
@@ -58,7 +54,6 @@ class RightEpgPanelState extends State<RightEpgPanel> {
 
   @override
   void dispose() {
-    _okHoldTimer?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
@@ -71,17 +66,17 @@ class RightEpgPanelState extends State<RightEpgPanel> {
       _lastScrolledKey = null;
       _kbInitialized = false;
       _kbIndex = 0;
-      _okHoldTimer?.cancel();
+      _okHeld = false;
     }
   }
 
   /// 遥控器/键盘按键入口（由 PlayerScreen 统一分发）。
-  /// 上下选择节目；长按 OK 预约/取消，短按 OK 提示；返回关闭。
+  /// 上下选择节目；单按 OK 预约/取消（按住不重复触发）；返回关闭。
   void handleRemoteKey(String action, {required bool isDown}) {
     if (!widget.isOpen || !mounted) return;
     if (action == 'back') {
       if (isDown) {
-        _okHoldTimer?.cancel();
+        _okHeld = false;
         widget.onClose();
       }
       return;
@@ -90,7 +85,6 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     if (epg.isEmpty) return;
     if (action == 'up' || action == 'down') {
       if (!isDown) return;
-      _okHoldTimer?.cancel();
       setState(() {
         _kbIndex = (_kbIndex + (action == 'down' ? 1 : -1))
             .clamp(0, epg.length - 1);
@@ -100,31 +94,20 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     }
     if (action == 'ok') {
       if (isDown) {
-        _okLongFired = false;
-        _okHoldTimer?.cancel();
-        _okHoldTimer = Timer(_okHoldDelay, () {
-          _okLongFired = true;
-          // 长按期间防抖：800ms 内只执行一次 toggle，避免
-          // EPG 数据刷新重建条目时重复触发预约/取消提示
-          if (_lastToggleAt != null &&
-              DateTime.now().difference(_lastToggleAt!) <
-                  const Duration(milliseconds: 800)) {
-            return;
-          }
-          _lastToggleAt = DateTime.now();
-          _toggleReservation(epg[_kbIndex.clamp(0, epg.length - 1)]);
-        });
-      } else {
-        _okHoldTimer?.cancel();
-        // 短按不直接操作，提示长按，避免误触预约
-        if (!_okLongFired) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('长按 OK 键预约/取消节目'),
-              duration: Duration(seconds: 2),
-            ),
-          );
+        // 单按 OK 直接预约/取消：按住时系统重复 down 事件由 _okHeld 去重，
+        // 按住不重复触发（否则会连环 toggle 且 EPG 刷新后索引偏移，
+        // 把"下面好几个节目"也预约上）
+        if (_okHeld) return;
+        _okHeld = true;
+        if (_lastToggleAt != null &&
+            DateTime.now().difference(_lastToggleAt!) <
+                const Duration(milliseconds: 800)) {
+          return;
         }
+        _lastToggleAt = DateTime.now();
+        _toggleReservation(epg[_kbIndex.clamp(0, epg.length - 1)]);
+      } else {
+        _okHeld = false;
       }
     }
   }

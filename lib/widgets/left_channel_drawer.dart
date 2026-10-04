@@ -50,11 +50,13 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
   /// 上次触发播放的时间，用于播放内核重建期间的防抖
   DateTime? _lastPlayAt;
 
+  /// 频道条目的 GlobalKey，用于 ensureVisible 精准定位
+  /// （替代固定 itemHeight 的手算，避免长频道名换行导致高度不一致）
+  final Map<int, GlobalKey> _channelKeys = <int, GlobalKey>{};
+  final Map<int, GlobalKey> _categoryKeys = <int, GlobalKey>{};
+
   /// 设计稿宽度（面板内容按此尺寸设计，缩放交给 ScaledPanel）
   static const double _designWidth = 320;
-
-  /// 列表条目估算高度（上下 padding 12 + 图标 40），与滚动定位一致
-  static const double _itemHeight = 64.0;
 
   @override
   void dispose() {
@@ -68,6 +70,10 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
     super.didUpdateWidget(oldWidget);
     // 打开时直接定位到当前播放频道所在分类，并滚动到当前频道
     if (!oldWidget.isOpen && widget.isOpen) {
+      // 清空 GlobalKey 映射：切换分类/频道列表刷新后，
+      // 旧索引的 key 可能已失效，需重建
+      _channelKeys.clear();
+      _categoryKeys.clear();
       final controller = context.read<PlayerController>();
       final cur = controller.currentChannel;
       if (cur != null) {
@@ -113,11 +119,11 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
         case 'up':
           setState(() => _kbCategoryIndex =
               (_kbCategoryIndex - 1).clamp(0, cats.length - 1));
-          _scrollKeyboardTo(_categoryScroll, _kbCategoryIndex);
+          _scrollKeyboardTo(_categoryKeys, _kbCategoryIndex);
         case 'down':
           setState(() => _kbCategoryIndex =
               (_kbCategoryIndex + 1).clamp(0, cats.length - 1));
-          _scrollKeyboardTo(_categoryScroll, _kbCategoryIndex);
+          _scrollKeyboardTo(_categoryKeys, _kbCategoryIndex);
         case 'ok':
         case 'right':
           final next = cats[_kbCategoryIndex];
@@ -131,7 +137,7 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           });
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _scrollToCurrentChannel();
-            _scrollKeyboardTo(_channelScroll, _kbChannelIndex);
+            _scrollKeyboardTo(_channelKeys, _kbChannelIndex);
           });
       }
     } else {
@@ -142,12 +148,12 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           if (channels.isEmpty) break;
           setState(() => _kbChannelIndex =
               (_kbChannelIndex - 1).clamp(0, channels.length - 1));
-          _scrollKeyboardTo(_channelScroll, _kbChannelIndex);
+          _scrollKeyboardTo(_channelKeys, _kbChannelIndex);
         case 'down':
           if (channels.isEmpty) break;
           setState(() => _kbChannelIndex =
               (_kbChannelIndex + 1).clamp(0, channels.length - 1));
-          _scrollKeyboardTo(_channelScroll, _kbChannelIndex);
+          _scrollKeyboardTo(_channelKeys, _kbChannelIndex);
         case 'left':
           setState(() => _selectedCategory = null);
         case 'ok':
@@ -158,8 +164,10 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
                   const Duration(milliseconds: 800)) {
             break;
           }
+          // 索引边界检查：EPG/频道列表刷新可能导致数组长度变化
+          final idx = _kbChannelIndex.clamp(0, channels.length - 1);
           _lastPlayAt = DateTime.now();
-          final channel = channels[_kbChannelIndex];
+          final channel = channels[idx];
           controller.playChannel(channel);
           widget.onChannelTap?.call();
           widget.onClose();
@@ -167,16 +175,19 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
     }
   }
 
-  /// 滚动列表让键盘选中项保持在可视区
-  void _scrollKeyboardTo(ScrollController sc, int index) {
+  /// 滚动列表让键盘选中项可见：用 GlobalKey + ensureVisible 精准定位，
+  /// 不再手算 itemHeight（长频道名换行导致高度不一致时手算会漂移）
+  void _scrollKeyboardTo(Map<int, GlobalKey> keys, int index) {
+    final key = keys[index];
+    if (key == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !sc.hasClients) return;
-      final target = (index * _itemHeight - 120)
-          .clamp(0.0, sc.position.maxScrollExtent);
-      sc.animateTo(
-        target,
+      final ctx = key.currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(
+        ctx,
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
+        alignment: 0.5,
       );
     });
   }
@@ -190,15 +201,18 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
     final idx = cat.channels
         .indexWhere((ch) => ch.id == controller.currentChannel?.id);
     if (idx < 0) return;
-    // 每条目约 64px（上下 padding 12 + 图标 40）
-    const itemHeight = 64.0;
-    final target = (idx * itemHeight - 120)
-        .clamp(0.0, _channelScroll.position.maxScrollExtent);
-    _channelScroll.animateTo(
-      target,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOutCubic,
-    );
+    final key = _channelKeys[idx];
+    if (key == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = key.currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+        alignment: 0.5,
+      );
+    });
   }
 
   /// 频道全局序号（跨分类累加，1 起），与数字选台/OSD 序号一致
@@ -350,7 +364,9 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       itemCount: cats.length,
       itemBuilder: (context, index) {
         final cat = cats[index];
+        final key = _categoryKeys.putIfAbsent(index, GlobalKey.new);
         return _CategoryTile(
+          key: key,
           category: cat,
           keyboardSelected: index == _kbCategoryIndex,
           onTap: () => setState(() {
@@ -374,7 +390,9 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
         final channel = category.channels[index];
         final isCurrent = controller.currentChannel?.id == channel.id;
         final number = _globalIndexOf(controller, category, index);
+        final key = _channelKeys.putIfAbsent(index, GlobalKey.new);
         return _ChannelTile(
+          key: key,
           channel: channel,
           number: number,
           isSelected: isCurrent,
@@ -399,6 +417,7 @@ class _CategoryTile extends StatelessWidget {
   final bool keyboardSelected;
 
   const _CategoryTile({
+    super.key,
     required this.category,
     required this.onTap,
     this.keyboardSelected = false,
@@ -474,6 +493,7 @@ class _ChannelTile extends StatelessWidget {
   final bool keyboardSelected;
 
   const _ChannelTile({
+    super.key,
     required this.channel,
     required this.number,
     required this.isSelected,
