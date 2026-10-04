@@ -175,44 +175,67 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
     }
   }
 
-  /// 滚动列表让键盘选中项可见：用 GlobalKey + ensureVisible 精准定位，
-  /// 不再手算 itemHeight（长频道名换行导致高度不一致时手算会漂移）
-  void _scrollKeyboardTo(Map<int, GlobalKey> keys, int index) {
-    final key = keys[index];
-    if (key == null) return;
+  /// 滚动列表让键盘选中项可见。
+  /// ListView 懒加载：目标条目在视口外很远时 GlobalKey 还没有
+  /// currentContext，ensureVisible 会静默失败；此时先用估算高度粗跳
+  /// 到目标附近让条目构建，下一帧再精准居中。
+  void _ensureVisibleIndex(ScrollController sc, Map<int, GlobalKey> keys,
+      int index, Duration duration) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = key.currentContext;
-      if (ctx == null) return;
-      Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-        alignment: 0.5,
-      );
+      if (!mounted || !sc.hasClients) return;
+      final ctx = keys[index]?.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: duration,
+          curve: Curves.easeOut,
+          alignment: 0.5,
+        );
+        return;
+      }
+      // 目标尚未构建：粗跳到目标附近（频道条目约 64px）
+      final pos = sc.position;
+      const estItemHeight = 64.0;
+      final rough = (index * estItemHeight - pos.viewportDimension / 2)
+          .clamp(0.0, pos.maxScrollExtent);
+      pos.jumpTo(rough);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !sc.hasClients) return;
+        final c2 = keys[index]?.currentContext;
+        if (c2 != null) {
+          Scrollable.ensureVisible(
+            c2,
+            duration: duration,
+            curve: Curves.easeOut,
+            alignment: 0.5,
+          );
+        }
+      });
     });
   }
+
+  /// 滚动列表让键盘选中项保持在可视区
+  void _scrollKeyboardTo(Map<int, GlobalKey> keys, int index) {
+    _ensureVisibleIndex(
+        _scrollOf(keys), keys, index, const Duration(milliseconds: 200));
+  }
+
+  ScrollController _scrollOf(Map<int, GlobalKey> keys) =>
+      identical(keys, _categoryKeys) ? _categoryScroll : _channelScroll;
 
   /// 滚动频道列表到当前播放频道
   void _scrollToCurrentChannel() {
     if (!mounted) return;
     final controller = context.read<PlayerController>();
     final cat = _selectedCategory;
-    if (cat == null || !_channelScroll.hasClients) return;
+    if (cat == null) return;
     final idx = cat.channels
         .indexWhere((ch) => ch.id == controller.currentChannel?.id);
     if (idx < 0) return;
-    final key = _channelKeys[idx];
-    if (key == null) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = key.currentContext;
-      if (ctx == null) return;
-      Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOutCubic,
-        alignment: 0.5,
-      );
-    });
+    // 注意：打开瞬间 _channelScroll 还没有 clients，
+    // 不能在这里同步判断 hasClients，交给 postFrame
+    _ensureVisibleIndex(_channelScroll, _channelKeys, idx,
+        const Duration(milliseconds: 300));
   }
 
   /// 频道全局序号（跨分类累加，1 起），与数字选台/OSD 序号一致

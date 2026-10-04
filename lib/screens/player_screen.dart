@@ -759,6 +759,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 安卓返回键/遥控器返回处理（PopScope 拦截后调用）：
   /// 按层级关闭 设置→投屏→面板→全屏；都没有时弹退出确认
   Future<void> _handleBackPressed() async {
+    // 重入守卫：退出确认框已在显示时直接忽略，
+    // 防止连按返回弹出两个路由、关闭时连带弹掉播放器（黑屏）
+    if (_exitDialogOpen) return;
     final c = context.read<PlayerController>();
     if (_settingsOpen) {
       setState(() => _settingsOpen = false);
@@ -812,7 +815,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         Focus(
           canRequestFocus: false,
           child: TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
+            onPressed: () {
+              _exitDialogOpen = false;
+              Navigator.of(ctx).pop(false);
+            },
             style: TextButton.styleFrom(
               backgroundColor: _exitDialogFocusIndex == 0
                   ? Colors.blueAccent.withOpacity(0.25)
@@ -837,7 +843,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         Focus(
           canRequestFocus: false,
           child: TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
+            onPressed: () {
+              _exitDialogOpen = false;
+              Navigator.of(ctx).pop(true);
+            },
             style: TextButton.styleFrom(
               backgroundColor: _exitDialogFocusIndex == 1
                   ? Colors.redAccent.withOpacity(0.25)
@@ -979,11 +988,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return true; // 两按钮水平排列，上下无意义
     }
     if (k == LogicalKeyboardKey.contextMenu) {
-      if (isDown) Navigator.of(context).pop(false);
+      if (isDown && _exitDialogOpen) {
+        _exitDialogOpen = false;
+        Navigator.of(context).pop(false);
+      }
       return true;
     }
     if (k == LogicalKeyboardKey.escape) {
-      if (isDown) Navigator.of(context).pop(false);
+      if (isDown && _exitDialogOpen) {
+        _exitDialogOpen = false;
+        Navigator.of(context).pop(false);
+      }
       return true;
     }
     return false;
@@ -1840,10 +1855,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
           _exitDialogFocusIndex = 1;
           _exitDialogRefresh?.call(() {});
         } else if (action == 'ok') {
+          // 一次性守卫：先摘标志再 pop，任何重复/残余事件都不会
+          // 再弹一次（第二次 pop 会把播放器路由弹掉 → 黑屏）
+          _exitDialogOpen = false;
           Navigator.of(context).pop(_exitDialogFocusIndex == 1);
         } else if (action == 'back' ||
             action == 'esc' ||
             action == 'menu') {
+          _exitDialogOpen = false;
           Navigator.of(context).pop(false);
         }
         return;

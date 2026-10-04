@@ -2017,13 +2017,15 @@ class PlayerController extends ChangeNotifier {
     return null;
   }
 
-  /// 检查节目是否已预约（同样只用精确匹配，避免状态显示到别的台）
+  /// 检查节目是否已预约。
+  /// 频道解析必须与 [toggleReservation] 完全一致
+  /// （精确匹配不到时兜底当前频道）：否则无 tvg-id 的频道会
+  /// 「预约时存频道UUID、查询时用XMLTV-id」导致图标不亮、
+  /// 第二次按 OK 仍提示"已预约"。
   bool isProgramReserved(EpgProgram program) {
-    final channel = _findChannelExact(program);
+    final channel = _findChannelExact(program) ?? _currentChannel;
     final cid = channel?.id ?? program.channelId;
-    return reservationManager.isReserved(cid, program.startTime) ||
-        reservationManager.isReserved(
-            program.channelId, program.startTime);
+    return reservationManager.isReserved(cid, program.startTime);
   }
 
   // ==================== 录制与截图（fvp/MDK 原生，桌面端） ====================

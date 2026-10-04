@@ -38,6 +38,14 @@ class RightEpgPanelState extends State<RightEpgPanel> {
   int _kbIndex = 0;
   bool _kbInitialized = false;
 
+  /// 选中节目的稳定标识（频道ID@开始时间毫秒）。
+  /// EPG 数据刷新/头部裁剪后仅靠索引会指向别的节目，
+  /// 用节目身份在每次构建时把 _kbIndex 重新对齐
+  String? _kbSelectionKey;
+
+  static String _programKey(EpgProgram p) =>
+      '${p.channelId}@${p.startTime.millisecondsSinceEpoch}';
+
   /// OK 按下保持标记：按住时系统自动重复的 down 事件只触发一次预约
   bool _okHeld = false;
 
@@ -66,6 +74,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
       _lastScrolledKey = null;
       _kbInitialized = false;
       _kbIndex = 0;
+      _kbSelectionKey = null;
       _okHeld = false;
     }
   }
@@ -88,6 +97,9 @@ class RightEpgPanelState extends State<RightEpgPanel> {
       setState(() {
         _kbIndex = (_kbIndex + (action == 'down' ? 1 : -1))
             .clamp(0, epg.length - 1);
+        // 记录节目身份：EPG 刷新后按身份把索引对齐回来，
+        // 避免选中框/预约串到别的节目
+        _kbSelectionKey = _programKey(epg[_kbIndex]);
       });
       _scrollKeyboardTo(_kbIndex);
       return;
@@ -137,21 +149,45 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     );
   }
 
-  /// 上下移动时让键盘选中节目可见：用 Scrollable.ensureVisible 精准定位，
-  /// 不再手算 itemHeight（各条目因 description/进度条存在高度差异，
-  /// 手算会累积误差导致选中框滚出视口）
+  /// 上下移动时让键盘选中节目可见。
+  /// ListView 懒加载：目标条目在视口外很远时其 GlobalKey 还没有
+  /// currentContext，ensureVisible 会静默失败。此时先用估算高度粗跳
+  /// 到目标附近让条目构建，下一帧再精准居中。
   void _scrollKeyboardTo(int index) {
-    if (index < 0 || index >= _itemKeys.length) return;
-    final key = _itemKeys[index];
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = key.currentContext;
-      if (ctx == null) return;
-      Scrollable.ensureVisible(
-        ctx,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-        alignment: 0.5, // 尽量滚到视口中部
-      );
+      if (!mounted || !_scrollController.hasClients) return;
+      final ctx = _itemKeys.length > index
+          ? _itemKeys[index].currentContext
+          : null;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+          alignment: 0.5, // 尽量滚到视口中部
+        );
+        return;
+      }
+      // 目标尚未构建：粗跳到目标附近
+      final pos = _scrollController.position;
+      const estItemHeight = 90.0; // 含描述/进度条的条目估算高度
+      final rough = (index * estItemHeight - pos.viewportDimension / 2)
+          .clamp(0.0, pos.maxScrollExtent);
+      pos.jumpTo(rough);
+      // 下一帧条目已构建，再精准居中
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final c2 =
+            _itemKeys.length > index ? _itemKeys[index].currentContext : null;
+        if (c2 != null) {
+          Scrollable.ensureVisible(
+            c2,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            alignment: 0.5,
+          );
+        }
+      });
     });
   }
 
@@ -262,6 +298,18 @@ class RightEpgPanelState extends State<RightEpgPanel> {
           _kbInitialized = true;
           final nowIdx = epg.indexWhere((p) => p.isNowPlaying);
           _kbIndex = nowIdx >= 0 ? nowIdx.clamp(0, epg.length - 1) : 0;
+          _kbSelectionKey = _programKey(epg[_kbIndex]);
+        } else if (_kbSelectionKey != null) {
+          // EPG 刷新后（头部裁剪/重新解析）按节目身份重新对齐索引，
+          // 防止选中框和预约操作串到别的节目
+          final found = epg.indexWhere((p) => _programKey(p) == _kbSelectionKey);
+          if (found >= 0) {
+            _kbIndex = found;
+          } else {
+            // 选中节目已不在列表（通常是已过期被裁剪）：钳制到边界
+            _kbIndex = _kbIndex.clamp(0, epg.length - 1);
+            _kbSelectionKey = _programKey(epg[_kbIndex]);
+          }
         }
         // 同步维护与条目数一致的 GlobalKey 列表
         while (_itemKeys.length < epg.length) {
