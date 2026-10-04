@@ -74,6 +74,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   String _numBuffer = '';
   Timer? _numTimer;
 
+  // 遥控器/键盘长按检测：OK 短按与长按区分；左右键短按切源、长按拖进度。
+  // 部分平台按住时重复发 KeyDownEvent 而非 KeyRepeatEvent，
+  // 用 _okDown/_arrowDown 去重，避免长按计时被反复重置
+  Timer? _okLongTimer;
+  bool _okDown = false;
+  bool _okLongFired = false;
+  Timer? _arrowLongTimer;
+  Timer? _arrowSeekTimer;
+  bool _arrowDown = false;
+  bool _arrowLongFired = false;
+
   // 底部面板 hover 状态（悬停时不自动隐藏）
   bool _bottomHovering = false;
 
@@ -327,6 +338,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _drawerHideTimer?.cancel();
     _osdTimer?.cancel();
     _numTimer?.cancel();
+    _okLongTimer?.cancel();
+    _arrowLongTimer?.cancel();
+    _arrowSeekTimer?.cancel();
     _rootFocusNode.dispose();
     _controllerRef?.removeListener(_onControllerChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -739,13 +753,36 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 全局硬件按键处理（注册在 HardwareKeyboard 上，不依赖焦点）。
   /// 返回 true 表示事件已消费，不再向焦点链传递。
+  ///
+  /// 遥控器适配（TV 盒子 / HTPC 遥控器在系统层就是键盘+媒体键）：
+  /// - OK（select/enter）：短按=直播出节目列表 / 点播暂停播放；长按=控制面板
+  /// - ←/→：短按=切源；长按=点播拖动进度（直播忽略长按）
+  /// - ↑/↓：切台；⏯ 媒体键：播放/暂停；⏮/⏭：切台；⏪/⏩：单步 ±10s
+  /// - 菜单键（contextMenu）：设置面板
   bool _onGlobalKeyEvent(KeyEvent event) {
-    // 只处理首次按下；长按重复事件是 KeyRepeatEvent，天然被排除
-    if (event is! KeyDownEvent) return false;
     // 设置面板里有输入框（URL、数字等）：所有按键放行
     if (_settingsOpen) return false;
+    // 退出确认等对话框开着时按键留给对话框（Enter 确认 / Esc 取消）
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return false;
 
     final k = event.logicalKey;
+
+    // OK 与左右方向键要区分短按/长按，走按下-抬起配对处理
+    if (k == LogicalKeyboardKey.select ||
+        k == LogicalKeyboardKey.enter ||
+        k == LogicalKeyboardKey.numpadEnter ||
+        k == LogicalKeyboardKey.gameButtonA) {
+      return _onOkKey(event);
+    }
+    if (k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight) {
+      return _onLeftRightKey(event, k == LogicalKeyboardKey.arrowLeft);
+    }
+
+    // 其余按键只处理首次按下；长按重复事件是 KeyRepeatEvent，天然被排除
+    if (event is! KeyDownEvent) return false;
+
     final p = event.physicalKey;
 
     // 数字键（主键盘 / 小键盘）选台。
@@ -785,20 +822,38 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       action = 'settings';
     } else if (k == LogicalKeyboardKey.keyR) {
       action = 'record';
+    } else if (k == LogicalKeyboardKey.mediaPlayPause ||
+        k == LogicalKeyboardKey.mediaPlay ||
+        k == LogicalKeyboardKey.mediaPause) {
+      // 遥控器 ⏯ 播放/暂停键
+      action = 'playpause';
+    } else if (k == LogicalKeyboardKey.contextMenu) {
+      // 遥控器菜单键 = 设置面板
+      action = 'settings';
     }
     if (action != null) {
       _onShortcut(action);
       return true;
     }
 
-    if (k == LogicalKeyboardKey.arrowLeft) {
-      _onArrow('prevSource');
+    // ⏮/⏭ 曲目键 = 切台；⏪/⏩ 快退快进键 = 点播单步 ±10 秒
+    if (k == LogicalKeyboardKey.mediaTrackNext) {
+      _onArrow('nextChannel');
       return true;
     }
-    if (k == LogicalKeyboardKey.arrowRight) {
-      _onArrow('nextSource');
+    if (k == LogicalKeyboardKey.mediaTrackPrevious) {
+      _onArrow('prevChannel');
       return true;
     }
+    if (k == LogicalKeyboardKey.audioFastForward) {
+      _seekTick(false);
+      return true;
+    }
+    if (k == LogicalKeyboardKey.audioRewind) {
+      _seekTick(true);
+      return true;
+    }
+
     if (k == LogicalKeyboardKey.arrowUp) {
       _onArrow('prevChannel');
       return true;
@@ -809,6 +864,95 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
 
     return false;
+  }
+
+  /// OK 键（遥控器确认键，映射为 select/enter）：短按与长按区分
+  bool _onOkKey(KeyEvent event) {
+    if (event is KeyDownEvent) {
+      if (_okDown) return true;
+      _okDown = true;
+      _okLongFired = false;
+      _okLongTimer?.cancel();
+      _okLongTimer = Timer(const Duration(milliseconds: 500), () {
+        _okLongFired = true;
+        // 长按 OK = 呼出/收起控制面板（内部有播放状态守卫）
+        _toggleBottomPanel();
+      });
+      return true;
+    }
+    if (event is KeyRepeatEvent) return true;
+    if (event is KeyUpEvent) {
+      _okDown = false;
+      _okLongTimer?.cancel();
+      if (!_okLongFired) {
+        final c = context.read<PlayerController>();
+        // 点播短按 OK = 暂停/播放；直播/网页频道 = 呼出或收起节目列表
+        if (c.isSeekable && !c.webPageActive) {
+          c.togglePlayPause();
+        } else {
+          _toggleDrawer(left: true);
+        }
+      }
+      _okLongFired = false;
+      return true;
+    }
+    return false;
+  }
+
+  /// ←/→ 键：短按切源（抬起时触发），长按拖动进度（仅点播；
+  /// 直播不可 seek，长按被忽略，抬起仍按短按切源处理）
+  bool _onLeftRightKey(KeyEvent event, bool isLeft) {
+    if (event is KeyDownEvent) {
+      if (_arrowDown) return true;
+      _arrowDown = true;
+      _arrowLongFired = false;
+      _arrowLongTimer?.cancel();
+      _arrowSeekTimer?.cancel();
+      final c = context.read<PlayerController>();
+      // 抽屉打开/网页频道/不可 seek 时不启动长按检测
+      if (!_leftDrawerOpen &&
+          !_rightEpgOpen &&
+          !c.webPageActive &&
+          c.isSeekable) {
+        _arrowLongTimer = Timer(const Duration(milliseconds: 400), () {
+          _arrowLongFired = true;
+          _showBottomPanel(); // 露出进度条便于观察
+          _seekTick(isLeft); // 到点先走一格
+          // 之后按住每 0.8 秒走一格：对齐投屏 CDN 的慢响应节奏，
+          // 避免 seek 风暴（与进度条「松手才 seek」同一教训）
+          _arrowSeekTimer = Timer.periodic(
+              const Duration(milliseconds: 800), (_) => _seekTick(isLeft));
+        });
+      }
+      return true;
+    }
+    if (event is KeyRepeatEvent) return true;
+    if (event is KeyUpEvent) {
+      _arrowDown = false;
+      _arrowLongTimer?.cancel();
+      _arrowSeekTimer?.cancel();
+      if (_arrowLongFired) {
+        _scheduleBottomHide();
+      } else {
+        _onArrow(isLeft ? 'prevSource' : 'nextSource');
+      }
+      _arrowLongFired = false;
+      return true;
+    }
+    return false;
+  }
+
+  /// 单步 seek ±10 秒（边界钳制；不可 seek 时静默忽略）
+  void _seekTick(bool isLeft) {
+    final c = context.read<PlayerController>();
+    if (!c.isSeekable) return;
+    final dur = c.duration;
+    if (dur <= Duration.zero) return;
+    var t = c.position + Duration(seconds: isLeft ? -10 : 10);
+    if (t < Duration.zero) t = Duration.zero;
+    if (t > dur) t = dur;
+    c.seekTo(t);
+    _showBottomPanel();
   }
 
   // ==================== 边缘点击区 ====================
@@ -1095,8 +1239,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   void _toggleBottomPanel() {
     final c = context.read<PlayerController>();
     // 网页模式下没有原生播放状态（_state 通常仍是 loading），
-    // 不能用 state==playing 拦截，否则左右点击永远呼不出面板
-    if (!c.webPageActive && c.state != PlayerState.playing) return;
+    // 不能用 state==playing 拦截，否则左右点击永远呼不出面板；
+    // 暂停中也允许呼出（遥控器长按 OK 在暂停时同样要看进度/恢复播放）
+    if (!c.webPageActive &&
+        c.state != PlayerState.playing &&
+        c.state != PlayerState.paused) {
+      return;
+    }
     setState(() {
       _bottomPanelVisible = !_bottomPanelVisible;
       if (_bottomPanelVisible) {

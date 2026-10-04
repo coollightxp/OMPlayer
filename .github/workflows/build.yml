@@ -49,6 +49,9 @@ jobs:
           sed -i 's|<activity |<activity android:launchMode="singleTask" |' $MANIFEST
           # 显式声明网络权限（video_player 会合并，但显式更稳）
           grep -q "android.permission.INTERNET" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <application|' $MANIFEST
+          # TV 盒子可装可用：不强制触摸屏；声明 leanback 非必需（Android TV
+          # 桌面/应用市场可见，手机安装不受影响）
+          grep -q "android.software.leanback" $MANIFEST || sed -i 's|<application|<uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    <uses-feature android:name="android.software.leanback" android:required="false" />\n    <application|' $MANIFEST
           # 挖孔/刘海屏全屏不留黑边
           mkdir -p android/app/src/main/res/values-v28
           cat > android/app/src/main/res/values-v28/styles.xml <<'XML'
