@@ -1082,7 +1082,8 @@ class _SystemSettingsTab extends StatelessWidget {
               ),
               onTap: controller.remoteAdminUrl.isEmpty
                   ? null
-                  : () => _showRemoteAdminQr(context, controller.remoteAdminUrl),
+                  : () => showRemoteAdminQrDialog(
+                      context, controller.remoteAdminUrl),
             ),
             const SizedBox(height: 16),
           ],
@@ -1090,57 +1091,138 @@ class _SystemSettingsTab extends StatelessWidget {
       },
     );
   }
-
-  /// 弹出局域网管理地址二维码
-  void _showRemoteAdminQr(BuildContext context, String url) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Colors.white,
-        title: const Text('手机扫码管理',
-            style: TextStyle(color: Colors.black, fontSize: 17)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('手机与电脑连接同一 Wi‑Fi',
-                style: TextStyle(color: Colors.black54, fontSize: 13)),
-            const SizedBox(height: 16),
-            QrImageView(
-              data: url,
-              version: QrVersions.auto,
-              size: 220,
-              backgroundColor: Colors.white,
-            ),
-            const SizedBox(height: 12),
-            SelectableText(url,
-                style: const TextStyle(color: Colors.black87, fontSize: 14)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: url));
-              if (!ctx.mounted) return;
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                    content: Text('地址已复制'),
-                    duration: Duration(seconds: 1)),
-              );
-            },
-            child: const Text('复制地址'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('关闭'),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 // ==================== 公共工具 ====================
+
+/// 弹出局域网管理地址二维码（设置面板与底部控制面板遥控器入口共用）。
+///
+/// 白色圆角卡片 + 圆角模块二维码，URL 独立底色展示，
+/// 「复制地址 / 关闭」两个按钮等高并排，遥控器返回键也可关闭。
+Future<void> showRemoteAdminQrDialog(BuildContext context, String url) {
+  return showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withOpacity(0.72),
+    builder: (ctx) => Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 40),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 360),
+        padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF7F8FA),
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('手机扫码管理',
+                style: TextStyle(
+                    color: Color(0xFF11141B),
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            const Text('手机与电脑连接同一 Wi‑Fi',
+                style: TextStyle(color: Colors.black45, fontSize: 13)),
+            const SizedBox(height: 18),
+            // 二维码：白底圆角卡片内嵌圆角方块码，四周留白保证可识别
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.07),
+                    blurRadius: 14,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: QrImageView(
+                data: url,
+                version: QrVersions.auto,
+                size: 216,
+                backgroundColor: Colors.white,
+                padding: EdgeInsets.zero,
+                eyeStyle: const QrEyeStyle(
+                  eyeShape: QrEyeShape.roundedSquare,
+                  color: Color(0xFF141821),
+                ),
+                dataModuleStyle: const QrDataModuleStyle(
+                  dataModuleShape: QrDataModuleShape.roundedSquare,
+                  color: Color(0xFF141821),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFECEEF2),
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: SelectableText(
+                url,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: Color(0xFF333A47),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: url));
+                      if (!ctx.mounted) return;
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('地址已复制'),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.copy, size: 18),
+                    label: const Text('复制地址'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF333A47),
+                      side: const BorderSide(color: Color(0xFFD2D7E0)),
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(11)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2563EB),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(11)),
+                    ),
+                    child: const Text('关闭'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
 
 InputDecoration _inputDecoration(String hint) {
   return InputDecoration(

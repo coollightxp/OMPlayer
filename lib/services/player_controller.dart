@@ -489,11 +489,22 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<Map<String, dynamic>> _remoteAdminSnapshot() async {
+    final s = settings;
     return {
       'playlists': sourceManager.playlists.map((e) => e.toJson()).toList(),
       'currentPlaylistId': sourceManager.currentPlaylistId,
       'epgs': sourceManager.epgs.map((e) => e.toJson()).toList(),
       'currentEpgId': sourceManager.currentEpgId,
+      // 手机端常用开关（不放 remoteAdminEnabled：关掉会断开自己）
+      'settings': {
+        'showClock': s.showClock,
+        'dlnaEnabled': s.dlnaEnabled,
+        'alwaysOnTop': s.alwaysOnTop,
+        'autoPlayNext': s.autoPlayNext,
+        'startFullscreen': s.startFullscreen,
+        'launchAtStartup': s.launchAtStartup,
+        'isDesktop': isDesktop,
+      },
     };
   }
 
@@ -532,6 +543,42 @@ class PlayerController extends ChangeNotifier {
     if (sourceManager.currentEpg != null &&
         sourceManager.currentEpgId != oldEpgId) {
       await refreshEpg();
+    }
+
+    // 手机端常用开关（settings 段缺省时跳过，兼容旧版页面的请求）
+    final rawSettings = data['settings'];
+    if (rawSettings is Map) {
+      bool? rb(String key) =>
+          rawSettings[key] is bool ? rawSettings[key] as bool : null;
+      final cur = _settings;
+
+      // 时钟走独立通道，避免整棵播放树重建（见 setShowClock 注释）
+      final clock = rb('showClock');
+      if (clock != null && clock != cur.showClock) {
+        setShowClock(clock);
+      }
+
+      final dlna = rb('dlnaEnabled') ?? cur.dlnaEnabled;
+      final autoPlayNext = rb('autoPlayNext') ?? cur.autoPlayNext;
+      final startFullscreen = rb('startFullscreen') ?? cur.startFullscreen;
+      final alwaysOnTop =
+          isDesktop ? (rb('alwaysOnTop') ?? cur.alwaysOnTop) : cur.alwaysOnTop;
+      final launchAtStartup = isDesktop
+          ? (rb('launchAtStartup') ?? cur.launchAtStartup)
+          : cur.launchAtStartup;
+      if (dlna != cur.dlnaEnabled ||
+          autoPlayNext != cur.autoPlayNext ||
+          startFullscreen != cur.startFullscreen ||
+          alwaysOnTop != cur.alwaysOnTop ||
+          launchAtStartup != cur.launchAtStartup) {
+        updateSettings(cur.copyWith(
+          dlnaEnabled: dlna,
+          autoPlayNext: autoPlayNext,
+          startFullscreen: startFullscreen,
+          alwaysOnTop: alwaysOnTop,
+          launchAtStartup: launchAtStartup,
+        ));
+      }
     }
     notifyListeners();
   }
@@ -962,6 +1009,9 @@ class PlayerController extends ChangeNotifier {
   void setWebForeground(bool value) {
     if (_webPageForeground == value) return;
     _webPageForeground = value;
+    // 网页到前台后 WebView2 HWND 会吞掉全部按键，低级钩子才需要拦截
+    // 转发；后台缓冲/普通视频时放行，保留 Flutter 完整按键事件
+    WinHotkeys().setWebForward(value);
     // 起播成功：把 App 音量写入页面 video（attachWebBridge 时页面
     // 可能还没有 video 元素，这里才是真正生效的时机）
     if (value) _applyWebVolume();
@@ -1000,6 +1050,7 @@ class PlayerController extends ChangeNotifier {
     _webPageActive = false;
     _webPageForeground = false;
     WinHotkeys().setCursorHide(false);
+    WinHotkeys().setWebForward(false);
     notifyListeners();
   }
 

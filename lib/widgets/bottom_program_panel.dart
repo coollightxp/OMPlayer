@@ -9,7 +9,10 @@ import 'scaled_panel.dart';
 /// 底部信息/控制面板
 /// 布局（参考电视播放器）：台标 | 当前节目(大字)+时段/频道/分辨率/线路 | 控制按钮
 /// 点播文件时顶部显示可拖动进度条，直播流不显示
-class BottomProgramPanel extends StatelessWidget {
+///
+/// 遥控器导航（TV 盒子无鼠标）：面板可见时，←/→ 在可用按钮间移动高亮，
+/// OK 激活当前按钮，返回键由播放页负责关闭面板。
+class BottomProgramPanel extends StatefulWidget {
   final bool isVisible;
   final VoidCallback onTogglePlayPause;
   final VoidCallback onOpenChannels;
@@ -17,6 +20,12 @@ class BottomProgramPanel extends StatelessWidget {
   final VoidCallback onOpenSettings;
   final VoidCallback onScreenshot;
   final VoidCallback onToggleRecord;
+
+  /// 调出手机扫码管理页（地址为空时传 null，按钮不显示）
+  final VoidCallback? onOpenRemoteAdmin;
+
+  /// 遥控器激活「跳转类」按钮（频道/EPG/设置/扫码）后通知播放页关闭面板
+  final VoidCallback? onDismissRemote;
 
   /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
   final VoidCallback? onHoverEnter;
@@ -32,20 +41,89 @@ class BottomProgramPanel extends StatelessWidget {
     required this.onOpenSettings,
     required this.onScreenshot,
     required this.onToggleRecord,
+    this.onOpenRemoteAdmin,
+    this.onDismissRemote,
     this.onHoverEnter,
     this.onHoverExit,
     this.onHoverMove,
   });
 
-  static final _hm = DateFormat('HH:mm');
+  @override
+  State<BottomProgramPanel> createState() => BottomProgramPanelState();
+}
 
-  String _range(EpgProgram p) =>
-      '${_hm.format(p.startTime)} - ${_hm.format(p.endTime)}';
-  String _clock(Duration d) {
-    final h = d.inHours;
-    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-    return h > 0 ? '$h:$m:$s' : '$m:$s';
+/// 面板内一个可由遥控器激活的按钮
+class _KbAction {
+  final String id;
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  /// 激活后是否关闭面板（跳转到其它面板/弹层 = true）
+  final bool dismiss;
+
+  const _KbAction(this.id, this.icon, this.tooltip, this.onPressed,
+      {this.dismiss = false});
+}
+
+class BottomProgramPanelState extends State<BottomProgramPanel> {
+  /// 遥控器当前高亮的按钮 id（null = 无高亮）。
+  /// 用 id 而非索引：播放状态变化会让按钮顺序/可用性变化（如投屏按钮），
+  /// 高亮不会因此错位。
+  String? _kbId;
+
+  /// 最近一次构建出的动作列表（与按钮排列顺序一致）
+  List<_KbAction> _actions = const [];
+
+  /// 当前可激活（未禁用）的动作
+  List<_KbAction> get _enabledActions =>
+      _actions.where((a) => a.onPressed != null).toList();
+
+  @override
+  void didUpdateWidget(BottomProgramPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 面板每次被呼出时，默认高亮「播放/暂停」（不可用时取第一个可用按钮）
+    if (widget.isVisible && !oldWidget.isVisible) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final enabled = _enabledActions;
+        if (enabled.isEmpty) {
+          setState(() => _kbId = null);
+          return;
+        }
+        final play = enabled.where((a) => a.id == 'playpause');
+        setState(() =>
+            _kbId = play.isNotEmpty ? play.first.id : enabled.first.id);
+      });
+    }
+  }
+
+  /// 遥控器按键：←/→ 在【可用】按钮间移动高亮，OK 激活当前按钮
+  void handleRemoteKey(String action, {required bool isDown}) {
+    if (!widget.isVisible) return;
+    final enabled = _enabledActions;
+    if (enabled.isEmpty) return;
+    if (action == 'left' || action == 'right') {
+      if (!isDown) return;
+      var i = enabled.indexWhere((a) => a.id == _kbId);
+      setState(() {
+        if (i < 0) {
+          i = action == 'right' ? 0 : enabled.length - 1;
+        } else if (action == 'right') {
+          i = (i + 1) % enabled.length;
+        } else {
+          i = (i - 1 + enabled.length) % enabled.length;
+        }
+        _kbId = enabled[i].id;
+      });
+      return;
+    }
+    if (action == 'ok' && isDown) {
+      final i = enabled.indexWhere((a) => a.id == _kbId);
+      final a = i >= 0 ? enabled[i] : enabled.first;
+      a.onPressed?.call();
+      if (a.dismiss) widget.onDismissRemote?.call();
+    }
   }
 
   @override
@@ -61,14 +139,14 @@ class BottomProgramPanel extends StatelessWidget {
       curve: Curves.easeOutCubic,
       left: hPad,
       right: hPad,
-      bottom: isVisible ? (screenW > 900 ? 16 : 8) : -320,
+      bottom: widget.isVisible ? (screenW > 900 ? 16 : 8) : -320,
       child: MouseRegion(
-        onEnter: (_) => onHoverEnter?.call(),
-        onExit: (_) => onHoverExit?.call(),
-        onHover: (_) => onHoverMove?.call(),
+        onEnter: (_) => widget.onHoverEnter?.call(),
+        onExit: (_) => widget.onHoverExit?.call(),
+        onHover: (_) => widget.onHoverMove?.call(),
         child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
-          opacity: isVisible ? 1.0 : 0.0,
+          opacity: widget.isVisible ? 1.0 : 0.0,
           child: ScaledPanel(
             alignment: Alignment.bottomCenter,
             scale: scale,
@@ -249,73 +327,148 @@ class BottomProgramPanel extends StatelessWidget {
 
   Widget _buildButtons(PlayerController c) {
     final hasVideo = c.currentChannel != null;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _btn(Icons.skip_previous, '上一个源',
-            c.hasPrevSource ? c.prevSource : null),
-        Text('源${c.sourceIndex + 1}/${c.sourceCount}',
-            style: const TextStyle(color: Colors.white54, fontSize: 11)),
-        _btn(Icons.skip_next, '下一个源',
-            c.hasNextSource ? c.nextSource : null),
-        IconButton(
-          icon: Icon(c.isPlaying ? Icons.pause : Icons.play_arrow,
-              color: Colors.white, size: 30),
-          onPressed: hasVideo ? onTogglePlayPause : null,
-        ),
-        const SizedBox(width: 4),
-        if (c.isDesktop) ...[
-          _btn(Icons.camera_alt, '截图', hasVideo ? onScreenshot : null),
-          // 录制：开始=红色圆点，录制中=红色方块
-          IconButton(
-            icon: Icon(
-              c.isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
-              color: c.isRecording ? Colors.redAccent : Colors.white,
-              size: c.isRecording ? 30 : 26,
-            ),
-            onPressed: hasVideo ? onToggleRecord : null,
-            tooltip: c.isRecording ? '停止录制' : '开始录制',
-          ),
-          const SizedBox(width: 4),
-        ],
-        // 旋转画面：投屏竖屏直播（如抖音）时把画面转 90° 填满屏幕，
-        // 再点一下恢复原始方向。0° 时半透明，旋转后高亮提示。
-        ValueListenableBuilder<int>(
-          valueListenable: c.videoRotation,
-          builder: (context, rot, _) => IconButton(
-            icon: Icon(
-              Icons.screen_rotation,
-              color: rot == 0 ? Colors.white54 : Colors.amber,
-              size: 24,
-            ),
-            onPressed: hasVideo ? c.cycleVideoRotation : null,
-            tooltip: rot == 0 ? '旋转画面' : '恢复原始方向',
-          ),
-        ),
-        _btn(Icons.list, '频道列表', onOpenChannels),
-        _btn(Icons.menu_book, '节目单', onOpenEpg),
-        _btn(Icons.settings, '设置', onOpenSettings),
-        // 投屏：投屏连接时红色高亮，点击断开并恢复投屏前频道；
-        // 未投屏时灰色不可点
-        IconButton(
-          icon: Icon(
-            c.isCasting ? Icons.cast_connected : Icons.cast,
-            color: c.isCasting ? Colors.redAccent : Colors.white24,
-            size: 24,
-          ),
-          onPressed: c.isCasting ? c.stopCastAndRestore : null,
-          tooltip: c.isCasting ? '断开投屏' : '未投屏',
-        ),
+    // 可用动作：禁用按钮不进列表，遥控器只会高亮能点的按钮
+    final actions = <_KbAction>[
+      _KbAction('prevSource', Icons.skip_previous, '上一个源',
+          c.hasPrevSource ? c.prevSource : null),
+      _KbAction('nextSource', Icons.skip_next, '下一个源',
+          c.hasNextSource ? c.nextSource : null),
+      _KbAction(
+          'playpause',
+          c.isPlaying ? Icons.pause : Icons.play_arrow,
+          c.isPlaying ? '暂停' : '播放',
+          hasVideo ? widget.onTogglePlayPause : null),
+      if (c.isDesktop) ...[
+        _KbAction('screenshot', Icons.camera_alt, '截图',
+            hasVideo ? widget.onScreenshot : null),
+        _KbAction(
+            'record',
+            c.isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
+            c.isRecording ? '停止录制' : '开始录制',
+            hasVideo ? widget.onToggleRecord : null),
       ],
+      _KbAction(
+          'rotate',
+          Icons.screen_rotation,
+          c.videoRotation.value == 0 ? '旋转画面' : '恢复原始方向',
+          hasVideo ? c.cycleVideoRotation : null),
+      _KbAction('channels', Icons.list, '频道列表', widget.onOpenChannels,
+          dismiss: true),
+      _KbAction('epg', Icons.menu_book, '节目单', widget.onOpenEpg,
+          dismiss: true),
+      if (widget.onOpenRemoteAdmin != null)
+        _KbAction('remoteAdmin', Icons.qr_code_2, '手机扫码管理',
+            widget.onOpenRemoteAdmin,
+            dismiss: true),
+      _KbAction('settings', Icons.settings, '设置', widget.onOpenSettings,
+          dismiss: true),
+      if (c.isCasting)
+        _KbAction('cast', Icons.cast_connected, '断开投屏',
+            c.stopCastAndRestore),
+    ];
+    _actions = actions;
+    // 当前高亮的动作若已消失（如断开投屏），清除高亮，等下次方向键重选
+    if (_kbId != null && !actions.any((a) => a.id == _kbId)) _kbId = null;
+
+    final children = <Widget>[
+      // 源切换文字夹在两个按钮中间，不占遥控器动作位
+      _btn(actions[0], big: true),
+      Text('源${c.sourceIndex + 1}/${c.sourceCount}',
+          style: const TextStyle(color: Colors.white54, fontSize: 11)),
+      _btn(actions[1], big: true),
+      _btn(actions[2], big: true),
+    ];
+    if (c.isDesktop) {
+      children.addAll([
+        const SizedBox(width: 4),
+        _btn(actions.firstWhere((a) => a.id == 'screenshot')),
+        _btn(actions.firstWhere((a) => a.id == 'record'), big: true),
+        const SizedBox(width: 4),
+      ]);
+    }
+    children.add(_btn(actions.firstWhere((a) => a.id == 'rotate')));
+
+    void addById(String id) {
+      final i = actions.indexWhere((a) => a.id == id);
+      if (i >= 0) children.add(_btn(actions[i]));
+    }
+
+    addById('channels');
+    addById('epg');
+    addById('remoteAdmin');
+    addById('settings');
+    addById('cast');
+
+    return Row(mainAxisSize: MainAxisSize.min, children: children);
+  }
+
+  Widget _btn(_KbAction a, {bool big = false}) {
+    final selected = a.id == _kbId;
+    final color = a.id == 'record'
+        ? (a.tooltip.contains('停止') ? Colors.redAccent : Colors.white)
+        : (a.id == 'cast'
+            ? Colors.redAccent
+            : (a.id == 'rotate'
+                ? null
+                : Colors.white));
+    final iconColor = a.id == 'rotate'
+        ? null // ValueListenableBuilder 内部按旋转角度决定颜色
+        : (a.onPressed == null ? Colors.white24 : color);
+    final iconSize = big ? 30.0 : 24.0;
+
+    // 旋转按钮的颜色随旋转状态变化，单独保留 ValueListenableBuilder
+    if (a.id == 'rotate') {
+      return _wrapSelected(
+        selected,
+        ValueListenableBuilder<int>(
+          valueListenable: context.read<PlayerController>().videoRotation,
+          builder: (context, rot, _) => IconButton(
+            icon: Icon(Icons.screen_rotation,
+                color: a.onPressed == null
+                    ? Colors.white24
+                    : (rot == 0 ? Colors.white54 : Colors.amber),
+                size: iconSize),
+            onPressed: a.onPressed,
+            tooltip: a.tooltip,
+          ),
+        ),
+      );
+    }
+
+    return _wrapSelected(
+      selected,
+      IconButton(
+        icon: Icon(a.icon,
+            color: a.onPressed == null ? Colors.white24 : iconColor,
+            size: iconSize),
+        onPressed: a.onPressed,
+        tooltip: a.tooltip,
+      ),
     );
   }
 
-  Widget _btn(IconData icon, String tooltip, VoidCallback? onPressed) {
-    return IconButton(
-      icon: Icon(icon, color: Colors.white, size: 24),
-      onPressed: onPressed,
-      tooltip: tooltip,
+  /// 遥控器高亮：蓝底圆角方框
+  Widget _wrapSelected(bool selected, Widget child) {
+    if (!selected) return child;
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.blueAccent.withOpacity(0.22),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blueAccent, width: 1.6),
+      ),
+      child: child,
     );
+  }
+
+  static final _hm = DateFormat('HH:mm');
+
+  String _range(EpgProgram p) =>
+      '${_hm.format(p.startTime)} - ${_hm.format(p.endTime)}';
+  String _clock(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
   }
 }
 

@@ -35,16 +35,23 @@ class LeftChannelDrawer extends StatefulWidget {
   });
 
   @override
-  State<LeftChannelDrawer> createState() => _LeftChannelDrawerState();
+  State<LeftChannelDrawer> createState() => LeftChannelDrawerState();
 }
 
-class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
+class LeftChannelDrawerState extends State<LeftChannelDrawer> {
   ChannelCategory? _selectedCategory;
   final ScrollController _categoryScroll = ScrollController();
   final ScrollController _channelScroll = ScrollController();
 
+  /// 遥控器/键盘导航的当前选中索引（与鼠标点击的 isCurrent 播放中区分）
+  int _kbCategoryIndex = 0;
+  int _kbChannelIndex = 0;
+
   /// 设计稿宽度（面板内容按此尺寸设计，缩放交给 ScaledPanel）
   static const double _designWidth = 320;
+
+  /// 列表条目估算高度（上下 padding 12 + 图标 40），与滚动定位一致
+  static const double _itemHeight = 64.0;
 
   @override
   void dispose() {
@@ -61,19 +68,107 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
       final controller = context.read<PlayerController>();
       final cur = controller.currentChannel;
       if (cur != null) {
+        var catIndex = 0;
         for (final cat in controller.categories) {
           if (cat.channels.any((ch) => ch.id == cur.id)) {
             if (_selectedCategory != cat) {
               setState(() => _selectedCategory = cat);
             }
+            _kbCategoryIndex = catIndex;
+            _kbChannelIndex = cat.channels
+                .indexWhere((ch) => ch.id == cur.id)
+                .clamp(0, cat.channels.length - 1);
             break;
           }
+          catIndex++;
         }
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _scrollToCurrentChannel();
       });
     }
+  }
+
+  /// 遥控器/键盘按键入口（由 PlayerScreen 统一分发，Windows 低级钩子
+  /// 与 HardwareKeyboard 走同一入口）。
+  /// action: up/down/left/right/ok/back；back 与 ok 在按下边沿触发。
+  void handleRemoteKey(String action, {required bool isDown}) {
+    if (!widget.isOpen || !mounted) return;
+    if (action == 'back') {
+      if (isDown) widget.onClose();
+      return;
+    }
+    // 其余动作只在按下边沿处理一次（长按重复由系统 repeat 过滤在上游）
+    if (!isDown) return;
+    final controller = context.read<PlayerController>();
+    final cats = controller.categories;
+    final cat = _selectedCategory;
+    if (cat == null) {
+      // ===== 第一级：分类列表 =====
+      if (cats.isEmpty) return;
+      switch (action) {
+        case 'up':
+          setState(() => _kbCategoryIndex =
+              (_kbCategoryIndex - 1).clamp(0, cats.length - 1));
+          _scrollKeyboardTo(_categoryScroll, _kbCategoryIndex);
+        case 'down':
+          setState(() => _kbCategoryIndex =
+              (_kbCategoryIndex + 1).clamp(0, cats.length - 1));
+          _scrollKeyboardTo(_categoryScroll, _kbCategoryIndex);
+        case 'ok':
+        case 'right':
+          final next = cats[_kbCategoryIndex];
+          setState(() {
+            _selectedCategory = next;
+            final curId = controller.currentChannel?.id;
+            final idx = next.channels.indexWhere((ch) => ch.id == curId);
+            // 进入分类时默认选中当前播放频道，没有则选第一条
+            _kbChannelIndex =
+                idx >= 0 ? idx.clamp(0, next.channels.length - 1) : 0;
+          });
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _scrollToCurrentChannel();
+            _scrollKeyboardTo(_channelScroll, _kbChannelIndex);
+          });
+      }
+    } else {
+      // ===== 第二级：频道列表 =====
+      final channels = cat.channels;
+      switch (action) {
+        case 'up':
+          if (channels.isEmpty) break;
+          setState(() => _kbChannelIndex =
+              (_kbChannelIndex - 1).clamp(0, channels.length - 1));
+          _scrollKeyboardTo(_channelScroll, _kbChannelIndex);
+        case 'down':
+          if (channels.isEmpty) break;
+          setState(() => _kbChannelIndex =
+              (_kbChannelIndex + 1).clamp(0, channels.length - 1));
+          _scrollKeyboardTo(_channelScroll, _kbChannelIndex);
+        case 'left':
+          setState(() => _selectedCategory = null);
+        case 'ok':
+          if (channels.isEmpty) break;
+          final channel = channels[_kbChannelIndex];
+          controller.playChannel(channel);
+          widget.onChannelTap?.call();
+          widget.onClose();
+      }
+    }
+  }
+
+  /// 滚动列表让键盘选中项保持在可视区
+  void _scrollKeyboardTo(ScrollController sc, int index) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !sc.hasClients) return;
+      final target = (index * _itemHeight - 120)
+          .clamp(0.0, sc.position.maxScrollExtent);
+      sc.animateTo(
+        target,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   /// 滚动频道列表到当前播放频道
@@ -247,7 +342,12 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
         final cat = cats[index];
         return _CategoryTile(
           category: cat,
-          onTap: () => setState(() => _selectedCategory = cat),
+          keyboardSelected: index == _kbCategoryIndex,
+          onTap: () => setState(() {
+            _selectedCategory = cat;
+            _kbCategoryIndex = index;
+            _kbChannelIndex = 0;
+          }),
         );
       },
     );
@@ -268,7 +368,9 @@ class _LeftChannelDrawerState extends State<LeftChannelDrawer> {
           channel: channel,
           number: number,
           isSelected: isCurrent,
+          keyboardSelected: index == _kbChannelIndex,
           onTap: () {
+            _kbChannelIndex = index;
             controller.playChannel(channel);
             widget.onChannelTap?.call();
             widget.onClose();
@@ -283,14 +385,31 @@ class _CategoryTile extends StatelessWidget {
   final ChannelCategory category;
   final VoidCallback onTap;
 
-  const _CategoryTile({required this.category, required this.onTap});
+  /// 遥控器/键盘焦点高亮（区别于鼠标）
+  final bool keyboardSelected;
+
+  const _CategoryTile({
+    required this.category,
+    required this.onTap,
+    this.keyboardSelected = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
       child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 8),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: keyboardSelected
+              ? Colors.white.withOpacity(0.10)
+              : Colors.transparent,
+          border: keyboardSelected
+              ? Border.all(color: Colors.white70, width: 1.2)
+              : null,
+          borderRadius: BorderRadius.circular(8),
+        ),
         child: Row(
           children: [
             Container(
@@ -324,7 +443,10 @@ class _CategoryTile extends StatelessWidget {
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right, color: Colors.white38),
+            Icon(
+              Icons.chevron_right,
+              color: keyboardSelected ? Colors.white : Colors.white38,
+            ),
           ],
         ),
       ),
@@ -338,11 +460,15 @@ class _ChannelTile extends StatelessWidget {
   final bool isSelected;
   final VoidCallback onTap;
 
+  /// 遥控器/键盘焦点高亮
+  final bool keyboardSelected;
+
   const _ChannelTile({
     required this.channel,
     required this.number,
     required this.isSelected,
     required this.onTap,
+    this.keyboardSelected = false,
   });
 
   @override
@@ -350,14 +476,20 @@ class _ChannelTile extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 8),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           color: isSelected
               ? Colors.blueAccent.withOpacity(0.2)
-              : Colors.transparent,
-          border: isSelected
-              ? Border.all(color: Colors.blueAccent, width: 1)
-              : null,
+              : (keyboardSelected
+                  ? Colors.white.withOpacity(0.08)
+                  : Colors.transparent),
+          border: Border.all(
+            color: keyboardSelected
+                ? Colors.white70
+                : (isSelected ? Colors.blueAccent : Colors.transparent),
+            width: keyboardSelected ? 1.2 : 1,
+          ),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(

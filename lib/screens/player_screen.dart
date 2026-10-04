@@ -85,6 +85,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   bool _arrowDown = false;
   bool _arrowLongFired = false;
 
+  // 菜单键：短按=EPG 节目单，长按=设置面板
+  Timer? _menuLongTimer;
+  bool _menuDown = false;
+  bool _menuLongFired = false;
+
+  // 两个侧边面板的状态句柄：遥控器/键盘导航由本页统一分发
+  // （HardwareKeyboard 与 Windows 低级钩子走同一入口）
+  final GlobalKey<LeftChannelDrawerState> _leftDrawerKey = GlobalKey();
+  final GlobalKey<RightEpgPanelState> _rightEpgKey = GlobalKey();
+  final GlobalKey<BottomProgramPanelState> _bottomPanelKey = GlobalKey();
+
   // 底部面板 hover 状态（悬停时不自动隐藏）
   bool _bottomHovering = false;
 
@@ -341,6 +352,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _okLongTimer?.cancel();
     _arrowLongTimer?.cancel();
     _arrowSeekTimer?.cancel();
+    _menuLongTimer?.cancel();
     _rootFocusNode.dispose();
     _controllerRef?.removeListener(_onControllerChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -567,6 +579,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 组件被其它 RenderObjectWidget 包裹会破坏 Stack parentData，
                   // release 下直接灰屏）
                   BottomProgramPanel(
+                    key: _bottomPanelKey,
                     isVisible: panelVisible,
                     onHoverEnter: _cancelBottomHide,
                     onHoverExit: _scheduleBottomHide,
@@ -577,10 +590,21 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onOpenSettings: _toggleSettings,
                     onScreenshot: _takeScreenshot,
                     onToggleRecord: () => _toggleRecording(controller),
+                    onOpenRemoteAdmin:
+                        controller.remoteAdminUrl.isEmpty
+                            ? null
+                            : () => _showRemoteAdminQr(controller),
+                    onDismissRemote: () {
+                      if (_bottomPanelVisible) {
+                        setState(() => _bottomPanelVisible = false);
+                      }
+                      _bottomHideTimer?.cancel();
+                    },
                   ),
 
                   // 左侧频道抽屉
                   LeftChannelDrawer(
+                    key: _leftDrawerKey,
                     isOpen: _leftDrawerOpen,
                     onClose: () {
                       setState(() => _leftDrawerOpen = false);
@@ -598,6 +622,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
                   // 右侧 EPG 面板
                   RightEpgPanel(
+                    key: _rightEpgKey,
                     isOpen: _rightEpgOpen,
                     onClose: () {
                       setState(() => _rightEpgOpen = false);
@@ -722,6 +747,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       setState(() => _rightEpgOpen = false);
       return;
     }
+    if (_bottomPanelVisible) {
+      _bottomHideTimer?.cancel();
+      setState(() => _bottomPanelVisible = false);
+      return;
+    }
     if (c.isFullscreen) {
       c.exitFullscreenIfNeeded();
       return;
@@ -751,37 +781,101 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   // ==================== 硬件按键快捷键 ====================
 
+  /// 侧边面板（频道列表/EPG）是否有一个打开：打开期间方向键与 OK
+  /// 全部转作面板内导航，不触发播放控制
+  bool get _navPanelOpen => _leftDrawerOpen || _rightEpgOpen;
+
+  /// 底部控制面板是否由用户主动呼出（长按 OK / 鼠标 hover）。
+  /// 为 true 期间 ←/→ 与 OK 用于面板内按钮导航，返回键关闭面板
+  bool get _bottomPanelActive => _bottomPanelVisible;
+
+  /// 把遥控器动作分发给当前打开的侧边面板，并取消桌面端自动隐藏
+  /// （遥控器没有鼠标 hover，面板应一直保留到返回键关闭）
+  void _panelKey(String action, bool isDown) {
+    _cancelDrawerHide();
+    if (_leftDrawerOpen) {
+      _leftDrawerKey.currentState?.handleRemoteKey(action, isDown: isDown);
+    } else if (_rightEpgOpen) {
+      _rightEpgKey.currentState?.handleRemoteKey(action, isDown: isDown);
+    }
+  }
+
+  /// 把遥控器动作分发给底部控制面板，并取消自动隐藏
+  void _bottomPanelRemoteKey(String action, bool isDown) {
+    _bottomHideTimer?.cancel();
+    _bottomPanelKey.currentState?.handleRemoteKey(action, isDown: isDown);
+  }
+
   /// 全局硬件按键处理（注册在 HardwareKeyboard 上，不依赖焦点）。
   /// 返回 true 表示事件已消费，不再向焦点链传递。
   ///
   /// 遥控器适配（TV 盒子 / HTPC 遥控器在系统层就是键盘+媒体键）：
-  /// - OK（select/enter）：短按=直播出节目列表 / 点播暂停播放；长按=控制面板
+  /// - OK（select/enter）：短按=直播出节目列表 / 点播暂停播放；长按=控制面板；
+  ///   面板打开时方向键/OK 全部用于面板内导航
   /// - ←/→：短按=切源；长按=点播拖动进度（直播忽略长按）
   /// - ↑/↓：切台；⏯ 媒体键：播放/暂停；⏮/⏭：切台；⏪/⏩：单步 ±10s
-  /// - 菜单键（contextMenu）：设置面板
+  /// - 菜单键（contextMenu）：短按=EPG 节目单，长按=设置面板
+  /// - 返回/Esc：按层级关闭 设置→投屏→面板→全屏，再按弹退出确认。
+  ///   Windows 与 Android 行为一致（Android 系统 Back 走 PopScope）
   bool _onGlobalKeyEvent(KeyEvent event) {
-    // 设置面板里有输入框（URL、数字等）：所有按键放行
-    if (_settingsOpen) return false;
+    final k = event.logicalKey;
+    final isDown = event is KeyDownEvent;
+    final isUp = event is KeyUpEvent;
+
+    // 设置面板里有输入框（URL、数字等）：仅返回/菜单键负责关面板，
+    // 其余按键放行给输入框
+    if (_settingsOpen) {
+      if (isDown &&
+          (k == LogicalKeyboardKey.escape ||
+              k == LogicalKeyboardKey.contextMenu)) {
+        _handleBackPressed();
+        return true;
+      }
+      return false;
+    }
     // 退出确认等对话框开着时按键留给对话框（Enter 确认 / Esc 取消）
     final route = ModalRoute.of(context);
     if (route != null && !route.isCurrent) return false;
-
-    final k = event.logicalKey;
 
     // OK 与左右方向键要区分短按/长按，走按下-抬起配对处理
     if (k == LogicalKeyboardKey.select ||
         k == LogicalKeyboardKey.enter ||
         k == LogicalKeyboardKey.numpadEnter ||
         k == LogicalKeyboardKey.gameButtonA) {
-      return _onOkKey(event);
+      if (isDown) _okDown();
+      if (isUp) _okUp();
+      return true;
     }
     if (k == LogicalKeyboardKey.arrowLeft ||
         k == LogicalKeyboardKey.arrowRight) {
-      return _onLeftRightKey(event, k == LogicalKeyboardKey.arrowLeft);
+      final left = k == LogicalKeyboardKey.arrowLeft;
+      if (isDown) _lrDown(left);
+      if (isUp) _lrUp(left);
+      return true;
+    }
+    // 菜单键：短按 EPG / 长按设置，走按下-抬起配对
+    if (k == LogicalKeyboardKey.contextMenu) {
+      if (isDown) _menuDown();
+      if (isUp) _menuUp();
+      return true;
+    }
+    // 上下：面板打开时面板内移动，否则切台
+    if (k == LogicalKeyboardKey.arrowUp) {
+      if (isDown) _verticalKey(true);
+      return true;
+    }
+    if (k == LogicalKeyboardKey.arrowDown) {
+      if (isDown) _verticalKey(false);
+      return true;
+    }
+    // Esc / 遥控器返回：层级关闭（与 Android Back 同一入口）
+    if (k == LogicalKeyboardKey.escape) {
+      if (isDown) _handleBackPressed();
+      return true;
     }
 
     // 其余按键只处理首次按下；长按重复事件是 KeyRepeatEvent，天然被排除
-    if (event is! KeyDownEvent) return false;
+    if (!isDown) return false;
 
     final p = event.physicalKey;
 
@@ -797,11 +891,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         _onNumberKey(i);
         return true;
       }
-    }
-
-    if (k == LogicalKeyboardKey.escape) {
-      context.read<PlayerController>().exitFullscreenIfNeeded();
-      return true;
     }
 
     String? action;
@@ -827,9 +916,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         k == LogicalKeyboardKey.mediaPause) {
       // 遥控器 ⏯ 播放/暂停键
       action = 'playpause';
-    } else if (k == LogicalKeyboardKey.contextMenu) {
-      // 遥控器菜单键 = 设置面板
-      action = 'settings';
     }
     if (action != null) {
       _onShortcut(action);
@@ -854,92 +940,149 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return true;
     }
 
-    if (k == LogicalKeyboardKey.arrowUp) {
-      _onArrow('prevChannel');
-      return true;
-    }
-    if (k == LogicalKeyboardKey.arrowDown) {
-      _onArrow('nextChannel');
-      return true;
-    }
-
     return false;
   }
 
-  /// OK 键（遥控器确认键，映射为 select/enter）：短按与长按区分
-  bool _onOkKey(KeyEvent event) {
-    if (event is KeyDownEvent) {
-      if (_okDown) return true;
-      _okDown = true;
-      _okLongFired = false;
-      _okLongTimer?.cancel();
-      _okLongTimer = Timer(const Duration(milliseconds: 500), () {
-        _okLongFired = true;
-        // 长按 OK = 呼出/收起控制面板（内部有播放状态守卫）
-        _toggleBottomPanel();
-      });
-      return true;
+  /// OK 按下边沿（首次按下；系统自动重复由 _okDown 去重）。
+  /// 面板打开：转发面板；否则启动 500ms 长按计时。
+  void _okDown() {
+    if (_okDown) return;
+    _okDown = true;
+    _okLongFired = false;
+    if (_navPanelOpen) {
+      _panelKey('ok', true);
+      return;
     }
-    if (event is KeyRepeatEvent) return true;
-    if (event is KeyUpEvent) {
-      _okDown = false;
-      _okLongTimer?.cancel();
-      if (!_okLongFired) {
-        final c = context.read<PlayerController>();
-        // 点播短按 OK = 暂停/播放；直播/网页频道 = 呼出或收起节目列表
-        if (c.isSeekable && !c.webPageActive) {
-          c.togglePlayPause();
-        } else {
-          _toggleDrawer(left: true);
-        }
-      }
-      _okLongFired = false;
-      return true;
+    if (_bottomPanelActive) {
+      _bottomPanelRemoteKey('ok', true);
+      return;
     }
-    return false;
+    _okLongTimer?.cancel();
+    _okLongTimer = Timer(const Duration(milliseconds: 500), () {
+      _okLongFired = true;
+      // 长按 OK = 呼出/收起控制面板（内部有播放状态守卫）
+      _toggleBottomPanel();
+    });
   }
 
-  /// ←/→ 键：短按切源（抬起时触发），长按拖动进度（仅点播；
-  /// 直播不可 seek，长按被忽略，抬起仍按短按切源处理）
-  bool _onLeftRightKey(KeyEvent event, bool isLeft) {
-    if (event is KeyDownEvent) {
-      if (_arrowDown) return true;
-      _arrowDown = true;
-      _arrowLongFired = false;
-      _arrowLongTimer?.cancel();
-      _arrowSeekTimer?.cancel();
+  /// OK 抬起边沿：面板打开时转发；否则长按不触发、短按按播放状态处理
+  void _okUp() {
+    if (!_okDown) return;
+    _okDown = false;
+    _okLongTimer?.cancel();
+    if (_navPanelOpen) {
+      _panelKey('ok', false);
+      return;
+    }
+    if (_bottomPanelActive) {
+      _bottomPanelRemoteKey('ok', false);
+      return;
+    }
+    if (!_okLongFired) {
       final c = context.read<PlayerController>();
-      // 抽屉打开/网页频道/不可 seek 时不启动长按检测
-      if (!_leftDrawerOpen &&
-          !_rightEpgOpen &&
-          !c.webPageActive &&
-          c.isSeekable) {
-        _arrowLongTimer = Timer(const Duration(milliseconds: 400), () {
-          _arrowLongFired = true;
-          _showBottomPanel(); // 露出进度条便于观察
-          _seekTick(isLeft); // 到点先走一格
-          // 之后按住每 0.8 秒走一格：对齐投屏 CDN 的慢响应节奏，
-          // 避免 seek 风暴（与进度条「松手才 seek」同一教训）
-          _arrowSeekTimer = Timer.periodic(
-              const Duration(milliseconds: 800), (_) => _seekTick(isLeft));
-        });
-      }
-      return true;
-    }
-    if (event is KeyRepeatEvent) return true;
-    if (event is KeyUpEvent) {
-      _arrowDown = false;
-      _arrowLongTimer?.cancel();
-      _arrowSeekTimer?.cancel();
-      if (_arrowLongFired) {
-        _scheduleBottomHide();
+      // 点播短按 OK = 暂停/播放；直播/网页频道 = 呼出或收起节目列表
+      if (c.isSeekable && !c.webPageActive) {
+        c.togglePlayPause();
       } else {
-        _onArrow(isLeft ? 'prevSource' : 'nextSource');
+        _toggleDrawer(left: true);
       }
-      _arrowLongFired = false;
-      return true;
     }
-    return false;
+    _okLongFired = false;
+  }
+
+  /// ←/→ 按下边沿。面板打开：转发（左右选级）；网页前台：启动短按
+  /// 切源计时（钩子只给按下边沿，长按由 Dart 侧判定）；
+  /// 普通点播：启动 400ms 长按拖进度计时
+  void _lrDown(bool isLeft) {
+    if (_arrowDown) return;
+    _arrowDown = true;
+    _arrowLongFired = false;
+    _arrowLongTimer?.cancel();
+    _arrowSeekTimer?.cancel();
+    if (_navPanelOpen) {
+      _panelKey(isLeft ? 'left' : 'right', true);
+      return;
+    }
+    if (_bottomPanelActive) {
+      _bottomPanelRemoteKey(isLeft ? 'left' : 'right', true);
+      return;
+    }
+    final c = context.read<PlayerController>();
+    // 不可 seek（直播/网页）：抬起前快速操作即切源；
+    // 可 seek（点播）：400ms 后转为长按拖进度
+    if (!c.isSeekable || c.webPageActive) {
+      _arrowLongTimer = Timer(const Duration(milliseconds: 400), () {
+        _arrowLongFired = true;
+      });
+      return;
+    }
+    _arrowLongTimer = Timer(const Duration(milliseconds: 400), () {
+      _arrowLongFired = true;
+      _showBottomPanel(); // 露出进度条便于观察
+      _seekTick(isLeft); // 到点先走一格
+      // 之后按住每 0.8 秒走一格：对齐投屏 CDN 的慢响应节奏，
+      // 避免 seek 风暴（与进度条「松手才 seek」同一教训）
+      _arrowSeekTimer = Timer.periodic(
+          const Duration(milliseconds: 800), (_) => _seekTick(isLeft));
+    });
+  }
+
+  /// ←/→ 抬起边沿：长按拖进度后收尾；否则短按切源
+  void _lrUp(bool isLeft) {
+    if (!_arrowDown) return;
+    _arrowDown = false;
+    _arrowLongTimer?.cancel();
+    _arrowSeekTimer?.cancel();
+    if (_navPanelOpen) {
+      _panelKey(isLeft ? 'left' : 'right', false);
+      _arrowLongFired = false;
+      return;
+    }
+    if (_bottomPanelActive) {
+      _bottomPanelRemoteKey(isLeft ? 'left' : 'right', false);
+      _arrowLongFired = false;
+      return;
+    }
+    if (_arrowLongFired) {
+      _scheduleBottomHide();
+    } else {
+      _onArrow(isLeft ? 'prevSource' : 'nextSource');
+    }
+    _arrowLongFired = false;
+  }
+
+  /// ↑/↓ 按下边沿：侧边面板打开时面板内移动；底部控制面板打开时忽略
+  /// （按钮只有一行，避免误触切台）；其余情况切台
+  void _verticalKey(bool isUp) {
+    if (_navPanelOpen) {
+      _panelKey(isUp ? 'up' : 'down', true);
+      return;
+    }
+    if (_bottomPanelActive) return;
+    _onArrow(isUp ? 'prevChannel' : 'nextChannel');
+  }
+
+  /// 菜单键按下：启动 500ms 长按=设置
+  void _menuDown() {
+    if (_menuDown) return;
+    _menuDown = true;
+    _menuLongFired = false;
+    _menuLongTimer?.cancel();
+    _menuLongTimer = Timer(const Duration(milliseconds: 500), () {
+      _menuLongFired = true;
+      _toggleSettings();
+    });
+  }
+
+  /// 菜单键抬起：未到长按时长=短按，打开 EPG 节目单
+  void _menuUp() {
+    if (!_menuDown) return;
+    _menuDown = false;
+    _menuLongTimer?.cancel();
+    if (!_menuLongFired) {
+      _toggleDrawer(left: false);
+    }
+    _menuLongFired = false;
   }
 
   /// 单步 seek ±10 秒（边界钳制；不可 seek 时静默忽略）
@@ -1264,6 +1407,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _winHotkeys.setCapture(!_settingsOpen);
   }
 
+  /// 底部控制面板「手机扫码管理」按钮：弹出二维码
+  void _showRemoteAdminQr(PlayerController controller) {
+    final url = controller.remoteAdminUrl;
+    if (url.isEmpty) return;
+    showRemoteAdminQrDialog(context, url);
+  }
+
   /// 桌面端快捷键：空格 播放/暂停，F/F11 全屏，M 静音，
   /// PrintScreen 截屏，C 频道列表开/关，E 节目单开/关，S 设置，R 录制
   void _onShortcut(String action) {
@@ -1305,24 +1455,58 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
   }
 
+  /// 钩子按住期间系统会重复发 WM_KEYDOWN：记录已按下动作去重，
+  /// 保证一次物理按下只派发一次按下边沿
+  final Set<String> _nativeHeld = <String>{};
+
   /// 原生钩子转发的动作键（网页持有焦点时 HardwareKeyboard 收不到，
-  /// 由 WH_KEYBOARD_LL 经 omplayer/win_hotkeys 通道送达）
-  void _onNativeAction(String action) {
-    if (!mounted || _settingsOpen) return;
+  /// 由 WH_KEYBOARD_LL 经 omplayer/win_hotkeys 通道送达）。
+  /// isDown=true 按下边沿、false 抬起边沿，与 Flutter 路径共用
+  /// 同一套短按/长按/面板导航逻辑。
+  void _onNativeAction(String action, bool isDown) {
+    if (!mounted) return;
+    if (isDown) {
+      if (!_nativeHeld.add(action)) return; // 自动重复，忽略
+    } else {
+      _nativeHeld.remove(action);
+    }
+    // 设置面板打开：仅返回键关面板，其余（字母键/空格等）忽略，
+    // 此时钩子捕获本就由 setCapture(false) 关闭，这里是双保险
+    if (_settingsOpen) {
+      if (isDown && (action == 'esc' || action == 'back')) {
+        _handleBackPressed();
+      }
+      return;
+    }
+    // OK / 左右 / 菜单需要按下-抬起配对
+    if (action == 'ok') {
+      isDown ? _okDown() : _okUp();
+      return;
+    }
+    if (action == 'left') {
+      isDown ? _lrDown(true) : _lrUp(true);
+      return;
+    }
+    if (action == 'right') {
+      isDown ? _lrDown(false) : _lrUp(false);
+      return;
+    }
+    if (action == 'menu') {
+      isDown ? _menuDown() : _menuUp();
+      return;
+    }
+    if (!isDown) return; // 其余动作只响应按下边沿
     final controller = context.read<PlayerController>();
     switch (action) {
+      case 'up':
+        _verticalKey(true);
+      case 'down':
+        _verticalKey(false);
+      case 'esc':
+      case 'back':
+        _handleBackPressed();
       case 'space':
         controller.togglePlayPause();
-      case 'left':
-        _onArrow('prevSource');
-      case 'right':
-        _onArrow('nextSource');
-      case 'up':
-        _onArrow('prevChannel');
-      case 'down':
-        _onArrow('nextChannel');
-      case 'esc':
-        controller.exitFullscreenIfNeeded();
       case 'm':
         _onShortcut('mute');
       case 'f':
