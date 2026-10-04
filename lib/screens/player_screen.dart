@@ -91,6 +91,33 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   bool _menuHeld = false;
   bool _menuLongFired = false;
 
+  // 点播长按左右键：屏幕中央数字进度 OSD（不弹控制面板，避免面板打开后
+  // 左右键被按钮导航接管、与连续 seek 冲突）。
+  // 以长按起点为基准累计位移，不逐帧读 position（内核 seek 后位置上报有
+  // 延迟，连续读旧值会导致步进距离错误）
+  Timer? _seekOsdHideTimer;
+  bool _seekOsdVisible = false;
+  bool _seekOsdForward = true;
+  Duration _seekOsdTarget = Duration.zero;
+  Duration _seekOsdDuration = Duration.zero;
+  Duration? _seekBase;
+  int _seekDeltaSec = 0;
+
+  // 播放加载防抖：按下键到内核真正初始化完成期间，遥控器连按的
+  // 切台/切源/面板 OK 全部排队忽略，防止"往下按了一下、松手后才加载完、
+  // 补按的 OK 直接落到停在很后面的频道"这类竞态（fvp 每次重建播放器
+  // 会回收原 controller 重建，窗口越大用户越容易感到「按了没反应」）
+  DateTime _loadingLockUntil = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _loadingLock = Duration(milliseconds: 900);
+
+  // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
+  int _exitDialogFocusIndex = 0; // 0=取消, 1=退出
+  bool _exitDialogOpen = false;
+
+  /// 对话框内部 StatefulBuilder 的刷新句柄：遥控器 ←/→ 改焦点后
+  /// 通过它只重建对话框（外层 setState 不会触发 showDialog 内容重建）
+  StateSetter? _exitDialogRefresh;
+
   // 两个侧边面板的状态句柄：遥控器/键盘导航由本页统一分发
   // （HardwareKeyboard 与 Windows 低级钩子走同一入口）
   final GlobalKey<LeftChannelDrawerState> _leftDrawerKey = GlobalKey();
@@ -354,6 +381,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _arrowLongTimer?.cancel();
     _arrowSeekTimer?.cancel();
     _menuLongTimer?.cancel();
+    _seekOsdHideTimer?.cancel();
     _rootFocusNode.dispose();
     _controllerRef?.removeListener(_onControllerChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -408,12 +436,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
           },
           child: Consumer<PlayerController>(
             builder: (context, controller, _) {
-              // 网页频道下信息面板按「播放中」逻辑自动隐藏（只看
-              // _bottomPanelVisible）；普通频道维持原逻辑
-              final panelVisible = controller.webPageActive
-                  ? _bottomPanelVisible
-                  : _bottomPanelVisible ||
-                      controller.state != PlayerState.playing;
+              // 信息面板显隐完全由 _bottomPanelVisible 控制：
+              // 用户主动呼出（长按 OK / 鼠标 hover）或底部边缘 hover 打开；
+              // 不再因 buffering/loading 强制显示——这会让 _bottomPanelActive
+              // 判断与视觉不同步，导致遥控器左右键被 seek 逻辑接管而面板
+              // 按钮收不到焦点，返回键也关不掉面板
+              final panelVisible = _bottomPanelVisible;
               final webUrl = controller.webPageActive
                   ? controller.currentChannel?.webPageUrl ?? ''
                   : '';
@@ -669,6 +697,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     label: '音量 ${(controller.volume * 100).round()}%',
                   ),
 
+                  // 点播长按左右键：数字进度 OSD（不拦截手势）
+                  _buildSeekOsd(),
+
                   // 录制指示器（网页/原生均显示）
                   if (controller.isRecording)
                     Positioned(
@@ -753,41 +784,209 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       setState(() => _bottomPanelVisible = false);
       return;
     }
-    if (c.isFullscreen) {
-      c.exitFullscreenIfNeeded();
+    // 点播尚未加载出画面时按返回：什么都不做，避免把全屏窗口缩小
+    // 或误判为「退出播放器」。用户想退出请在播放中再按返回
+    if (c.state == PlayerState.loading) {
       return;
     }
+    // 全屏下无其他面板时：直接弹退出确认，不先退回小窗
+    //
     // 无任何可关闭项：退出前确认，避免误触
+    _exitDialogOpen = true;
+    _exitDialogFocusIndex = 0; // 默认聚焦「取消」，避免误触退出
     final shouldExit = await showDialog<bool>(
       context: context,
-      builder: (dialogCtx) => AlertDialog(
-        title: const Text('退出 OMPlayer'),
-        content: const Text('确定要退出 OMPlayer 吗？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(true),
-            child: const Text('退出'),
-          ),
-        ],
-      ),
+      builder: (dialogCtx) {
+        // 遥控器友好：AlertDialog 用 StatefulBuilder 包裹，按钮高亮
+        // 随 _exitDialogFocusIndex 变化；遥控器 ←/→ 在 _handleExitDialogKey
+        // 里改字段后调用 _exitDialogRefresh 刷新本对话框
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            _exitDialogRefresh = setDialogState;
+            return AlertDialog(
+              title: const Text('退出 OMPlayer'),
+              content: const Text('确定要退出 OMPlayer 吗？'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  style: TextButton.styleFrom(
+                    backgroundColor: _exitDialogFocusIndex == 0
+                        ? Colors.blueAccent.withOpacity(0.25)
+                        : null,
+                    side: _exitDialogFocusIndex == 0
+                        ? const BorderSide(color: Colors.blueAccent, width: 1.5)
+                        : null,
+                  ),
+                  child: Text(
+                    '取消',
+                    style: TextStyle(
+                      color: _exitDialogFocusIndex == 0
+                          ? Colors.blueAccent
+                          : Colors.white70,
+                      fontWeight: _exitDialogFocusIndex == 0
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  style: TextButton.styleFrom(
+                    backgroundColor: _exitDialogFocusIndex == 1
+                        ? Colors.redAccent.withOpacity(0.25)
+                        : null,
+                    side: _exitDialogFocusIndex == 1
+                        ? const BorderSide(color: Colors.redAccent, width: 1.5)
+                        : null,
+                  ),
+                  child: Text(
+                    '退出',
+                    style: TextStyle(
+                      color: _exitDialogFocusIndex == 1
+                          ? Colors.redAccent
+                          : Colors.white70,
+                      fontWeight: _exitDialogFocusIndex == 1
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
+    _exitDialogOpen = false;
+    _exitDialogRefresh = null;
     if (shouldExit == true) {
-      await SystemNavigator.pop();
+      // SystemNavigator.pop() 只在 Android/iOS 有效，桌面端需要用 windowManager
+      if (!kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.windows ||
+              defaultTargetPlatform == TargetPlatform.linux ||
+              defaultTargetPlatform == TargetPlatform.macOS)) {
+        await windowManager.close();
+      } else {
+        await SystemNavigator.pop();
+      }
     }
   }
 
   // ==================== 硬件按键快捷键 ====================
+
+  /// 是否有对话框/弹层盖在播放页之上（二维码、退出确认等
+  /// showDialog 路由；设置面板是内嵌 overlay 不算）
+  bool get _modalRouteOpen {
+    final r = ModalRoute.of(context);
+    return r != null && !r.isCurrent;
+  }
+
+  /// 对话框打开期间的遥控器/键盘按键收口。
+  /// 返回 true=已消费；不认识的键放行给弹层内控件（如输入框）。
+  bool _handleKeyWhileModal(
+      LogicalKeyboardKey k, bool isDown, bool isUp) {
+    final isOk = k == LogicalKeyboardKey.select ||
+        k == LogicalKeyboardKey.enter ||
+        k == LogicalKeyboardKey.numpadEnter ||
+        k == LogicalKeyboardKey.gameButtonA;
+    final isLr = k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight;
+    // 退出确认对话框有遥控器友好界面，走专用逻辑
+    if (_exitDialogOpen) {
+      return _handleExitDialogKey(k, isDown, isUp);
+    }
+    if (isOk) {
+      if (isDown) {
+        // 复位配对状态并关闭弹层（等同「关闭」按钮）
+        _okHeld = true;
+        _okLongTimer?.cancel();
+        Navigator.of(context).maybePop();
+      } else if (isUp) {
+        _okHeld = false;
+        _okLongTimer?.cancel();
+        _okLongFired = false;
+      }
+      return true;
+    }
+    if (isLr) {
+      // 仅消费并复位，避免弹层关闭后被当成短按切源
+      if (isUp) {
+        _arrowDown = false;
+        _arrowLongTimer?.cancel();
+        _arrowSeekTimer?.cancel();
+        _arrowLongFired = false;
+      }
+      return true;
+    }
+    if (k == LogicalKeyboardKey.arrowUp ||
+        k == LogicalKeyboardKey.arrowDown) {
+      return true; // 弹层内无列表导航需求，吞掉防穿透切台
+    }
+    if (k == LogicalKeyboardKey.contextMenu) {
+      if (isDown) Navigator.of(context).maybePop();
+      if (isUp) {
+        _menuHeld = false;
+        _menuLongTimer?.cancel();
+        _menuLongFired = false;
+      }
+      return true;
+    }
+    if (k == LogicalKeyboardKey.escape) {
+      if (isDown) Navigator.of(context).maybePop();
+      return true;
+    }
+    return false;
+  }
+
+  /// 退出确认对话框的遥控器按键处理：
+  /// ←/→ 在「取消」「退出」间移动高亮，OK 确认当前选中项，返回/Esc 直接取消
+  bool _handleExitDialogKey(
+      LogicalKeyboardKey k, bool isDown, bool isUp) {
+    final isOk = k == LogicalKeyboardKey.select ||
+        k == LogicalKeyboardKey.enter ||
+        k == LogicalKeyboardKey.numpadEnter ||
+        k == LogicalKeyboardKey.gameButtonA;
+    final isLr = k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight;
+    if (isOk) {
+      if (isDown) {
+        // 确认当前选中按钮（取消=false，退出=true）
+        Navigator.of(context).pop(_exitDialogFocusIndex == 1);
+      }
+      return true;
+    }
+    if (isLr) {
+      if (isDown) {
+        // 改焦点并刷新对话框：showDialog 里的 StatefulBuilder
+        // 需要内部 setState 才能看到高亮移动
+        _exitDialogFocusIndex =
+            k == LogicalKeyboardKey.arrowRight ? 1 : 0;
+        _exitDialogRefresh?.call(() {});
+      }
+      return true;
+    }
+    if (k == LogicalKeyboardKey.arrowUp ||
+        k == LogicalKeyboardKey.arrowDown) {
+      return true; // 两按钮水平排列，上下无意义
+    }
+    if (k == LogicalKeyboardKey.contextMenu) {
+      if (isDown) Navigator.of(context).pop(false);
+      return true;
+    }
+    if (k == LogicalKeyboardKey.escape) {
+      if (isDown) Navigator.of(context).pop(false);
+      return true;
+    }
+    return false;
+  }
 
   /// 侧边面板（频道列表/EPG）是否有一个打开：打开期间方向键与 OK
   /// 全部转作面板内导航，不触发播放控制
   bool get _navPanelOpen => _leftDrawerOpen || _rightEpgOpen;
 
   /// 底部控制面板是否由用户主动呼出（长按 OK / 鼠标 hover）。
-  /// 为 true 期间 ←/→ 与 OK 用于面板内按钮导航，返回键关闭面板
+  /// 为 true 期间 ←/→ 与 OK 用于面板内按钮导航，返回键关闭面板。
+  /// 面板显隐与 _bottomPanelVisible 一对一，不再被 state 强制联动
   bool get _bottomPanelActive => _bottomPanelVisible;
 
   /// 把遥控器动作分发给当前打开的侧边面板，并取消桌面端自动隐藏
@@ -834,9 +1033,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       }
       return false;
     }
-    // 退出确认等对话框开着时按键留给对话框（Enter 确认 / Esc 取消）
-    final route = ModalRoute.of(context);
-    if (route != null && !route.isCurrent) return false;
+    // 有对话框（二维码/退出确认等）盖在页面上时：遥控器按键统一收口——
+    // OK/返回/菜单关闭弹层，方向键消费不穿透，避免弹层是在 OK 按下后
+    // 才弹出时抬起事件丢失，导致按住状态卡死、关弹层后误触节目列表
+    if (_modalRouteOpen) {
+      return _handleKeyWhileModal(k, isDown, isUp);
+    }
 
     // OK 与左右方向键要区分短按/长按，走按下-抬起配对处理
     if (k == LogicalKeyboardKey.select ||
@@ -933,11 +1135,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return true;
     }
     if (k == LogicalKeyboardKey.mediaFastForward) {
-      _seekTick(false);
+      _singleSeekStep(false);
       return true;
     }
     if (k == LogicalKeyboardKey.mediaRewind) {
-      _seekTick(true);
+      _singleSeekStep(true);
       return true;
     }
 
@@ -1009,7 +1211,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return;
     }
     final c = context.read<PlayerController>();
-    // 不可 seek（直播/网页）：抬起前快速操作即切源；
+    // 不可 seek（直播/网页）：抬起前快速操作即切源（防抖避免按多次切多台）；
     // 可 seek（点播）：400ms 后转为长按拖进度
     if (!c.isSeekable || c.webPageActive) {
       _arrowLongTimer = Timer(const Duration(milliseconds: 400), () {
@@ -1019,12 +1221,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
     _arrowLongTimer = Timer(const Duration(milliseconds: 400), () {
       _arrowLongFired = true;
-      _showBottomPanel(); // 露出进度条便于观察
-      _seekTick(isLeft); // 到点先走一格
+      // 不弹控制面板（面板一开，后续左右键会被按钮导航接管，seek 中断），
+      // 改为屏幕中央数字进度 OSD：以长按起点为基准，每 0.8 秒走一格
+      _seekBase = c.position;
+      _seekDeltaSec = 0;
+      _remoteSeekStep(isLeft); // 到点先走一格
       // 之后按住每 0.8 秒走一格：对齐投屏 CDN 的慢响应节奏，
       // 避免 seek 风暴（与进度条「松手才 seek」同一教训）
       _arrowSeekTimer = Timer.periodic(
-          const Duration(milliseconds: 800), (_) => _seekTick(isLeft));
+          const Duration(milliseconds: 800), (_) => _remoteSeekStep(isLeft));
     });
   }
 
@@ -1045,7 +1250,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return;
     }
     if (_arrowLongFired) {
-      _scheduleBottomHide();
+      // 点播长按 seek：OSD 再停留 1.2 秒后淡出；直播/网页长按无动作
+      if (_seekOsdVisible) _armSeekOsdHide();
     } else {
       _onArrow(isLeft ? 'prevSource' : 'nextSource');
     }
@@ -1086,8 +1292,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _menuLongFired = false;
   }
 
-  /// 单步 seek ±10 秒（边界钳制；不可 seek 时静默忽略）
-  void _seekTick(bool isLeft) {
+  /// 媒体键（⏪/⏩）单步 seek ±10 秒：以当前播放位置为基准，
+  /// 屏幕中央显示数字进度 OSD，不弹控制面板
+  void _singleSeekStep(bool isLeft) {
     final c = context.read<PlayerController>();
     if (!c.isSeekable) return;
     final dur = c.duration;
@@ -1096,7 +1303,125 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (t < Duration.zero) t = Duration.zero;
     if (t > dur) t = dur;
     c.seekTo(t);
-    _showBottomPanel();
+    _showSeekOsd(target: t, duration: dur, forward: !isLeft);
+    _armSeekOsdHide();
+  }
+
+  /// 长按左右键连续 seek：以长按起点 [_seekBase] 为基准累计位移，
+  /// 每格 ±10 秒（不逐帧读 position——seek 后内核位置上报有延迟，
+  /// 连读旧值会让每格步长失真），结果实时显示在数字进度 OSD 上
+  void _remoteSeekStep(bool isLeft) {
+    final c = context.read<PlayerController>();
+    if (!c.isSeekable) return;
+    final dur = c.duration;
+    if (dur <= Duration.zero) return;
+    _seekDeltaSec += isLeft ? -10 : 10;
+    var t = (_seekBase ?? c.position) + Duration(seconds: _seekDeltaSec);
+    if (t < Duration.zero) t = Duration.zero;
+    if (t > dur) t = dur;
+    c.seekTo(t);
+    _showSeekOsd(target: t, duration: dur, forward: !isLeft);
+  }
+
+  /// 显示屏幕中央数字进度 OSD（持续到松手后 1.2 秒）
+  void _showSeekOsd({
+    required Duration target,
+    required Duration duration,
+    required bool forward,
+  }) {
+    _seekOsdHideTimer?.cancel();
+    setState(() {
+      _seekOsdVisible = true;
+      _seekOsdTarget = target;
+      _seekOsdDuration = duration;
+      _seekOsdForward = forward;
+    });
+  }
+
+  /// 松手后让 seek OSD 停留片刻再淡出
+  void _armSeekOsdHide() {
+    _seekBase = null;
+    _seekOsdHideTimer?.cancel();
+    _seekOsdHideTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _seekOsdVisible = false);
+    });
+  }
+
+  /// 时长格式化：不足 1 小时显示 m:ss，否则 h:mm:ss
+  String _fmtClock(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
+  /// 点播快进/快退数字进度浮层：方向图标 + 大号目标时间 + 总时长 + 进度条
+  Widget _buildSeekOsd() {
+    final totalMs = _seekOsdDuration.inMilliseconds;
+    final ratio = totalMs > 0
+        ? (_seekOsdTarget.inMilliseconds / totalMs).clamp(0.0, 1.0)
+        : 0.0;
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedOpacity(
+          opacity: _seekOsdVisible ? 1.0 : 0.0,
+          duration: const Duration(milliseconds: 150),
+          child: Center(
+            child: Container(
+              width: 288,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.68),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        _seekOsdForward
+                            ? Icons.fast_forward
+                            : Icons.fast_rewind,
+                        color: Colors.blueAccent,
+                        size: 38,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        _fmtClock(_seekOsdTarget),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 34,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '/ ${_fmtClock(_seekOsdDuration)}    每格 10 秒',
+                    style: const TextStyle(color: Colors.white60, fontSize: 13),
+                  ),
+                  const SizedBox(height: 12),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(3),
+                    child: LinearProgressIndicator(
+                      value: ratio,
+                      minHeight: 5,
+                      backgroundColor: Colors.white24,
+                      valueColor: const AlwaysStoppedAnimation<Color>(
+                          Colors.blueAccent),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   // ==================== 边缘点击区 ====================
@@ -1440,9 +1765,19 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
   }
 
+  /// 播放加载防抖：按下键到内核真正初始化完成期间，遥控器连按的
+  /// 切台/切源动作全部忽略。防止"往下按了一下、松手后才加载完、
+  /// 补按的 OK/方向键落到停在很后面的频道"这类竞态
+  bool _throttled() {
+    if (DateTime.now().isBefore(_loadingLockUntil)) return true;
+    _loadingLockUntil = DateTime.now().add(_loadingLock);
+    return false;
+  }
+
   /// 方向键：←/→ 切换播放源，↑/↓ 切换频道
   void _onArrow(String action) {
     if (_settingsOpen || _leftDrawerOpen || _rightEpgOpen) return;
+    if (_throttled()) return;
     final controller = context.read<PlayerController>();
     switch (action) {
       case 'prevSource':
@@ -1476,6 +1811,51 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (_settingsOpen) {
       if (isDown && (action == 'esc' || action == 'back')) {
         _handleBackPressed();
+      }
+      return;
+    }
+    // 对话框（二维码/退出确认等）打开：统一收口；抬起边沿复位配对状态，
+    // 绝不能落到 _handleBackPressed（否则会退全屏/缩小窗口）
+    if (_modalRouteOpen) {
+      if (!isDown) {
+        if (action == 'ok') {
+          _okHeld = false;
+          _okLongTimer?.cancel();
+          _okLongFired = false;
+        } else if (action == 'left' || action == 'right') {
+          _arrowDown = false;
+          _arrowLongTimer?.cancel();
+          _arrowSeekTimer?.cancel();
+          _arrowLongFired = false;
+        } else if (action == 'menu') {
+          _menuHeld = false;
+          _menuLongTimer?.cancel();
+          _menuLongFired = false;
+        }
+        return;
+      }
+      // 退出确认对话框：←/→ 移动焦点，OK 确认，返回/菜单取消
+      if (_exitDialogOpen) {
+        if (action == 'left') {
+          _exitDialogFocusIndex = 0;
+          _exitDialogRefresh?.call(() {});
+        } else if (action == 'right') {
+          _exitDialogFocusIndex = 1;
+          _exitDialogRefresh?.call(() {});
+        } else if (action == 'ok') {
+          Navigator.of(context).pop(_exitDialogFocusIndex == 1);
+        } else if (action == 'back' ||
+            action == 'esc' ||
+            action == 'menu') {
+          Navigator.of(context).pop(false);
+        }
+        return;
+      }
+      if (action == 'ok' ||
+          action == 'back' ||
+          action == 'esc' ||
+          action == 'menu') {
+        Navigator.of(context).maybePop();
       }
       return;
     }

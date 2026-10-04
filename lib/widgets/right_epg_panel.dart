@@ -45,6 +45,10 @@ class RightEpgPanelState extends State<RightEpgPanel> {
   bool _okLongFired = false;
   static const Duration _okHoldDelay = Duration(milliseconds: 500);
 
+  /// 上次预约/取消预约的时间，长按期间的二次触发忽略，
+  /// 避免网络/EPG 数据刷新时连续 toggle 产生混乱提示
+  DateTime? _lastToggleAt;
+
   /// 设计稿宽度
   static const double _designWidth = 340;
 
@@ -99,6 +103,14 @@ class RightEpgPanelState extends State<RightEpgPanel> {
         _okHoldTimer?.cancel();
         _okHoldTimer = Timer(_okHoldDelay, () {
           _okLongFired = true;
+          // 长按期间防抖：800ms 内只执行一次 toggle，避免
+          // EPG 数据刷新重建条目时重复触发预约/取消提示
+          if (_lastToggleAt != null &&
+              DateTime.now().difference(_lastToggleAt!) <
+                  const Duration(milliseconds: 800)) {
+            return;
+          }
+          _lastToggleAt = DateTime.now();
           _toggleReservation(epg[_kbIndex.clamp(0, epg.length - 1)]);
         });
       } else {

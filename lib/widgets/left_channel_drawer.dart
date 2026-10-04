@@ -47,6 +47,9 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
   int _kbCategoryIndex = 0;
   int _kbChannelIndex = 0;
 
+  /// 上次触发播放的时间，用于播放内核重建期间的防抖
+  DateTime? _lastPlayAt;
+
   /// 设计稿宽度（面板内容按此尺寸设计，缩放交给 ScaledPanel）
   static const double _designWidth = 320;
 
@@ -149,6 +152,13 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           setState(() => _selectedCategory = null);
         case 'ok':
           if (channels.isEmpty) break;
+          // 播放内核重建期间防抖：连按 OK 只执行一次，避免频道乱跳
+          if (_lastPlayAt != null &&
+              DateTime.now().difference(_lastPlayAt!) <
+                  const Duration(milliseconds: 800)) {
+            break;
+          }
+          _lastPlayAt = DateTime.now();
           final channel = channels[_kbChannelIndex];
           controller.playChannel(channel);
           widget.onChannelTap?.call();
