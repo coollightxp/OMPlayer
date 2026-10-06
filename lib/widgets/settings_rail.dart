@@ -129,7 +129,12 @@ class SettingsRailState extends State<SettingsRail> {
         break;
       case 'ok':
         final e = entries[_kbItemIndex.clamp(0, entries.length - 1)];
-        if (e.enabled) e.onOk?.call();
+        if (e.enabled) {
+          e.onOk?.call();
+          // 时钟等走独立通知器的项：onOk 不会触发 Consumer rebuild，
+          // 需要手动 setState 重建当前子页让开关图标即时更新
+          if (e.refreshAfterOk && mounted) setState(() {});
+        }
         break;
     }
   }
@@ -245,6 +250,8 @@ class SettingsRailState extends State<SettingsRail> {
           label: '显示时钟',
           toggleValue: s.showClock,
           onOk: () => c.setShowClock(!s.showClock),
+          // 时钟走独立通知器不触发整树重建，强制重建行让开关即时更新
+          refreshAfterOk: true,
         ));
         out.add(_Entry(
           label: '投屏接收',
@@ -539,6 +546,10 @@ class _Entry {
   final bool enabled;
   final VoidCallback? onOk;
 
+  /// OK 触发 onOk 后额外执行 setState 重建当前子页列表。
+  /// 用于 setShowClock 这类走独立通知器、不触发 Consumer rebuild 的项。
+  final bool refreshAfterOk;
+
   const _Entry({
     required this.label,
     this.subtitle,
@@ -548,6 +559,7 @@ class _Entry {
     this.selected = false,
     this.enabled = true,
     this.onOk,
+    this.refreshAfterOk = false,
   });
 }
 
@@ -565,11 +577,13 @@ class _EntryTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final e = entry;
     final baseColor = e.enabled ? Colors.white : Colors.white30;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: e.enabled ? e.onOk : null,
+    // InkWell 包在最外层：点击行内任何位置（含 padding 空白）都触发 onOk，
+    // 不会穿透到底层播放区导致误暂停/误切台
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: e.enabled ? e.onOk : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
         child: Container(
           padding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 11),

@@ -339,6 +339,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     PhysicalKeyboardKey.numpad9,
   ];
 
+  /// 遥控器/键盘接管：立刻隐藏鼠标光标，不再等待 3 秒自动隐藏。
+  /// 只隐藏不恢复——恢复由 _pokeCursor 的鼠标移动/点击事件触发。
+  void _hideCursorForRemote() {
+    if (!mounted || _cursorHidden) return;
+    _cursorHideTimer?.cancel();
+    setState(() => _cursorHidden = true);
+  }
+
   /// 鼠标活动：恢复显示并重置 3 秒隐藏计时（仅播放中计时）
   void _pokeCursor() {
     if (!mounted) return;
@@ -830,6 +838,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (c.state == PlayerState.loading) {
       return;
     }
+    // 点播（可拖动）按返回：先呼出频道抽屉选台，再按返回才退出
+    if (c.isSeekable && !c.webPageActive) {
+      _toggleDrawer();
+      return;
+    }
     // 全屏下无其他面板时：直接弹退出确认，不先退回小窗
     //
     // 无任何可关闭项：退出前确认，避免误触
@@ -873,7 +886,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                           fit: BoxFit.cover,
                         ),
                       ),
-                      const SizedBox(width: 30),
+                      // 右侧文字+按钮整体右移，与左侧图标视觉平衡
+                      const SizedBox(width: 48),
                       // 右侧：名称 / 版本 / 按钮
                       Expanded(
                         child: Column(
@@ -896,9 +910,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                                 fontSize: 14,
                               ),
                             ),
-                            const SizedBox(height: 26),
+                            const SizedBox(height: 32),
                             Wrap(
-                              spacing: 12,
+                              spacing: 14,
                               runSpacing: 12,
                               children: [
                                 _buildExitOption(
@@ -1160,6 +1174,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// - 返回/Esc：按层级关闭 设置→投屏→抽屉→面板，再按弹退出确认。
   ///   Windows 与 Android 行为一致（Android 系统 Back 走 PopScope）
   bool _onGlobalKeyEvent(KeyEvent event) {
+    if (event is KeyDownEvent) _hideCursorForRemote();
     final k = event.logicalKey;
     final isDown = event is KeyDownEvent;
     final isUp = event is KeyUpEvent;
@@ -1343,7 +1358,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
     if (!_okLongFired) {
       final c = context.read<PlayerController>();
-      // 点播短按 OK = 暂停/播放；直播/网页频道 = 呼出或收起频道抽屉
+      // 点播短按 OK = 暂停/播放；直播/网页 = 呼出频道抽屉
       if (c.isSeekable && !c.webPageActive) {
         c.togglePlayPause();
       } else {
@@ -1369,6 +1384,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       _bottomPanelRemoteKey(isLeft ? 'left' : 'right', true);
       return;
     }
+    // 右侧设置中心打开：左右键不透传，防止误切源/误跳播
+    if (_settingsOpen) return;
     final c = context.read<PlayerController>();
     // 可 seek（点播）：点按直接 seek，不再长按——长按会误弹面板、
     // 与面板打开后的左右导航冲突，体验不好
@@ -1397,6 +1414,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       _arrowLongFired = false;
       return;
     }
+    // 右侧设置中心打开：左右键不透传，防止误切源/误跳播
+    if (_settingsOpen) {
+      _arrowLongFired = false;
+      return;
+    }
     final c = context.read<PlayerController>();
     if (c.isSeekable && !c.webPageActive) {
       // 点播点按 seek：OSD 再停留 1.2 秒后淡出
@@ -1417,6 +1439,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return;
     }
     if (_bottomPanelActive) return;
+    // 右侧设置中心打开：上下键不透传，防止误切台
+    if (_settingsOpen) return;
     _onArrow(isUp ? 'prevChannel' : 'nextChannel');
   }
 
@@ -2002,6 +2026,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 同一套短按/长按/面板导航逻辑。
   void _onNativeAction(String action, bool isDown) {
     if (!mounted) return;
+    if (isDown) _hideCursorForRemote();
     if (isDown) {
       if (!_nativeHeld.add(action)) return; // 自动重复，忽略
     } else {
