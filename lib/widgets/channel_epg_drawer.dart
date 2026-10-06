@@ -228,14 +228,16 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
   /// 120ms 节流防触摸板海量小步进导致连跳
   DateTime _lastWheelMove = DateTime.fromMillisecondsSinceEpoch(0);
   void _wheelSelect(List<Channel> channels, PointerScrollEvent e) {
-    if (!mounted || channels.isEmpty || e.deltaY == 0) return;
+    if (!mounted || channels.isEmpty) return;
+    final dy = e.scrollDelta?.dy ?? 0;
+    if (dy == 0) return;
     final now = DateTime.now();
     if (now.difference(_lastWheelMove) <
         const Duration(milliseconds: 120)) {
       return;
     }
     _lastWheelMove = now;
-    final dir = e.deltaY > 0 ? 1 : -1;
+    final dir = dy > 0 ? 1 : -1;
     final target = (_kbChannelIndex + dir).clamp(0, channels.length - 1);
     if (target == _kbChannelIndex && _level == 2) return;
     setState(() {
