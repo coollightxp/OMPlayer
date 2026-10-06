@@ -195,7 +195,7 @@
   - `rule` TR-11.3: 主图目视检查：取景框/OM/播放钮完整、圆角透明、无白底毛边
 
 ## Task 12: 版本号与提交
-- **Status**: `pending`
+- **Status**: `in_progress`
 - **Priority**: high
 - **Depends On**: Task 10, Task 11
 - **Description**:
@@ -205,3 +205,4 @@
 - **Test Requirements**:
   - `rule` TR-12.1: pubspec 版本字符串为 1.1.001+2001
   - `rule` TR-12.2: Review pass 后四平台 CI 全 success（证据为 CI run 与 Release 产物列表）
+- **Completion Evidence (2026-10-06)**: pubspec 已改 1.1.001+2001；独立只读审查完成（review.md：2 严重 + 6 一般已修复，G4/G10 记录暂缓），全项目 GetDiagnostics 零错误。首次提交 7946a36 推送 main，Actions run 37413300447 四作业（android/web/windows/linux）全部 success。随后补齐重构中丢失的「本地直播源」入口并修复安卓选择器格式限制：file_picker 13 安卓端固定 ACTION_OPEN_DOCUMENT（SAF 按 MIME 置灰冷门/无后缀文件、盒子文件管理器多不挂 DocumentsProvider），新增 `lib/services/local_file_picker{,_io,_stub}.dart`（Android 走自研 omplayer/local_file_picker 通道 ACTION_GET_CONTENT+*/* 全格式、content:// 复制到缓存回传路径；桌面保持 FileType.any），source_manage_dialog 恢复网络地址/本地文件分段+文件夹按钮，build.yml 安卓作业注入 OmplayerLocalFilePickerPlugin.kt 与 MainActivity。第二次提交待 CI 全绿后按用户指示打 v1.1.001 正式发版。

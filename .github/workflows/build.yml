@@ -48,6 +48,188 @@ jobs:
           cp branding/android/mipmap-xxhdpi/ic_launcher.png  android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           cp branding/android/mipmap-xxxhdpi/ic_launcher.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
+      # 本地直播源选择器（与 Windows「所有文件」一致）：
+      # file_picker 13 安卓端对 any/custom 固定发 ACTION_OPEN_DOCUMENT
+      # （SAF），电视盒子上多数文件管理器不提供 DocumentsProvider，
+      # 且 SAF 按 MIME 置灰冷门/无后缀文件（.nzk/.conf/.list 等）。
+      # 注入自研插件：ACTION_GET_CONTENT + */*，任意文件管理器可响应、
+      # 不按格式过滤；content:// 结果复制到应用缓存后回传绝对路径。
+      # android/ 由 flutter create 现场生成，包名以 MainActivity.kt 为准。
+      - name: Inject local file picker plugin (all formats)
+        run: |
+          set -e
+          MAIN=$(find android/app/src/main/kotlin -name MainActivity.kt | head -1)
+          echo "MainActivity found: $MAIN"
+          PKG=$(grep -oP '^package \K.+' "$MAIN")
+          DIR=$(dirname "$MAIN")
+          cat > "$DIR/OmplayerLocalFilePickerPlugin.kt" <<'KOT'
+          package __OMPLAYER_PKG__
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.Uri
+          import android.provider.OpenableColumns
+          import io.flutter.embedding.engine.plugins.FlutterPlugin
+          import io.flutter.embedding.engine.plugins.activity.ActivityAware
+          import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
+          import io.flutter.plugin.common.MethodCall
+          import io.flutter.plugin.common.MethodChannel
+          import io.flutter.plugin.common.PluginRegistry
+          import java.io.File
+
+          /// 本地直播源选择：GET_CONTENT + */* 全格式，对齐桌面端体验。
+          class OmplayerLocalFilePickerPlugin :
+              FlutterPlugin, ActivityAware, MethodChannel.MethodCallHandler {
+
+              companion object {
+                  private const val CHANNEL = "omplayer/local_file_picker"
+                  private const val REQ_PICK = 0x4F52
+              }
+
+              private var channel: MethodChannel? = null
+              private var activity: Activity? = null
+              private var binding: ActivityPluginBinding? = null
+              private var pending: MethodChannel.Result? = null
+
+              private val resultListener =
+                  PluginRegistry.ActivityResultListener { requestCode, resultCode, data ->
+                      if (requestCode != REQ_PICK) return@ActivityResultListener false
+                      finishPick(resultCode, data)
+                      true
+                  }
+
+              override fun onAttachedToEngine(b: FlutterPlugin.FlutterPluginBinding) {
+                  channel = MethodChannel(b.binaryMessenger, CHANNEL)
+                  channel?.setMethodCallHandler(this)
+              }
+
+              override fun onDetachedFromEngine(b: FlutterPlugin.FlutterPluginBinding) {
+                  channel?.setMethodCallHandler(null)
+                  channel = null
+              }
+
+              override fun onAttachedToActivity(b: ActivityPluginBinding) {
+                  activity = b.activity
+                  binding = b
+                  b.addActivityResultListener(resultListener)
+              }
+
+              override fun onDetachedFromActivityForConfigChanges() {
+                  onDetachedFromActivity()
+              }
+
+              override fun onReattachedToActivityForConfigChanges(b: ActivityPluginBinding) {
+                  onAttachedToActivity(b)
+              }
+
+              override fun onDetachedFromActivity() {
+                  binding?.removeActivityResultListener(resultListener)
+                  binding = null
+                  activity = null
+                  pending = null
+              }
+
+              override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+                  if (call.method != "pick") {
+                      result.notImplemented()
+                      return
+                  }
+                  val act = activity
+                  if (act == null) {
+                      result.error("no_activity", "no foreground activity", null)
+                      return
+                  }
+                  if (pending != null) {
+                      result.error("busy", "picker already active", null)
+                      return
+                  }
+                  pending = result
+                  val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                      addCategory(Intent.CATEGORY_OPENABLE)
+                      type = "*/*"
+                  }
+                  try {
+                      act.startActivityForResult(
+                          Intent.createChooser(intent, "选择直播源文件"),
+                          REQ_PICK
+                      )
+                  } catch (e: Exception) {
+                      pending = null
+                      result.error("no_picker", "未找到文件管理器: ${e.message}", null)
+                  }
+              }
+
+              private fun finishPick(resultCode: Int, data: Intent?) {
+                  val result = pending
+                  pending = null
+                  if (result == null) return
+                  if (resultCode != Activity.RESULT_OK || data?.data == null) {
+                      result.success(null)
+                      return
+                  }
+                  val act = activity
+                  if (act == null) {
+                      result.success(null)
+                      return
+                  }
+                  val uri = data.data!!
+                  // file:// 直出真实路径；content:// 复制到应用缓存再回传
+                  if (uri.scheme == "file") {
+                      result.success(uri.path)
+                      return
+                  }
+                  try {
+                      val display = queryDisplayName(act, uri)
+                          ?: "picked_${System.currentTimeMillis()}"
+                      val safe = display.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                      val dst = File(
+                          act.cacheDir,
+                          "omplayer_pick_${System.currentTimeMillis()}_$safe"
+                      )
+                      val input = act.contentResolver.openInputStream(uri)
+                      if (input == null) {
+                          result.error("read_failed", "无法读取所选文件", null)
+                          return
+                      }
+                      input.use { src ->
+                          dst.outputStream().use { out -> src.copyTo(out) }
+                      }
+                      result.success(dst.absolutePath)
+                  } catch (e: Exception) {
+                      result.error("read_failed", e.message, null)
+                  }
+              }
+
+              private fun queryDisplayName(act: Activity, uri: Uri): String? {
+                  var name: String? = null
+                  act.contentResolver.query(
+                      uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+                  )?.use { c ->
+                      if (c.moveToFirst() && c.columnCount > 0) {
+                          name = c.getString(0)
+                      }
+                  }
+                  return name
+              }
+          }
+          KOT
+          sed -i "s/__OMPLAYER_PKG__/${PKG}/" "$DIR/OmplayerLocalFilePickerPlugin.kt"
+          cat > "$MAIN" <<'KOT'
+          package __OMPLAYER_PKG__
+
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+
+          class MainActivity : FlutterActivity() {
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  flutterEngine.plugins.add(OmplayerLocalFilePickerPlugin())
+              }
+          }
+          KOT
+          sed -i "s/__OMPLAYER_PKG__/${PKG}/" "$MAIN"
+          echo "Injected OmplayerLocalFilePickerPlugin into package $PKG"
+
       - name: Patch Android config (cleartext HTTP / cutout fullscreen)
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml

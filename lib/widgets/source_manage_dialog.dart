@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -5,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/epg_source.dart';
 import '../models/playlist_source.dart';
+import '../services/local_file_picker.dart';
 import '../services/player_controller.dart';
 
 /// 节目源 / EPG 源管理窗口
@@ -42,6 +44,10 @@ class SourceManageDialogState extends State<SourceManageDialog> {
   final _nameCtl = TextEditingController();
   final _urlCtl = TextEditingController();
   bool _saving = false;
+
+  /// 节目源添加方式：网络地址 / 本地文件（EPG 源仅支持网络地址）
+  PlaylistSourceType _srcType = PlaylistSourceType.url;
+  bool _picking = false;
 
   /// 遥控器平面焦点：每个源占 3 个槽位（选择/复制/删除），
   /// 最后一个槽位为「确定」。输入框用鼠标/软键盘操作。
@@ -151,11 +157,40 @@ class SourceManageDialogState extends State<SourceManageDialog> {
     );
   }
 
+  /// 调用系统文件选择器选本地直播源（任意格式，与 Windows 一致）。
+  /// Android 走 ACTION_GET_CONTENT 通道；桌面走 file_picker。
+  Future<void> _pickLocalFile() async {
+    if (_picking) return;
+    setState(() => _picking = true);
+    try {
+      final path = await pickLocalPlaylistFile();
+      if (path != null && path.isNotEmpty && mounted) {
+        setState(() {
+          _urlCtl.text = path;
+          _srcType = PlaylistSourceType.local;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('打开文件选择器失败：$e'),
+              duration: const Duration(seconds: 3)),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
   Future<void> _save() async {
     final url = _urlCtl.text.trim();
     if (url.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请填写源地址')),
+        SnackBar(
+            content: Text(_srcType == PlaylistSourceType.local
+                ? '请选择本地文件'
+                : '请填写源地址')),
       );
       return;
     }
@@ -170,7 +205,7 @@ class SourceManageDialogState extends State<SourceManageDialog> {
           id: DateTime.now().millisecondsSinceEpoch.toString(),
           name: name,
           url: url,
-          type: PlaylistSourceType.url,
+          type: _srcType,
           format: PlaylistFormat.unknown,
           addedAt: DateTime.now(),
         ));
@@ -185,6 +220,7 @@ class SourceManageDialogState extends State<SourceManageDialog> {
       if (!mounted) return;
       _nameCtl.clear();
       _urlCtl.clear();
+      setState(() => _srcType = PlaylistSourceType.url);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('已添加：$name'), duration: const Duration(seconds: 2)),
       );
@@ -194,6 +230,15 @@ class SourceManageDialogState extends State<SourceManageDialog> {
   }
 
   String _fallbackName(String url) {
+    if (widget.isPlaylist && _srcType == PlaylistSourceType.local) {
+      final parts = url.split(RegExp(r'[/\\]'));
+      final base = parts.isNotEmpty ? parts.last : '';
+      if (base.isNotEmpty) {
+        final dot = base.lastIndexOf('.');
+        return dot > 0 ? base.substring(0, dot) : base;
+      }
+      return '本地节目源';
+    }
     final u = Uri.tryParse(url);
     final host = u?.host ?? '';
     if (host.isNotEmpty) return host;
@@ -442,9 +487,34 @@ class SourceManageDialogState extends State<SourceManageDialog> {
                 : context.watch<PlayerController>().sourceManager.epgs)
             .length *
             3;
+    final isLocal =
+        widget.isPlaylist && _srcType == PlaylistSourceType.local;
     return Column(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (widget.isPlaylist) ...[
+          SegmentedButton<PlaylistSourceType>(
+            segments: const [
+              ButtonSegment(
+                value: PlaylistSourceType.url,
+                label: Text('网络地址'),
+              ),
+              ButtonSegment(
+                value: PlaylistSourceType.local,
+                label: Text('本地文件'),
+              ),
+            ],
+            selected: {_srcType},
+            onSelectionChanged: (s) =>
+                setState(() => _srcType = s.first),
+            style: const ButtonStyle(
+              visualDensity: VisualDensity(horizontal: -2, vertical: -2),
+              foregroundColor: WidgetStatePropertyAll(Colors.white),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
         Row(
           children: [
             Expanded(
@@ -471,16 +541,35 @@ class SourceManageDialogState extends State<SourceManageDialog> {
                 controller: _urlCtl,
                 style: const TextStyle(color: Colors.white, fontSize: 13),
                 keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
+                readOnly: isLocal,
+                onTap: isLocal && !kIsWeb ? _pickLocalFile : null,
+                decoration: InputDecoration(
                   isDense: true,
-                  labelText: '源地址（http://...）',
-                  labelStyle: TextStyle(color: Colors.white38),
-                  enabledBorder: OutlineInputBorder(
+                  labelText: isLocal
+                      ? '本地文件路径（任意类型，自动识别）'
+                      : '源地址（http://...）',
+                  labelStyle: const TextStyle(color: Colors.white38),
+                  enabledBorder: const OutlineInputBorder(
                     borderSide: BorderSide(color: Colors.white24),
                   ),
-                  focusedBorder: OutlineInputBorder(
+                  focusedBorder: const OutlineInputBorder(
                     borderSide: BorderSide(color: Colors.blueAccent),
                   ),
+                  suffixIcon: isLocal && !kIsWeb
+                      ? IconButton(
+                          tooltip: '选择文件',
+                          icon: _picking
+                              ? const SizedBox(
+                                  width: 17,
+                                  height: 17,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
+                                )
+                              : const Icon(Icons.folder_open,
+                                  color: Colors.lightBlueAccent),
+                          onPressed: _picking ? null : _pickLocalFile,
+                        )
+                      : null,
                 ),
               ),
             ),
