@@ -869,29 +869,31 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
               child: SizedBox(
                 width: 620,
                 child: Padding(
+                  // 图标+文字+按钮整块在弹窗内水平居中，
+                  // 左右留白相等（用户反馈内容偏左、距右侧过远）
                   padding: const EdgeInsets.all(34),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // 左侧放大程序图标
-                      Container(
-                        width: 136,
-                        height: 136,
-                        clipBehavior: Clip.antiAlias,
-                        decoration: BoxDecoration(
-                          color: Colors.white10,
-                          borderRadius: BorderRadius.circular(18),
+                  child: Center(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // 左侧放大程序图标
+                        Container(
+                          width: 136,
+                          height: 136,
+                          clipBehavior: Clip.antiAlias,
+                          decoration: BoxDecoration(
+                            color: Colors.white10,
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: Image.asset(
+                            'branding/icon_1024.png',
+                            fit: BoxFit.cover,
+                          ),
                         ),
-                        child: Image.asset(
-                          'branding/icon_1024.png',
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                      // 右侧文字+按钮整体右移，与左侧图标视觉平衡
-                      const SizedBox(width: 48),
-                      // 右侧：名称 / 版本 / 按钮
-                      Expanded(
-                        child: Column(
+                        const SizedBox(width: 48),
+                        // 右侧：名称 / 版本 / 按钮
+                        Column(
                           mainAxisSize: MainAxisSize.min,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -928,8 +930,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                             ),
                           ],
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1920,9 +1922,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     setState(() {
       _settingsOpen = next;
       if (next) {
-        // 打开设置时隐藏悬停标题栏、关闭左侧抽屉
+        // 打开设置时隐藏悬停标题栏、关闭左侧抽屉与底部面板：
+        // 面板间互斥，避免遥控按键语义在多层叠加上互相串扰
         _topBarVisible = false;
         _leftDrawerOpen = false;
+        _bottomPanelVisible = false;
+        _bottomHideTimer?.cancel();
       }
     });
     // rail 打开期间数字键不用于选台（源管理弹层内还有输入框），

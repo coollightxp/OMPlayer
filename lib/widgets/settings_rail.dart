@@ -128,6 +128,9 @@ class SettingsRailState extends State<SettingsRail> {
       case 'right':
         break;
       case 'ok':
+        // 只响应按下边沿：抬起再执行一次会让 toggle 项两次抵消
+        //（表现为"开关点了没反应/右侧菜单行为混乱"）
+        if (!isDown) break;
         final e = entries[_kbItemIndex.clamp(0, entries.length - 1)];
         if (e.enabled) {
           e.onOk?.call();

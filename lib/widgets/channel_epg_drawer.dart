@@ -577,7 +577,7 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
   /// 节目行是否可选择/操作。不支持回看的已播节目返回 false（置灰、跳过）。
   bool _isProgramEnabled(PlayerController c, Channel ch, EpgProgram p) {
     if (!p.isPast) return true; // 直播中 / 未播预约
-    if (c.isReservationTriggered(p)) return true; // 已播放（仅提示）
+    if (c.isReservationTriggered(p, channel: ch)) return true; // 已播放（仅提示）
     return _canCatchup(ch, p);
   }
 
@@ -606,16 +606,17 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
       return;
     }
     if (!p.isPast) {
-      // 未播：预约 / 取消预约
-      final reserved = c.isProgramReserved(p);
-      c.toggleReservation(p);
+      // 未播：预约 / 取消预约。传框选频道——节目单属主，
+      // 否则 EPG ID 匹配不上时兜底到当前播放频道会到点串台
+      final reserved = c.isProgramReserved(p, channel: ch);
+      c.toggleReservation(p, channel: ch);
       _showMsg(reserved
           ? '已取消预约：${p.title}'
           : '已预约：${p.title}，到时间将自动播放');
       return;
     }
     // 已播且预约已触发：灰态不可操作
-    if (c.isReservationTriggered(p)) {
+    if (c.isReservationTriggered(p, channel: ch)) {
       _showMsg('预约已执行');
       return;
     }
@@ -1037,8 +1038,8 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
           program: p,
           keyboardSelected:
               index == _kbProgIndex && !_epgFocusDate && _level == 3,
-          reserved: c.isProgramReserved(p),
-          triggered: c.isReservationTriggered(p),
+          reserved: c.isProgramReserved(p, channel: ch),
+          triggered: c.isReservationTriggered(p, channel: ch),
           enabled: _isProgramEnabled(c, ch, p),
           onAction: () {
             _kbProgIndex = index;

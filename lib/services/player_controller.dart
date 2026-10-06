@@ -730,21 +730,21 @@ class PlayerController extends ChangeNotifier {
   Future<void> _onReservationTriggered(ProgramReservation r) async {
     Channel? channel;
     if (r.autoSwitch || (r.autoRecord && isDesktop)) {
-      // 优先使用预约时记录的播放地址直接播放（不依赖当前播放列表）
-      if (r.streamUrls.isNotEmpty) {
-        channel = Channel(
-          id: r.channelId,
-          name: r.channelName.isNotEmpty ? r.channelName : r.programTitle,
-          logoUrl: r.logoUrl,
-          streamUrls: r.streamUrls,
-          categoryId: '',
-          tvgId: r.tvgId,
-          tvgName: r.tvgName,
-        );
-      } else {
-        // 兼容旧预约记录：按 ID/tvgId/名称从当前播放列表反查
-        channel = _resolveReservationChannel(r);
-      }
+      // 优先从当前播放列表按频道 ID 反查（地址新鲜）；预约存档的
+      // 直播流 URL 常带 token/时效，到点直接用很可能已失效 = 预约
+      // 「不好使」。反查不到（频道已删除）才回退存档地址。
+      channel = _resolveReservationChannel(r);
+      channel ??= r.streamUrls.isNotEmpty
+          ? Channel(
+              id: r.channelId,
+              name: r.channelName.isNotEmpty ? r.channelName : r.programTitle,
+              logoUrl: r.logoUrl,
+              streamUrls: r.streamUrls,
+              categoryId: '',
+              tvgId: r.tvgId,
+              tvgName: r.tvgName,
+            )
+          : null;
     }
     if (r.autoSwitch && channel != null) {
       await playChannel(channel);
@@ -2009,31 +2009,37 @@ class PlayerController extends ChangeNotifier {
   // ==================== 预约 ====================
 
   /// 切换节目预约状态
-  Future<bool> toggleReservation(EpgProgram program) async {
-    // 找到对应频道，记录：时间、节目名、频道名、播放地址（全部备用源）、
-    // 台标、EPG 标识。到点后直接用记录的地址播放，避免按名称反查跳错台。
-    // 注意：预约只能用「精确匹配」的频道，匹配不到时以当前频道兜底
-    // （EPG 面板展示的就是当前频道的节目单），绝不能用名称模糊匹配，
-    // 否则像 "CCTV" 这样的短名会错误命中列表里第一个 CCTV 频道。
-    final channel = _findChannelExact(program) ?? _currentChannel;
+  ///
+  /// [channel] 是抽屉当前框选的频道（节目单的属主，绝无歧义），必须优先
+  /// 使用——否则 EPG 频道 ID 匹配不上播放列表时兜底到 _currentChannel，
+  /// 用户浏览别的频道节目单预约就会「到点串台」。
+  Future<bool> toggleReservation(EpgProgram program, {Channel? channel}) async {
+    final ch = _resolveChannelForProgram(program, channel);
     final r = ProgramReservation(
       id: 'res_${program.channelId}_${program.startTime.millisecondsSinceEpoch}',
-      channelId: channel?.id ?? program.channelId,
-      channelName: channel?.name ?? '',
+      channelId: ch?.id ?? program.channelId,
+      channelName: ch?.name ?? '',
       programTitle: program.title,
       startTime: program.startTime,
       endTime: program.endTime,
       autoSwitch: true,
       autoRecord: false,
       createdAt: DateTime.now(),
-      streamUrls: channel?.streamUrls ?? const [],
-      logoUrl: channel?.logoUrl ?? '',
-      tvgId: channel?.tvgId ?? '',
-      tvgName: channel?.tvgName ?? program.channelId,
+      streamUrls: ch?.streamUrls ?? const [],
+      logoUrl: ch?.logoUrl ?? '',
+      tvgId: ch?.tvgId ?? '',
+      tvgName: ch?.tvgName ?? program.channelId,
     );
     final result = await reservationManager.toggleReservation(r);
     notifyListeners();
     return result;
+  }
+
+  /// 节目所属频道解析：抽屉框选的频道优先，其次按 EPG 频道 ID 精确匹配，
+  /// 最后兜底当前播放频道。预约/查询/灰态三处必须走同一解析，
+  /// 否则状态互相错乱（预约成功但列表不亮、串台）。
+  Channel? _resolveChannelForProgram(EpgProgram program, [Channel? channel]) {
+    return channel ?? _findChannelExact(program) ?? _currentChannel;
   }
 
   /// 根据 EPG 节目反查对应频道（tvgId 精确匹配，其次名称模糊匹配）
@@ -2088,20 +2094,20 @@ class PlayerController extends ChangeNotifier {
 
   /// 检查节目是否已预约。
   /// 频道解析必须与 [toggleReservation] 完全一致
-  /// （精确匹配不到时兜底当前频道）：否则无 tvg-id 的频道会
+  /// （抽屉框选频道 → 精确匹配 → 当前频道）：否则无 tvg-id 的频道会
   /// 「预约时存频道UUID、查询时用XMLTV-id」导致图标不亮、
   /// 第二次按 OK 仍提示"已预约"。
-  bool isProgramReserved(EpgProgram program) {
-    final channel = _findChannelExact(program) ?? _currentChannel;
-    final cid = channel?.id ?? program.channelId;
+  bool isProgramReserved(EpgProgram program, {Channel? channel}) {
+    final ch = _resolveChannelForProgram(program, channel);
+    final cid = ch?.id ?? program.channelId;
     return reservationManager.isReserved(cid, program.startTime);
   }
 
   /// 检查节目预约是否已触发执行（EPG 灰态「已播放」）。
   /// 频道解析必须与 toggleReservation/isProgramReserved 完全一致。
-  bool isReservationTriggered(EpgProgram program) {
-    final channel = _findChannelExact(program) ?? _currentChannel;
-    final cid = channel?.id ?? program.channelId;
+  bool isReservationTriggered(EpgProgram program, {Channel? channel}) {
+    final ch = _resolveChannelForProgram(program, channel);
+    final cid = ch?.id ?? program.channelId;
     return reservationManager.isTriggered(cid, program.startTime);
   }
 
