@@ -12,10 +12,6 @@ class SettingsRail extends StatefulWidget {
   final bool isOpen;
   final VoidCallback onClose;
 
-  final VoidCallback? onHoverEnter;
-  final VoidCallback? onHoverExit;
-  final VoidCallback? onHoverMove;
-
   /// 列表管理：打开节目源 / EPG 源管理窗口（Task 6）
   final VoidCallback? onManagePlaylist;
   final VoidCallback? onManageEpg;
@@ -24,9 +20,6 @@ class SettingsRail extends StatefulWidget {
     super.key,
     required this.isOpen,
     required this.onClose,
-    this.onHoverEnter,
-    this.onHoverExit,
-    this.onHoverMove,
     this.onManagePlaylist,
     this.onManageEpg,
   });
@@ -364,11 +357,7 @@ class SettingsRailState extends State<SettingsRail> {
       top: 0,
       bottom: 0,
       width: w,
-      child: MouseRegion(
-        onEnter: (_) => widget.onHoverEnter?.call(),
-        onExit: (_) => widget.onHoverExit?.call(),
-        onHover: (_) => widget.onHoverMove?.call(),
-        child: AnimatedOpacity(
+      child: AnimatedOpacity(
           duration: const Duration(milliseconds: 200),
           opacity: widget.isOpen ? 1.0 : 0.0,
           child: ScaledPanel(
@@ -390,8 +379,7 @@ class SettingsRailState extends State<SettingsRail> {
             ),
           ),
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildHeader(String title, {bool showBack = true}) {

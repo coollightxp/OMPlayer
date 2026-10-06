@@ -66,13 +66,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   Timer? _drawerHideTimer;
   static const _drawerAutoHide = Duration(seconds: 3);
 
-  // 右侧设置中心：右缘悬停停留计时（防止鼠标擦过右缘误触，需停留
-  // 一小会儿才打开）+ 移出面板后的自动关闭计时
-  Timer? _railOpenDwell;
-  Timer? _railHideTimer;
-  static const _railOpenDwellDuration = Duration(milliseconds: 280);
-  static const _railAutoHide = Duration(seconds: 3);
-
   // 切台 OSD
   Timer? _osdTimer;
   bool _osdVisible = false;
@@ -397,8 +390,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
     _cursorHideTimer?.cancel();
     _drawerHideTimer?.cancel();
-    _railOpenDwell?.cancel();
-    _railHideTimer?.cancel();
     _osdTimer?.cancel();
     _numTimer?.cancel();
     _okLongTimer?.cancel();
@@ -597,31 +588,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                         },
                       ),
                     ),
-                    // 右边缘：停留一小会儿才呼出设置中心（鼠标擦边/去点
-                    // 右上角窗口按钮时不会误触）；顶部内缩 48px，避让右上
-                    // 角窗口控制与时钟区。打开后的自动关闭由面板 onExit 负责
-                    Positioned(
-                      right: 0,
-                      top: 48,
-                      bottom: 0,
-                      width: 20,
-                      child: MouseRegion(
-                        onEnter: (_) {
-                          if (_settingsOpen || _modalRouteOpen) return;
-                          _railOpenDwell?.cancel();
-                          _railOpenDwell = Timer(_railOpenDwellDuration, () {
-                            if (!mounted ||
-                                _settingsOpen ||
-                                _leftDrawerOpen ||
-                                _modalRouteOpen) {
-                              return;
-                            }
-                            _toggleSettings(open: true);
-                          });
-                        },
-                        onExit: (_) => _railOpenDwell?.cancel(),
-                      ),
-                    ),
+                    // 右缘悬停自动呼出已移除（v1.1.006）：鼠标路过右缘
+                    // 误弹设置中心 + 自动收回会让 OK 落错层（联动左侧节目
+                    // 列表、误暂停）。设置中心只经菜单键/快捷键/S 键打开，
+                    // 由用户手动关闭
                     // 底部边缘
                     Positioned(
                       left: 0,
@@ -713,9 +683,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onManagePlaylist: () =>
                         _openSourceDialog(isPlaylist: true),
                     onManageEpg: () => _openSourceDialog(isPlaylist: false),
-                    onHoverEnter: _cancelRailHide,
-                    onHoverExit: _startRailHideTimer,
-                    onHoverMove: _cancelRailHide,
                   ),
 
                   // 亮度调节指示
@@ -869,14 +836,18 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
               child: SizedBox(
                 width: 620,
                 child: Padding(
-                  // 图标+文字+按钮整块在弹窗内水平居中，
-                  // 左右留白相等（用户反馈内容偏左、距右侧过远）
+                  // 图标+文字+按钮整块在弹窗内水平居中，左右留白对称；
+                  // 用 Column(min) 收紧高度——Center 在 Dialog 的松散
+                  // 高度约束下会把弹窗撑到近乎全屏高（内容缩在中间）
                   padding: const EdgeInsets.all(34),
-                  child: Center(
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
                         // 左侧放大程序图标
                         Container(
                           width: 136,
@@ -932,10 +903,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                         ),
                       ],
                     ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            );
+              );
           },
         );
       },
@@ -1326,7 +1298,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return;
     }
     _okLongTimer?.cancel();
-    _okLongTimer = Timer(const Duration(milliseconds: 500), () {
+    // 800ms：遥控器按键普遍偏长，500ms 时正常短按也常超时，
+    // 表现为「OK 弹出底部面板又暂停」两件事一起发生
+    _okLongTimer = Timer(const Duration(milliseconds: 800), () {
       _okLongFired = true;
       // 长按 OK = 呼出/收起控制面板（内部有播放状态守卫）
       _toggleBottomPanel();
@@ -1361,8 +1335,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
     if (!_okLongFired) {
       final c = context.read<PlayerController>();
-      // 点播短按 OK = 暂停/播放；直播/网页 = 呼出频道抽屉
-      if (c.isSeekable && !c.webPageActive) {
+      // 短按 OK：回看/点播（节目菜单选的）与投屏推送的媒体 = 暂停/播放；
+      // 直播/网页 = 呼出频道抽屉。用 isCatchupPlayback 而非 isSeekable——
+      // 直播频道播 MP4 文件也 isSeekable，不能据此误判成点播
+      if (!c.webPageActive &&
+          (c.isCatchupPlayback || (c.isCasting && c.isSeekable))) {
         c.togglePlayPause();
       } else {
         _toggleDrawer();
@@ -1669,8 +1646,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 打开左侧三级抽屉（与右侧设置中心互斥）
   void _openDrawer() {
-    _railOpenDwell?.cancel();
-    _railHideTimer?.cancel();
     setState(() {
       // 打开面板时隐藏悬停标题栏，避免遮挡面板顶部按钮
       _topBarVisible = false;
@@ -1917,8 +1892,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   void _toggleSettings({bool? open}) {
     final next = open ?? !_settingsOpen;
     if (next == _settingsOpen) return;
-    _railOpenDwell?.cancel();
-    if (!next) _railHideTimer?.cancel();
     setState(() {
       _settingsOpen = next;
       if (next) {
@@ -1942,8 +1915,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     // 从设置中心进入时，关闭窗口后回到设置中心（而非直接回播放态）
     final cameFromRail = _settingsOpen;
     _bottomHideTimer?.cancel();
-    _railOpenDwell?.cancel();
-    _railHideTimer?.cancel();
     setState(() {
       _leftDrawerOpen = false;
       _bottomPanelVisible = false;
@@ -2223,23 +2194,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _drawerHideTimer = Timer(_drawerAutoHide, () {
       if (mounted) {
         setState(() => _leftDrawerOpen = false);
-        _ensureShortcutFocus();
-      }
-    });
-  }
-
-  /// 鼠标在设置中心内：取消自动关闭
-  void _cancelRailHide() {
-    _railHideTimer?.cancel();
-  }
-
-  /// 设置中心 hover 移出后 3 秒自动关闭（鼠标擦边误触打开后，
-  /// 光标离开即可自行收回，不必再手动点关闭）
-  void _startRailHideTimer() {
-    _railHideTimer?.cancel();
-    _railHideTimer = Timer(_railAutoHide, () {
-      if (mounted && _settingsOpen && !_sourceDialogOpen) {
-        _toggleSettings(open: false);
         _ensureShortcutFocus();
       }
     });
