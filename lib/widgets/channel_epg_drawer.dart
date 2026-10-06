@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -221,12 +222,22 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
     _kbProgKey = null;
   }
 
-  /// 鼠标悬停某个 L2 频道：与遥控器上下移动完全同效——框选频道、
-  /// 焦点落到 L2、右侧 EPG 同步刷新，但不播放（点击才播放）
-  void _hoverSelectChannel(List<Channel> channels, int index) {
-    if (!mounted || channels.isEmpty) return;
-    final target = index.clamp(0, channels.length - 1);
-    if (_level == 2 && _kbChannelIndex == target) return;
+  /// 鼠标滚轮 = 遥控器上下：滚动一格框选移动一个频道并同步右侧 EPG
+  /// （不播放）。列表本身设为不可滚动，滚轮完全转为框选控制——
+  /// 鼠标停留在列表上不会自动抢焦点，遥控器框选不被带跑。
+  /// 120ms 节流防触摸板海量小步进导致连跳
+  DateTime _lastWheelMove = DateTime.fromMillisecondsSinceEpoch(0);
+  void _wheelSelect(List<Channel> channels, PointerScrollEvent e) {
+    if (!mounted || channels.isEmpty || e.deltaY == 0) return;
+    final now = DateTime.now();
+    if (now.difference(_lastWheelMove) <
+        const Duration(milliseconds: 120)) {
+      return;
+    }
+    _lastWheelMove = now;
+    final dir = e.deltaY > 0 ? 1 : -1;
+    final target = (_kbChannelIndex + dir).clamp(0, channels.length - 1);
+    if (target == _kbChannelIndex && _level == 2) return;
     setState(() {
       _level = 2;
       _kbChannelIndex = target;
@@ -818,18 +829,22 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
         globalOffset += cc.channels.length;
       }
     }
-    return ListView.builder(
-      controller: _chScroll,
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: channels.length,
-      itemBuilder: (context, index) {
-        final ch = channels[index];
-        final number = _kbCatIndex == 0 ? index + 1 : globalOffset + index + 1;
-        return MouseRegion(
-          key: _chKeys[index],
-          // 鼠标移入与遥控器上下同效：框选该频道并同步右侧 EPG（不播放）
-          onEnter: (_) => _hoverSelectChannel(channels, index),
-          child: _ChannelTile(
+    // 鼠标滚轮 = 框选上下（不直接滚动视口）；列表禁物理滚动，
+    // 只保留遥控器/滚轮框选驱动的程序性 ensureVisible 滚动
+    return Listener(
+      onPointerSignal: (e) {
+        if (e is PointerScrollEvent) _wheelSelect(channels, e);
+      },
+      child: ListView.builder(
+        controller: _chScroll,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        itemCount: channels.length,
+        itemBuilder: (context, index) {
+          final ch = channels[index];
+          final number = _kbCatIndex == 0 ? index + 1 : globalOffset + index + 1;
+          return _ChannelTile(
+            key: _chKeys[index],
             channel: ch,
             number: number,
             isCurrent: c.currentChannel?.id == ch.id,
@@ -840,9 +855,9 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
               _playFocusedChannel(c, channels);
             },
             onLongPress: () => _toggleFavorite(ch),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
@@ -1161,23 +1176,19 @@ class _ChannelTile extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
-              // 所有频道统一使用程序图标（新版取景框），不再加载各源杂乱的
-              // 网络台标（加载失败/比例不一导致列表图标参差不齐）
-              Container(
-                width: 34,
-                height: 34,
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: (keyboardSelected || isCurrent)
-                        ? Colors.blueAccent
-                        : Colors.white24,
-                  ),
-                ),
-                child: Image.asset(
-                  'branding/icon_1024.png',
-                  fit: BoxFit.cover,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: SizedBox(
+                  width: 34,
+                  height: 34,
+                  child: channel.logoUrl.isEmpty
+                      ? const _LogoPlaceholder()
+                      : Image.network(
+                          channel.logoUrl,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, __, ___) =>
+                              const _LogoPlaceholder(),
+                        ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -1200,6 +1211,18 @@ class _ChannelTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _LogoPlaceholder extends StatelessWidget {
+  const _LogoPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.white10,
+      child: const Icon(Icons.tv, color: Colors.white54, size: 18),
     );
   }
 }

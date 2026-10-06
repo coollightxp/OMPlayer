@@ -49,13 +49,17 @@ class SourceManageDialogState extends State<SourceManageDialog> {
   PlaylistSourceType _srcType = PlaylistSourceType.url;
   bool _picking = false;
 
-  /// 遥控器平面焦点：每个源占 3 个槽位（选择/复制/删除），
-  /// 最后一个槽位为「确定」。输入框用鼠标/软键盘操作。
-  int _kbIndex = 0;
+  /// 遥控器二维焦点：上/下在源列表行间移动（默认就在列表行上，
+  /// 最后一行为「确定」行）；左/右在一行内的按钮间切换
+  /// （-1=行本体，0=选择，1=复制，2=删除）。
+  /// 行本体上按 OK 直接把该源设为当前源。输入框用鼠标/软键盘操作。
+  int _kbRow = 0;
+  int _kbCol = -1;
 
   /// 删除二段确认：首次 OK/点击只装填（红色高亮提示"再按一次确认删除"），
-  /// 再按一次才真正删除。防止上下移动焦点时路过删除位、一按 OK 就误删源
-  int? _deleteArmedSlot;
+  /// 再按一次才真正删除。防止上下移动焦点时路过删除位、一按 OK 就误删源。
+  /// 存装填行号（删除按钮固定在该行 col 2）
+  int? _deleteArmedRow;
 
   @override
   void dispose() {
@@ -71,36 +75,41 @@ class SourceManageDialogState extends State<SourceManageDialog> {
     final sources = widget.isPlaylist
         ? c.sourceManager.playlists
         : c.sourceManager.epgs;
-    final max = sources.length * 3; // 最后一个槽位=确定
+    final lastRow = sources.length; // 最后一行=确定行
     switch (action) {
       case 'up':
         setState(() {
-          _kbIndex = (_kbIndex - 1).clamp(0, max);
-          _deleteArmedSlot = null; // 移动焦点即解除删除装填
+          _kbRow = (_kbRow - 1).clamp(0, lastRow);
+          _deleteArmedRow = null; // 移动焦点即解除删除装填
         });
         _ensureVisible();
         break;
       case 'down':
         setState(() {
-          _kbIndex = (_kbIndex + 1).clamp(0, max);
-          _deleteArmedSlot = null;
+          _kbRow = (_kbRow + 1).clamp(0, lastRow);
+          _deleteArmedRow = null;
         });
         _ensureVisible();
         break;
+      case 'left':
+        if (_kbRow == lastRow) break; // 确定行没有按钮列
+        setState(() => _kbCol = (_kbCol - 1).clamp(-1, 2));
+        break;
+      case 'right':
+        if (_kbRow == lastRow) break;
+        setState(() => _kbCol = (_kbCol + 1).clamp(-1, 2));
+        break;
       case 'ok':
-        if (_kbIndex == max) {
+        if (_kbRow == lastRow) {
           _save();
         } else {
-          final si = _kbIndex ~/ 3;
-          final part = _kbIndex % 3;
-          if (si >= sources.length) break;
-          final src = sources[si];
-          if (part == 0) {
-            _select(src);
-          } else if (part == 1) {
+          final src = sources[_kbRow];
+          if (_kbCol == -1 || _kbCol == 0) {
+            _select(src); // 列表行 OK / 选择按钮 → 直接设为当前源
+          } else if (_kbCol == 1) {
             _copy(src is PlaylistSource ? src.url : (src as EpgSource).url);
           } else {
-            _deletePress(_kbIndex, src);
+            _deletePress(_kbRow, src);
           }
         }
         break;
@@ -111,12 +120,25 @@ class SourceManageDialogState extends State<SourceManageDialog> {
   }
 
   final _slotKey = GlobalKey();
-  final Map<int, GlobalKey> _slotKeys = {};
+  final Map<int, GlobalKey> _slotKeys = {}; // 按钮槽位 key：row*3+col
+  final Map<int, GlobalKey> _rowKeys = {}; // 列表行本体 key：row
   final ScrollController _listScroll = ScrollController();
 
   void _ensureVisible() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = _slotKeys[_kbIndex]?.currentContext;
+      final c = context.read<PlayerController>();
+      final sources = widget.isPlaylist
+          ? c.sourceManager.playlists
+          : c.sourceManager.epgs;
+      final GlobalKey? key;
+      if (_kbRow >= sources.length) {
+        key = _slotKeys[sources.length * 3]; // 确定按钮
+      } else if (_kbCol == -1) {
+        key = _rowKeys[_kbRow];
+      } else {
+        key = _slotKeys[_kbRow * 3 + _kbCol];
+      }
+      final ctx = key?.currentContext;
       if (ctx != null) {
         Scrollable.ensureVisible(ctx,
             duration: const Duration(milliseconds: 180),
@@ -137,12 +159,12 @@ class SourceManageDialogState extends State<SourceManageDialog> {
 
   /// 删除入口（遥控器 OK 与鼠标点击共用）：第一次只装填确认态并红框提示，
   /// 第二次才真正删除
-  void _deletePress(int slot, Object src) {
-    if (_deleteArmedSlot == slot) {
+  void _deletePress(int row, Object src) {
+    if (_deleteArmedRow == row) {
       _delete(src);
       return;
     }
-    setState(() => _deleteArmedSlot = slot);
+    setState(() => _deleteArmedRow = row);
   }
 
   Future<void> _delete(Object src) async {
@@ -163,9 +185,11 @@ class SourceManageDialogState extends State<SourceManageDialog> {
           : c.sourceManager.epgs.length;
       // 清理已删除槽位的 GlobalKey，避免无主 key 残留
       _slotKeys.removeWhere((k, _) => k >= remaining * 3);
+      _rowKeys.removeWhere((k, _) => k >= remaining);
       setState(() {
-        _kbIndex = _kbIndex.clamp(0, remaining * 3);
-        _deleteArmedSlot = null;
+        _kbRow = _kbRow.clamp(0, remaining);
+        _kbCol = -1; // 删除后回到行焦点
+        _deleteArmedRow = null;
       });
     }
   }
@@ -417,63 +441,75 @@ class SourceManageDialogState extends State<SourceManageDialog> {
         final isCurrent =
             (src is PlaylistSource ? src.id : (src as EpgSource).id) ==
                 currentId;
-        final base = index * 3;
+        final rowFocused = _kbRow == index && _kbCol == -1;
         return Container(
+          key: _rowKeys[index] ??= GlobalKey(),
           margin: const EdgeInsets.symmetric(vertical: 3),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
             color: Colors.white.withOpacity(0.03),
             borderRadius: BorderRadius.circular(8),
+            // 遥控器焦点在行本体上时整行高亮，此时按 OK 直接设为当前源
+            border: Border.all(
+              color: rowFocused ? Colors.white70 : Colors.transparent,
+              width: 1.4,
+            ),
           ),
-          child: Row(
-            children: [
-              _slotButton(
-                slot: base,
-                icon: isCurrent
-                    ? Icons.check_circle
-                    : Icons.radio_button_unchecked,
-                color: isCurrent ? Colors.blueAccent : Colors.white38,
-                tooltip: isCurrent ? '当前源' : '切换为当前源',
-                onPressed: () => _select(src),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 13)),
-                    Text(url,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: Colors.white38, fontSize: 11)),
-                  ],
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _select(src), // 鼠标点行任意处 = 切换为当前源
+            child: Row(
+              children: [
+                _slotButton(
+                  row: index,
+                  col: 0,
+                  icon: isCurrent
+                      ? Icons.check_circle
+                      : Icons.radio_button_unchecked,
+                  color: isCurrent ? Colors.blueAccent : Colors.white38,
+                  tooltip: isCurrent ? '当前源' : '切换为当前源',
+                  onPressed: () => _select(src),
                 ),
-              ),
-              _slotButton(
-                slot: base + 1,
-                icon: Icons.copy,
-                color: Colors.white60,
-                tooltip: '复制地址',
-                onPressed: () => _copy(url),
-              ),
-              _slotButton(
-                slot: base + 2,
-                icon: _deleteArmedSlot == base + 2
-                    ? Icons.delete_forever
-                    : Icons.delete,
-                color: Colors.redAccent,
-                tooltip: _deleteArmedSlot == base + 2
-                    ? '再按一次确认删除'
-                    : '删除',
-                armed: _deleteArmedSlot == base + 2,
-                onPressed: () => _deletePress(base + 2, src),
-              ),
-            ],
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 13)),
+                      Text(url,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: Colors.white38, fontSize: 11)),
+                    ],
+                  ),
+                ),
+                _slotButton(
+                  row: index,
+                  col: 1,
+                  icon: Icons.copy,
+                  color: Colors.white60,
+                  tooltip: '复制地址',
+                  onPressed: () => _copy(url),
+                ),
+                _slotButton(
+                  row: index,
+                  col: 2,
+                  icon: _deleteArmedRow == index
+                      ? Icons.delete_forever
+                      : Icons.delete,
+                  color: Colors.redAccent,
+                  tooltip:
+                      _deleteArmedRow == index ? '再按一次确认删除' : '删除',
+                  armed: _deleteArmedRow == index,
+                  onPressed: () => _deletePress(index, src),
+                ),
+              ],
+            ),
           ),
         );
       },
@@ -483,14 +519,16 @@ class SourceManageDialogState extends State<SourceManageDialog> {
   /// 遥控器槽位按钮：键盘焦点框 + 鼠标点击二合一；
   /// [armed] 为删除二段确认装填态（红框红底醒目提示）
   Widget _slotButton({
-    required int slot,
+    required int row,
+    required int col,
     required IconData icon,
     required Color color,
     required String tooltip,
     required VoidCallback onPressed,
     bool armed = false,
   }) {
-    final focused = slot == _kbIndex;
+    final focused = row == _kbRow && col == _kbCol;
+    final slot = row * 3 + col;
     final key = _slotKeys[slot] ??= GlobalKey();
     return IconButton(
       key: key,
@@ -610,7 +648,8 @@ class SourceManageDialogState extends State<SourceManageDialog> {
         Align(
           alignment: Alignment.centerRight,
           child: Builder(builder: (context) {
-            final focused = confirmSlot == _kbIndex;
+            // 确定按钮所在行号 = 源数量（列表最后一行的下一行）
+            final focused = _kbRow == confirmSlot ~/ 3;
             return Container(
               key: _slotKeys[confirmSlot] ??= GlobalKey(),
               decoration: BoxDecoration(

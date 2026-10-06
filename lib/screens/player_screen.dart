@@ -669,6 +669,29 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onShowMessage: _showOsd,
                   ),
 
+                  // 鼠标右键 = 遥控器返回：按层级关闭 设置→投屏→抽屉→面板，
+                  // 再按弹退出确认（网页频道前台时右键被 WebView 消费，
+                  // 网页区内不触发；网页菜单已在 JS 层禁用）
+                  if (controller.isDesktop)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onSecondaryTapUp: (_) => _handleBackPressed(),
+                      ),
+                    ),
+
+                  // 右侧设置中心打开时的全屏阻隔层：吃掉 rail 之外的鼠标
+                  // 点击，防止穿透到底层播放区（误暂停/误触节目）；
+                  // 点击空白处即关闭设置中心
+                  if (_settingsOpen)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _toggleSettings(open: false),
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+
                   // 右侧设置中心
                   SettingsRail(
                     key: _settingsRailKey,
@@ -881,11 +904,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                                 _buildExitOption(
                                     ctx, 0, '取消', Colors.blueAccent),
                                 _buildExitOption(
-                                    ctx, 1, '退出程序', Colors.redAccent),
+                                    ctx, 1, '退出', Colors.redAccent),
                                 // 关闭系统仅 Windows/Linux 原生显示
                                 if (_canShutdownSystem)
-                                  _buildExitOption(ctx, 2, '关闭系统',
-                                      Colors.orangeAccent),
+                                  _buildExitOption(
+                                      ctx, 2, '关机', Colors.orangeAccent),
                               ],
                             ),
                           ],
