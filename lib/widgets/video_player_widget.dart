@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
+import '../models/player_settings.dart';
 import '../services/player_controller.dart';
 
 /// 视频播放器显示组件
@@ -98,18 +99,49 @@ class VideoPlayerWidget extends StatelessWidget {
         final w = vc.value.size.width;
         final h = vc.value.size.height;
         final hasSize = w > 0 && h > 0;
+        final mode = controller.settings.aspectRatioMode;
+
+        // FittedBox 子框的比例即画面最终比例（FittedBox 负责缩放到屏幕）：
+        // auto/original=视频真实比例；16:9/4:3=强制比例；fill=拉伸铺满；
+        // crop=cover 居中裁切（比例用视频真实比例）
+        final double childW;
+        final double childH;
+        final BoxFit fit;
+        switch (mode) {
+          case AspectRatioMode.ratio16x9:
+            childW = 16;
+            childH = 9;
+            fit = BoxFit.contain;
+          case AspectRatioMode.ratio4x3:
+            childW = 4;
+            childH = 3;
+            fit = BoxFit.contain;
+          case AspectRatioMode.fill:
+            childW = hasSize ? w : 16;
+            childH = hasSize ? h : 9;
+            fit = BoxFit.fill;
+          case AspectRatioMode.crop:
+            childW = hasSize ? w : 16;
+            childH = hasSize ? h : 9;
+            fit = BoxFit.cover;
+          case AspectRatioMode.auto:
+          case AspectRatioMode.original:
+            childW = hasSize ? w : 16;
+            childH = hasSize ? h : 9;
+            fit = BoxFit.contain;
+        }
         // 旋转：用独立的 ValueNotifier 只重建视频层，避免整 Stack 灰屏
         return ValueListenableBuilder<int>(
           valueListenable: controller.videoRotation,
           builder: (context, rot, _) {
             return SizedBox.expand(
               child: FittedBox(
-                fit: BoxFit.contain,
+                fit: fit,
                 child: RotatedBox(
                   quarterTurns: rot,
                   child: SizedBox(
-                    width: hasSize ? w : 16,
-                    height: hasSize ? h : 9,
+                    width: childW,
+                    height: childH,
                     child: VideoPlayer(vc),
                   ),
                 ),

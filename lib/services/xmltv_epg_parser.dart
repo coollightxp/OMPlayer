@@ -56,6 +56,17 @@ class XmltvEpgParser {
             prog.findElements('title').firstOrNull?.innerText ?? '未知节目';
         final desc = prog.findElements('desc').firstOrNull?.innerText ?? '';
 
+        // 回看地址模板：优先子元素 <catchup-source>，其次同名属性
+        final catchupSource = (prog
+                    .findElements('catchup-source')
+                    .firstOrNull
+                    ?.innerText
+                    .trim()
+                    .isNotEmpty ??
+                false)
+            ? prog.findElements('catchup-source').first.innerText.trim()
+            : prog.getAttribute('catchup-source')?.trim();
+
         result.putIfAbsent(channelId, () => []).add(EpgProgram(
               id: '${channelId}_${startTime.millisecondsSinceEpoch}',
               channelId: channelId,
@@ -63,6 +74,10 @@ class XmltvEpgParser {
               description: desc,
               startTime: startTime,
               endTime: endTime,
+              catchupUrl:
+                  (catchupSource != null && catchupSource.isNotEmpty)
+                      ? catchupSource
+                      : null,
             ));
       }
 

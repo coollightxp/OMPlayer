@@ -183,6 +183,11 @@ class PlaylistParser {
       final logo = attrs['tvg-logo'] ?? '';
       // 部分源要求特定 UA 才能播放（如 APTV 的 AptvPlayer-UA）
       final ua = (attrs['http-user-agent'] ?? '').trim();
+      // 回看：catchup=default/dvr/flussonic/dash/append；
+      // catchup-source=地址模板（{start}/{end} 等占位符）；catchup-days=天数
+      final catchupType = (attrs['catchup'] ?? '').trim();
+      final catchupSource = (attrs['catchup-source'] ?? '').trim();
+      final catchupDays = int.tryParse((attrs['catchup-days'] ?? '').trim());
 
       return Channel(
         id: _genId(url, name),
@@ -194,6 +199,9 @@ class PlaylistParser {
         tvgId: tvgId,
         tvgName: tvgName,
         userAgent: ua,
+        catchupType: catchupType,
+        catchupSource: catchupSource,
+        catchupDays: catchupDays,
       );
     } catch (_) {
       return null;
@@ -316,6 +324,19 @@ class PlaylistParser {
       } else {
         for (final u in ch.streamUrls) {
           if (!existing.streamUrls.contains(u)) existing.streamUrls.add(u);
+        }
+        // 备用源条目可能带回看参数：主条目缺失时补齐
+        if ((existing.catchupType.isEmpty ||
+                existing.catchupSource.isEmpty ||
+                existing.catchupDays == null) &&
+            ch.hasCatchup) {
+          mergedByKey[key] = existing.copyWith(
+            catchupType:
+                existing.catchupType.isEmpty ? ch.catchupType : null,
+            catchupSource:
+                existing.catchupSource.isEmpty ? ch.catchupSource : null,
+            catchupDays: existing.catchupDays ?? ch.catchupDays,
+          );
         }
       }
     }

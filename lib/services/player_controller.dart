@@ -149,6 +149,32 @@ class PlayerController extends ChangeNotifier {
   PlayerSettings get settings => _settings;
   VideoPlayerController? get videoController => _videoController;
   List<ChannelCategory> get categories => _categories;
+
+  /// 未被用户隐藏的分类（左侧抽屉一级列表使用）
+  List<ChannelCategory> get visibleCategories => _categories
+      .where((c) => !_settings.hiddenCategoryIds.contains(c.id))
+      .toList(growable: false);
+
+  bool isCategoryHidden(String id) =>
+      _settings.hiddenCategoryIds.contains(id);
+
+  // 用户收藏的频道 ID（独立持久化，不改动频道/分类结构）
+  final Set<String> _favoriteChannelIds = <String>{};
+  List<String> get favoriteChannelIds =>
+      _favoriteChannelIds.toList(growable: false);
+  bool isFavoriteChannel(String id) => _favoriteChannelIds.contains(id);
+
+  /// 聚合收藏频道：按频道在源分类中的原始顺序输出
+  List<Channel> buildFavoriteChannels() {
+    final result = <Channel>[];
+    for (final cat in _categories) {
+      for (final ch in cat.channels) {
+        if (_favoriteChannelIds.contains(ch.id)) result.add(ch);
+      }
+    }
+    return result;
+  }
+
   bool get isLoadingPlaylist => _isLoadingPlaylist;
   bool get isLoadingEpg => _isLoadingEpg;
   String? get lastError => _lastError;
@@ -1084,9 +1110,9 @@ class PlayerController extends ChangeNotifier {
   /// 下一个频道
   Future<void> nextChannel() => playAdjacentChannel(1);
 
-  /// 按偏移量切换频道（跨分类、循环）
+  /// 按偏移量切换频道（跨可见分类、循环；隐藏分类不参与）
   Future<void> playAdjacentChannel(int delta) async {
-    final all = [for (final cat in _categories) ...cat.channels];
+    final all = flatChannels;
     if (all.isEmpty) return;
     if (_currentChannel == null) {
       await playChannel(all.first);
@@ -1103,9 +1129,10 @@ class PlayerController extends ChangeNotifier {
 
   // ==================== 频道序号（数字选台） ====================
 
-  /// 全部频道按播放列表顺序展平（序号 = 下标 + 1）
+  /// 可见分类下的全部频道按播放列表顺序展平（序号 = 下标 + 1）。
+  /// 隐藏分类不参与数字选台/上下切台/序号展示
   List<Channel> get flatChannels =>
-      [for (final cat in _categories) ...cat.channels];
+      [for (final cat in visibleCategories) ...cat.channels];
 
   /// 频道序号（1 起），不在列表中返回 null
   int? channelNumberOf(Channel? ch) {
@@ -1500,6 +1527,9 @@ class PlayerController extends ChangeNotifier {
   static const _kUiScale = 'settings_ui_scale';
   static const _kUiScaleAuto = 'settings_ui_scale_auto';
   static const _kRemoteAdmin = 'settings_remote_admin';
+  static const _kAspectRatioMode = 'settings_aspect_ratio_mode';
+  static const _kHiddenCategoryIds = 'settings_hidden_category_ids';
+  static const _kFavoriteChannelIds = 'omplayer_favorite_channel_ids';
 
   Future<void> _loadSettings() async {
     try {
@@ -1521,7 +1551,16 @@ class PlayerController extends ChangeNotifier {
         uiScale: p.getDouble(_kUiScale) ?? 1.0,
         uiScaleAuto: p.getBool(_kUiScaleAuto) ?? true,
         remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
+        aspectRatioMode: AspectRatioMode.values.firstWhere(
+          (m) => m.name == p.getString(_kAspectRatioMode),
+          orElse: () => AspectRatioMode.auto,
+        ),
+        hiddenCategoryIds:
+            p.getStringList(_kHiddenCategoryIds) ?? const <String>[],
       );
+      _favoriteChannelIds
+        ..clear()
+        ..addAll(p.getStringList(_kFavoriteChannelIds) ?? const <String>[]);
       // 同步独立时钟通知器的初值
       clockVisible.value = _settings.showClock;
     } catch (_) {}
@@ -1545,6 +1584,9 @@ class PlayerController extends ChangeNotifier {
       await p.setDouble(_kUiScale, _settings.uiScale);
       await p.setBool(_kUiScaleAuto, _settings.uiScaleAuto);
       await p.setBool(_kRemoteAdmin, _settings.remoteAdminEnabled);
+      await p.setString(_kAspectRatioMode, _settings.aspectRatioMode.name);
+      await p.setStringList(
+          _kHiddenCategoryIds, _settings.hiddenCategoryIds);
     } catch (_) {}
   }
 
@@ -1614,6 +1656,25 @@ class PlayerController extends ChangeNotifier {
     _settings = _settings.copyWith(showClock: value);
     _saveSettings();
     clockVisible.value = value;
+  }
+
+  /// 切换画面比例模式（视频层监听 settings 变化即时 rebuild）
+  void setAspectRatioMode(AspectRatioMode mode) {
+    if (_settings.aspectRatioMode == mode) return;
+    _settings = _settings.copyWith(aspectRatioMode: mode);
+    _saveSettings();
+    notifyListeners();
+  }
+
+  /// 设置某个分类是否在左侧抽屉中隐藏
+  Future<void> setCategoryHidden(String id, bool hidden) async {
+    final set = _settings.hiddenCategoryIds.toSet();
+    final changed = hidden ? set.add(id) : set.remove(id);
+    if (!changed) return;
+    _settings =
+        _settings.copyWith(hiddenCategoryIds: set.toList(growable: false));
+    await _saveSettings();
+    notifyListeners();
   }
 
   /// 应用窗口置顶设置（全屏时强制置顶，退出全屏后按设置恢复）
@@ -2026,6 +2087,51 @@ class PlayerController extends ChangeNotifier {
     final channel = _findChannelExact(program) ?? _currentChannel;
     final cid = channel?.id ?? program.channelId;
     return reservationManager.isReserved(cid, program.startTime);
+  }
+
+  /// 检查节目预约是否已触发执行（EPG 灰态「已播放」）。
+  /// 频道解析必须与 toggleReservation/isProgramReserved 完全一致。
+  bool isReservationTriggered(EpgProgram program) {
+    final channel = _findChannelExact(program) ?? _currentChannel;
+    final cid = channel?.id ?? program.channelId;
+    return reservationManager.isTriggered(cid, program.startTime);
+  }
+
+  // ==================== 频道收藏 ====================
+
+  /// 切换频道收藏状态，返回切换后是否为已收藏
+  Future<bool> toggleFavoriteChannel(String channelId) async {
+    bool now;
+    if (_favoriteChannelIds.contains(channelId)) {
+      _favoriteChannelIds.remove(channelId);
+      now = false;
+    } else {
+      _favoriteChannelIds.add(channelId);
+      now = true;
+    }
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setStringList(
+          _kFavoriteChannelIds, _favoriteChannelIds.toList(growable: false));
+    } catch (_) {}
+    notifyListeners();
+    return now;
+  }
+
+  // ==================== EPG 回看 ====================
+
+  /// 播放过期节目的回看流。以临时频道（保留原频道 id/名称/台标/EPG，
+  /// 仅替换播放地址）起播，不改动订阅列表；无法构造回看地址返回 false。
+  Future<bool> playCatchup(Channel channel, EpgProgram program) async {
+    final url = channel.buildCatchupUrl(
+      start: program.startTime,
+      end: program.endTime,
+      epgCatchupSource: program.catchupUrl,
+    );
+    if (url == null || url.isEmpty) return false;
+    final temp = channel.copyWith(streamUrls: [url]);
+    await playChannel(temp);
+    return true;
   }
 
   // ==================== 录制与截图（fvp/MDK 原生，桌面端） ====================

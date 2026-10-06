@@ -49,6 +49,12 @@ class PlayerSettings {
   /// 局域网 Web 管理服务开关（手机扫码管理直播源/EPG）
   final bool remoteAdminEnabled;
 
+  /// 视频画面比例模式
+  final AspectRatioMode aspectRatioMode;
+
+  /// 用户在「分类管理」中隐藏的播放列表分类 ID
+  final List<String> hiddenCategoryIds;
+
   const PlayerSettings({
     this.autoPlayNext = true,
     this.defaultVolume = 0.8,
@@ -66,6 +72,8 @@ class PlayerSettings {
     this.uiScale = 1.0,
     this.uiScaleAuto = true,
     this.remoteAdminEnabled = true,
+    this.aspectRatioMode = AspectRatioMode.auto,
+    this.hiddenCategoryIds = const [],
   });
 
   PlayerSettings copyWith({
@@ -85,6 +93,8 @@ class PlayerSettings {
     double? uiScale,
     bool? uiScaleAuto,
     bool? remoteAdminEnabled,
+    AspectRatioMode? aspectRatioMode,
+    List<String>? hiddenCategoryIds,
   }) {
     return PlayerSettings(
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -104,8 +114,23 @@ class PlayerSettings {
       uiScale: uiScale ?? this.uiScale,
       uiScaleAuto: uiScaleAuto ?? this.uiScaleAuto,
       remoteAdminEnabled: remoteAdminEnabled ?? this.remoteAdminEnabled,
+      aspectRatioMode: aspectRatioMode ?? this.aspectRatioMode,
+      hiddenCategoryIds: hiddenCategoryIds ?? this.hiddenCategoryIds,
     );
   }
+}
+
+/// 视频画面比例模式
+enum AspectRatioMode {
+  auto('默认'),
+  ratio16x9('16:9'),
+  ratio4x3('4:3'),
+  fill('填充'),
+  original('原始'),
+  crop('裁剪');
+
+  final String label;
+  const AspectRatioMode(this.label);
 }
 
 enum VideoQuality {

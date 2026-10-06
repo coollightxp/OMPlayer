@@ -9,15 +9,16 @@ import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../services/player_controller.dart';
+import '../services/system_power.dart';
 import '../services/web_env.dart';
 import '../services/web_launch.dart';
 import '../services/win_hotkeys.dart';
 import '../services/window_drag.dart';
 import '../widgets/bottom_program_panel.dart';
+import '../widgets/channel_epg_drawer.dart';
 import '../widgets/gesture_indicator_overlay.dart';
-import '../widgets/left_channel_drawer.dart';
-import '../widgets/right_epg_panel.dart';
-import '../widgets/settings_panel.dart';
+import '../widgets/settings_rail.dart';
+import '../widgets/source_manage_dialog.dart';
 import '../widgets/top_title_bar.dart';
 import '../widgets/video_player_widget.dart';
 
@@ -31,10 +32,9 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   // 面板显隐状态
-  bool _leftDrawerOpen = false;
-  bool _rightEpgOpen = false;
+  bool _leftDrawerOpen = false; // 左侧三级抽屉（频道+EPG）
   bool _bottomPanelVisible = false;
-  bool _settingsOpen = false;
+  bool _settingsOpen = false; // 右侧设置中心
 
   // 手势调节状态
   bool _showBrightnessIndicator = false;
@@ -89,11 +89,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   bool _arrowDown = false;
   bool _arrowLongFired = false;
 
-  // 菜单键：短按=EPG 节目单，长按=设置面板
-  Timer? _menuLongTimer;
-  bool _menuHeld = false;
-  bool _menuLongFired = false;
-
   // 点播点按左右键：屏幕中央数字进度 OSD（不弹控制面板，避免面板打开后
   // 左右键被按钮导航接管、与连续 seek 冲突）
   Timer? _seekOsdHideTimer;
@@ -117,11 +112,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 通过它只重建对话框（外层 setState 不会触发 showDialog 内容重建）
   StateSetter? _exitDialogRefresh;
 
-  // 两个侧边面板的状态句柄：遥控器/键盘导航由本页统一分发
+  // 抽屉/设置中心/源管理窗口的状态句柄：遥控器/键盘导航由本页统一分发
   // （HardwareKeyboard 与 Windows 低级钩子走同一入口）
-  final GlobalKey<LeftChannelDrawerState> _leftDrawerKey = GlobalKey();
-  final GlobalKey<RightEpgPanelState> _rightEpgKey = GlobalKey();
+  final GlobalKey<ChannelEpgDrawerState> _drawerKey = GlobalKey();
+  final GlobalKey<SettingsRailState> _settingsRailKey = GlobalKey();
+  final GlobalKey<SourceManageDialogState> _sourceDialogKey = GlobalKey();
   final GlobalKey<BottomProgramPanelState> _bottomPanelKey = GlobalKey();
+
+  /// 源管理 modal 是否打开（打开期间遥控器按键转发给对话框）
+  bool _sourceDialogOpen = false;
 
   // 底部面板 hover 状态（悬停时不自动隐藏）
   bool _bottomHovering = false;
@@ -237,8 +236,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 数字键选台：追加到缓存，1.5 秒后跳转
   void _onNumberKey(int n) {
-    // 设置面板打开时不拦截数字键（避免影响输入框）
-    if (_settingsOpen) return;
+    // 抽屉/设置中心打开时不拦截数字键（全部用于面板内导航）
+    if (_leftDrawerOpen || _settingsOpen) return;
     setState(() {
       _numBuffer += n.toString();
       _osdVisible = true;
@@ -258,7 +257,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 网页频道内由 JS 转发来的按键（焦点在 WebView 时 Flutter
   /// 收不到键盘消息）：d0-d9 数字选台，fullscreen 切换全屏
   void _onWebKey(String key) {
-    if (_settingsOpen) return;
+    if (_leftDrawerOpen || _settingsOpen) return;
     if (key.startsWith('d')) {
       final n = int.tryParse(key.substring(1));
       if (n != null) _onNumberKey(n);
@@ -342,8 +341,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       if (mounted &&
           controller.isPlaying &&
           !_settingsOpen &&
-          !_leftDrawerOpen &&
-          !_rightEpgOpen) {
+          !_leftDrawerOpen) {
         setState(() => _cursorHidden = true);
       }
     });
@@ -378,7 +376,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _numTimer?.cancel();
     _okLongTimer?.cancel();
     _arrowLongTimer?.cancel();
-    _menuLongTimer?.cancel();
     _seekOsdHideTimer?.cancel();
     _rootFocusNode.dispose();
     _controllerRef?.removeListener(_onControllerChanged);
@@ -387,9 +384,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   }
 
   /// 把焦点收回根节点，保证硬件快捷键/数字选台随时可响应。
-  /// 设置面板打开时不抢焦点（里面有输入框）。
+  /// （设置中心/抽屉均为自绘高亮，不依赖 Flutter 焦点链；
+  /// 只有源管理弹层内的输入框需要焦点，弹层是 modal 路由不受影响）
   void _ensureShortcutFocus() {
-    if (_settingsOpen) return;
     if (_rootFocusNode.hasPrimaryFocus) return;
     _rootFocusNode.requestFocus();
   }
@@ -424,7 +421,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
             _pokeCursor();
             // 面板可能在静止光标下滑出（无 hover 事件），
             // 用户开始点击时保持面板不自动隐藏
-            if (_leftDrawerOpen || _rightEpgOpen) {
+            if (_leftDrawerOpen) {
               _cancelDrawerHide();
             }
             _ensureShortcutFocus();
@@ -567,12 +564,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                           if (_leftDrawerOpen) {
                             _cancelDrawerHide();
                           } else {
-                            _openDrawer(left: true);
+                            _openDrawer();
                           }
                         },
                       ),
                     ),
-                    // 右边缘
+                    // 右边缘：呼出右侧设置中心
                     Positioned(
                       right: 0,
                       top: 0,
@@ -580,11 +577,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       width: 20,
                       child: MouseRegion(
                         onEnter: (_) {
-                          if (_rightEpgOpen) {
-                            _cancelDrawerHide();
-                          } else {
-                            _openDrawer(left: false);
-                          }
+                          if (!_settingsOpen) _toggleSettings(open: true);
                         },
                       ),
                     ),
@@ -612,15 +605,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverExit: _scheduleBottomHide,
                     onHoverMove: _cancelBottomHide,
                     onTogglePlayPause: controller.togglePlayPause,
-                    onOpenChannels: () => _openDrawer(left: true),
-                    onOpenEpg: () => _openDrawer(left: false),
-                    onOpenSettings: _toggleSettings,
+                    onOpenChannels: _openDrawer,
+                    onOpenManageSources: () =>
+                        _openSourceDialog(isPlaylist: true),
+                    onOpenSettings: () => _toggleSettings(open: true),
                     onScreenshot: _takeScreenshot,
                     onToggleRecord: () => _toggleRecording(controller),
-                    onOpenRemoteAdmin:
-                        controller.remoteAdminUrl.isEmpty
-                            ? null
-                            : () => _showRemoteAdminQr(controller),
                     onDismissRemote: () {
                       if (_bottomPanelVisible) {
                         setState(() => _bottomPanelVisible = false);
@@ -629,9 +619,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     },
                   ),
 
-                  // 左侧频道抽屉
-                  LeftChannelDrawer(
-                    key: _leftDrawerKey,
+                  // 左侧三级抽屉：分类 / 频道 / EPG
+                  ChannelEpgDrawer(
+                    key: _drawerKey,
                     isOpen: _leftDrawerOpen,
                     onClose: () {
                       setState(() => _leftDrawerOpen = false);
@@ -641,36 +631,23 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverEnter: _cancelDrawerHide,
                     onHoverExit: _startDrawerHideTimer,
                     onHoverMove: _cancelDrawerHide,
-                    onOpenSettings: () {
-                      setState(() => _leftDrawerOpen = false);
-                      _toggleSettings();
-                    },
+                    onChannelTap: _pokeCursor,
+                    onOpenSettings: () => _toggleSettings(open: true),
                   ),
 
-                  // 右侧 EPG 面板
-                  RightEpgPanel(
-                    key: _rightEpgKey,
-                    isOpen: _rightEpgOpen,
-                    onClose: () {
-                      setState(() => _rightEpgOpen = false);
-                      WidgetsBinding.instance.addPostFrameCallback(
-                          (_) => _ensureShortcutFocus());
-                    },
-                    onHoverEnter: _cancelDrawerHide,
-                    onHoverExit: _startDrawerHideTimer,
-                    onHoverMove: _cancelDrawerHide,
-                  ),
-
-                  // 设置面板
-                  SettingsPanel(
+                  // 右侧设置中心
+                  SettingsRail(
+                    key: _settingsRailKey,
                     isOpen: _settingsOpen,
                     onClose: () {
-                      setState(() => _settingsOpen = false);
-                      // 关闭后恢复低级钩子对数字键的选台拦截
-                      _winHotkeys.setCapture(true);
+                      if (!_settingsOpen) return;
+                      _toggleSettings(open: false);
                       WidgetsBinding.instance.addPostFrameCallback(
                           (_) => _ensureShortcutFocus());
                     },
+                    onManagePlaylist: () =>
+                        _openSourceDialog(isPlaylist: true),
+                    onManageEpg: () => _openSourceDialog(isPlaylist: false),
                   ),
 
                   // 亮度调节指示
@@ -735,7 +712,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 顶部的关闭、返回按钮
                   if (controller.isDesktop &&
                       !_leftDrawerOpen &&
-                      !_rightEpgOpen &&
                       !_settingsOpen)
                     TopTitleBar(
                       visible: _topBarVisible,
@@ -764,7 +740,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (_exitDialogOpen) return;
     final c = context.read<PlayerController>();
     if (_settingsOpen) {
-      setState(() => _settingsOpen = false);
+      // 走 rail 内部层级：设置子级→一级→关闭（与 Esc/native 路径一致）
+      _settingsRailKey.currentState
+          ?.handleRemoteKey('back', isDown: true);
       return;
     }
     if (c.isCasting) {
@@ -773,11 +751,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return;
     }
     if (_leftDrawerOpen) {
-      setState(() => _leftDrawerOpen = false);
-      return;
-    }
-    if (_rightEpgOpen) {
-      setState(() => _rightEpgOpen = false);
+      // 抽屉内部三级层级（EPG→频道→分类→关闭）由抽屉自己处理；
+      // 遥控器操作期间取消桌面端 hover 自动隐藏
+      _cancelDrawerHide();
+      _drawerKey.currentState?.handleRemoteKey('back', isDown: true);
       return;
     }
     if (_bottomPanelVisible) {
@@ -794,8 +771,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     //
     // 无任何可关闭项：退出前确认，避免误触
     _exitDialogOpen = true;
-    _exitDialogFocusIndex = 0; // 默认聚焦「取消」，避免误触退出
-    final shouldExit = await showDialog<bool>(
+    _exitDialogFocusIndex = 0; // 默认聚焦「取消」，避免误触退出/关机
+    final result = await showDialog<int?>(
       context: context,
       builder: (dialogCtx) {
         // 遥控器友好：AlertDialog 用 StatefulBuilder 包裹，按钮高亮
@@ -805,78 +782,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
           builder: (ctx, setDialogState) {
             _exitDialogRefresh = setDialogState;
             return AlertDialog(
-      title: const Text('退出 OMPlayer'),
-      content: const Text('确定要退出 OMPlayer 吗？'),
-      actions: [
-        // 遥控器走全局按键 handler（_handleExitDialogKey），
-        // 按钮不获取键盘焦点（canRequestFocus: false），
-        // 避免 Enter 同时触发全局 pop + 按钮 onPressed 双 pop
-        // 导致弹层和播放器一起被弹掉、出现黑屏死机
-        Focus(
-          canRequestFocus: false,
-          child: TextButton(
-            onPressed: () {
-              _exitDialogOpen = false;
-              Navigator.of(ctx).pop(false);
-            },
-            style: TextButton.styleFrom(
-              backgroundColor: _exitDialogFocusIndex == 0
-                  ? Colors.blueAccent.withOpacity(0.25)
-                  : null,
-              side: _exitDialogFocusIndex == 0
-                  ? const BorderSide(color: Colors.blueAccent, width: 1.5)
-                  : null,
-            ),
-            child: Text(
-              '取消',
-              style: TextStyle(
-                color: _exitDialogFocusIndex == 0
-                    ? Colors.blueAccent
-                    : Colors.white70,
-                fontWeight: _exitDialogFocusIndex == 0
-                    ? FontWeight.bold
-                    : FontWeight.normal,
-              ),
-            ),
-          ),
-        ),
-        Focus(
-          canRequestFocus: false,
-          child: TextButton(
-            onPressed: () {
-              _exitDialogOpen = false;
-              Navigator.of(ctx).pop(true);
-            },
-            style: TextButton.styleFrom(
-              backgroundColor: _exitDialogFocusIndex == 1
-                  ? Colors.redAccent.withOpacity(0.25)
-                  : null,
-              side: _exitDialogFocusIndex == 1
-                  ? const BorderSide(color: Colors.redAccent, width: 1.5)
-                  : null,
-            ),
-            child: Text(
-              '退出',
-              style: TextStyle(
-                color: _exitDialogFocusIndex == 1
-                    ? Colors.redAccent
-                    : Colors.white70,
-                fontWeight: _exitDialogFocusIndex == 1
-                    ? FontWeight.bold
-                    : FontWeight.normal,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+              content: const Text('请选择退出方式'),
+              actionsAlignment: MainAxisAlignment.center,
+              actions: [
+                _buildExitOption(ctx, 0, '取消', Colors.blueAccent),
+                _buildExitOption(ctx, 1, '退出程序', Colors.redAccent),
+                // 关闭系统仅 Windows/Linux 原生显示（安卓/iOS/Web 隐藏）
+                if (_canShutdownSystem)
+                  _buildExitOption(ctx, 2, '关闭系统', Colors.orangeAccent),
+              ],
+            );
           },
         );
       },
     );
     _exitDialogOpen = false;
     _exitDialogRefresh = null;
-    if (shouldExit == true) {
+    if (!mounted) return;
+    if (result == 1) {
       // SystemNavigator.pop() 只在 Android/iOS 有效，桌面端需要用 windowManager
       if (!kIsWeb &&
           (defaultTargetPlatform == TargetPlatform.windows ||
@@ -886,7 +809,55 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       } else {
         await SystemNavigator.pop();
       }
+    } else if (result == 2) {
+      final isWindows =
+          !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isWindows
+              ? '5 秒后将关闭系统，可运行 shutdown /a 取消'
+              : '即将关闭系统…'),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+      await shutdownSystem();
     }
+  }
+
+  /// 退出框是否提供「关闭系统」：仅 Windows/Linux 原生（Web/安卓/iOS/macOS 不显示）
+  bool get _canShutdownSystem =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux);
+
+  /// 退出框按钮数（2 或 3）
+  int get _exitOptionCount => _canShutdownSystem ? 3 : 2;
+
+  /// 构建退出框中的一个遥控器友好按钮（不取键盘焦点，高亮由全局按键维护）
+  Widget _buildExitOption(
+      BuildContext ctx, int index, String label, Color color) {
+    final selected = _exitDialogFocusIndex == index;
+    return Focus(
+      canRequestFocus: false,
+      child: TextButton(
+        // 一次性守卫：先摘标志再 pop，鼠标点击与遥控器 OK 都不会双 pop
+        onPressed: () {
+          _exitDialogOpen = false;
+          Navigator.of(ctx).pop<int?>(index == 0 ? null : index);
+        },
+        style: TextButton.styleFrom(
+          backgroundColor: selected ? color.withOpacity(0.25) : null,
+          side: selected ? BorderSide(color: color, width: 1.5) : null,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? color : Colors.white70,
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
   }
 
   // ==================== 硬件按键快捷键 ====================
@@ -906,48 +877,48 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         k == LogicalKeyboardKey.enter ||
         k == LogicalKeyboardKey.numpadEnter ||
         k == LogicalKeyboardKey.gameButtonA;
-    final isLr = k == LogicalKeyboardKey.arrowLeft ||
-        k == LogicalKeyboardKey.arrowRight;
     // 退出确认对话框有遥控器友好界面，走专用逻辑
     if (_exitDialogOpen) {
       return _handleExitDialogKey(k, isDown, isUp);
     }
-    if (isOk) {
-      if (isDown) {
-        // 复位配对状态并关闭弹层（等同「关闭」按钮）
-        _okHeld = true;
-        _okLongTimer?.cancel();
-        Navigator.of(context).maybePop();
-      } else if (isUp) {
-        _okHeld = false;
-        _okLongTimer?.cancel();
-        _okLongFired = false;
+    // 源管理窗口：方向键/OK/返回/菜单全部转发给对话框内部槽位导航；
+    // 字母数字等不认识的键放行，保证底部 URL/名称输入框可打字
+    if (_sourceDialogOpen) {
+      String? action;
+      if (k == LogicalKeyboardKey.arrowUp) {
+        action = 'up';
+      } else if (k == LogicalKeyboardKey.arrowDown) {
+        action = 'down';
+      } else if (k == LogicalKeyboardKey.arrowLeft) {
+        action = 'left';
+      } else if (k == LogicalKeyboardKey.arrowRight) {
+        action = 'right';
+      } else if (isOk) {
+        action = 'ok';
+      } else if (k == LogicalKeyboardKey.escape ||
+          k == LogicalKeyboardKey.contextMenu) {
+        action = 'back';
       }
-      return true;
-    }
-    if (isLr) {
-      // 仅消费并复位，避免弹层关闭后被当成短按切源
-      if (isUp) {
-        _arrowDown = false;
-        _arrowLongTimer?.cancel();
-        _arrowLongFired = false;
+      if (action != null) {
+        if (isDown) {
+          _sourceDialogKey.currentState
+              ?.handleRemoteKey(action, isDown: true);
+        }
+        // 抬起沿也消费，避免配对状态污染播放层
+        return true;
       }
-      return true;
+      return false;
     }
-    if (k == LogicalKeyboardKey.arrowUp ||
+    // 其它历史弹层（理论上已无）：保守地吞掉导航键防穿透
+    if (isOk ||
+        k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight ||
+        k == LogicalKeyboardKey.arrowUp ||
         k == LogicalKeyboardKey.arrowDown) {
-      return true; // 弹层内无列表导航需求，吞掉防穿透切台
-    }
-    if (k == LogicalKeyboardKey.contextMenu) {
-      if (isDown) Navigator.of(context).maybePop();
-      if (isUp) {
-        _menuHeld = false;
-        _menuLongTimer?.cancel();
-        _menuLongFired = false;
-      }
       return true;
     }
-    if (k == LogicalKeyboardKey.escape) {
+    if (k == LogicalKeyboardKey.contextMenu ||
+        k == LogicalKeyboardKey.escape) {
       if (isDown) Navigator.of(context).maybePop();
       return true;
     }
@@ -955,73 +926,85 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   }
 
   /// 退出确认对话框的遥控器按键处理：
-  /// ←/→ 在「取消」「退出」间移动高亮，OK 确认当前选中项，返回/Esc 直接取消
+  /// ←/→ 在「取消 / 退出程序 / 关闭系统」间循环移动高亮，
+  /// OK 确认当前选中项，返回/Esc/菜单=取消
   bool _handleExitDialogKey(
       LogicalKeyboardKey k, bool isDown, bool isUp) {
     final isOk = k == LogicalKeyboardKey.select ||
         k == LogicalKeyboardKey.enter ||
         k == LogicalKeyboardKey.numpadEnter ||
         k == LogicalKeyboardKey.gameButtonA;
-    final isLr = k == LogicalKeyboardKey.arrowLeft ||
-        k == LogicalKeyboardKey.arrowRight;
     if (isOk) {
       if (isDown && _exitDialogOpen) {
-        // 确认当前选中按钮（取消=false，退出=true）
         // 先置标志位，防止同一按键事件被路由双处理（全局 handler + 按钮 Focus）
+        final idx = _exitDialogFocusIndex;
         _exitDialogOpen = false;
-        Navigator.of(context).pop(_exitDialogFocusIndex == 1);
+        Navigator.of(context).pop<int?>(idx == 0 ? null : idx);
       }
       return true;
     }
-    if (isLr) {
+    if (k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight) {
       if (isDown) {
-        // 改焦点并刷新对话框：showDialog 里的 StatefulBuilder
-        // 需要内部 setState 才能看到高亮移动
+        // 按钮间循环移动
+        final count = _exitOptionCount;
+        final step = k == LogicalKeyboardKey.arrowRight ? 1 : -1;
         _exitDialogFocusIndex =
-            k == LogicalKeyboardKey.arrowRight ? 1 : 0;
+            (_exitDialogFocusIndex + step) % count;
+        if (_exitDialogFocusIndex < 0) _exitDialogFocusIndex += count;
         _exitDialogRefresh?.call(() {});
       }
       return true;
     }
     if (k == LogicalKeyboardKey.arrowUp ||
         k == LogicalKeyboardKey.arrowDown) {
-      return true; // 两按钮水平排列，上下无意义
+      return true; // 按钮水平排列，上下无意义
     }
-    if (k == LogicalKeyboardKey.contextMenu) {
+    if (k == LogicalKeyboardKey.contextMenu ||
+        k == LogicalKeyboardKey.escape) {
       if (isDown && _exitDialogOpen) {
         _exitDialogOpen = false;
-        Navigator.of(context).pop(false);
-      }
-      return true;
-    }
-    if (k == LogicalKeyboardKey.escape) {
-      if (isDown && _exitDialogOpen) {
-        _exitDialogOpen = false;
-        Navigator.of(context).pop(false);
+        Navigator.of(context).pop<int?>(null);
       }
       return true;
     }
     return false;
   }
 
-  /// 侧边面板（频道列表/EPG）是否有一个打开：打开期间方向键与 OK
-  /// 全部转作面板内导航，不触发播放控制
-  bool get _navPanelOpen => _leftDrawerOpen || _rightEpgOpen;
+  /// 左侧三级抽屉是否打开：打开期间方向键与 OK
+  /// 全部转作抽屉内导航，不触发播放控制
+  bool get _navPanelOpen => _leftDrawerOpen;
 
   /// 底部控制面板是否由用户主动呼出（长按 OK / 鼠标 hover）。
   /// 为 true 期间 ←/→ 与 OK 用于面板内按钮导航，返回键关闭面板。
   /// 面板显隐与 _bottomPanelVisible 一对一，不再被 state 强制联动
   bool get _bottomPanelActive => _bottomPanelVisible;
 
-  /// 把遥控器动作分发给当前打开的侧边面板，并取消桌面端自动隐藏
-  /// （遥控器没有鼠标 hover，面板应一直保留到返回键关闭）
+  /// 把遥控器动作分发给左侧抽屉，并取消桌面端自动隐藏
+  /// （遥控器没有鼠标 hover，抽屉应一直保留到返回键关闭）
   void _panelKey(String action, bool isDown) {
     _cancelDrawerHide();
-    if (_leftDrawerOpen) {
-      _leftDrawerKey.currentState?.handleRemoteKey(action, isDown: isDown);
-    } else if (_rightEpgOpen) {
-      _rightEpgKey.currentState?.handleRemoteKey(action, isDown: isDown);
+    _drawerKey.currentState?.handleRemoteKey(action, isDown: isDown);
+  }
+
+  /// 把物理键映射为遥控器动作（up/down/left/right/ok/back），
+  /// 无法识别返回 null
+  String? _remoteActionOf(LogicalKeyboardKey k) {
+    if (k == LogicalKeyboardKey.arrowUp) return 'up';
+    if (k == LogicalKeyboardKey.arrowDown) return 'down';
+    if (k == LogicalKeyboardKey.arrowLeft) return 'left';
+    if (k == LogicalKeyboardKey.arrowRight) return 'right';
+    if (k == LogicalKeyboardKey.select ||
+        k == LogicalKeyboardKey.enter ||
+        k == LogicalKeyboardKey.numpadEnter ||
+        k == LogicalKeyboardKey.gameButtonA) {
+      return 'ok';
     }
+    if (k == LogicalKeyboardKey.escape ||
+        k == LogicalKeyboardKey.contextMenu) {
+      return 'back';
+    }
+    return null;
   }
 
   /// 把遥控器动作分发给底部控制面板，并取消自动隐藏
@@ -1038,28 +1021,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   ///   面板打开时方向键/OK 全部用于面板内导航
   /// - ←/→：短按=切源；长按=点播拖动进度（直播忽略长按）
   /// - ↑/↓：切台；⏯ 媒体键：播放/暂停；⏮/⏭：切台；⏪/⏩：单步 ±10s
-  /// - 菜单键（contextMenu）：短按=EPG 节目单，长按=设置面板
-  /// - 返回/Esc：按层级关闭 设置→投屏→面板→全屏，再按弹退出确认。
+  /// - 菜单键（contextMenu）：单击=开关右侧设置中心
+  /// - 返回/Esc：按层级关闭 设置→投屏→抽屉→面板，再按弹退出确认。
   ///   Windows 与 Android 行为一致（Android 系统 Back 走 PopScope）
   bool _onGlobalKeyEvent(KeyEvent event) {
     final k = event.logicalKey;
     final isDown = event is KeyDownEvent;
     final isUp = event is KeyUpEvent;
 
-    // 设置面板里有输入框（URL、数字等）：仅返回/菜单键负责关面板，
-    // 其余按键放行给输入框
+    // 右侧设置中心打开：方向键/OK/返回/菜单全部转发给 rail 内部导航，
+    // 播放层按键一律不穿透（rail 无输入框，不需要放行字母键）
     if (_settingsOpen) {
-      if (isDown &&
-          (k == LogicalKeyboardKey.escape ||
-              k == LogicalKeyboardKey.contextMenu)) {
-        _handleBackPressed();
+      final action = _remoteActionOf(k);
+      if (action != null) {
+        _settingsRailKey.currentState
+            ?.handleRemoteKey(action, isDown: isDown);
         return true;
       }
       return false;
     }
-    // 有对话框（二维码/退出确认等）盖在页面上时：遥控器按键统一收口——
-    // OK/返回/菜单关闭弹层，方向键消费不穿透，避免弹层是在 OK 按下后
-    // 才弹出时抬起事件丢失，导致按住状态卡死、关弹层后误触节目列表
+    // 有对话框（源管理/退出确认等）盖在页面上时：遥控器按键统一收口
     if (_modalRouteOpen) {
       return _handleKeyWhileModal(k, isDown, isUp);
     }
@@ -1080,10 +1061,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       if (isUp) _lrUp(left);
       return true;
     }
-    // 菜单键：短按 EPG / 长按设置，走按下-抬起配对
+    // 菜单键：单击=开关右侧设置中心（不再区分长按）
     if (k == LogicalKeyboardKey.contextMenu) {
-      if (isDown) _menuDown();
-      if (isUp) _menuUp();
+      if (isDown) _toggleSettings();
       return true;
     }
     // 上下：面板打开时面板内移动，否则切台
@@ -1149,7 +1129,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return true;
     }
 
-    // ⏮/⏭ 曲目键 = 切台；⏪/⏩ 快退快进键 = 点播单步 ±10 秒
+    // ⏮/⏭ 曲目键 = 切台；⏪/⏩ 快退快进键 = 点播单步 ±60 秒
     if (k == LogicalKeyboardKey.mediaTrackNext) {
       _onArrow('nextChannel');
       return true;
@@ -1222,11 +1202,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
     if (!_okLongFired) {
       final c = context.read<PlayerController>();
-      // 点播短按 OK = 暂停/播放；直播/网页频道 = 呼出或收起节目列表
+      // 点播短按 OK = 暂停/播放；直播/网页频道 = 呼出或收起频道抽屉
       if (c.isSeekable && !c.webPageActive) {
         c.togglePlayPause();
       } else {
-        _toggleDrawer(left: true);
+        _toggleDrawer();
       }
     }
     _okLongFired = false;
@@ -1297,29 +1277,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
     if (_bottomPanelActive) return;
     _onArrow(isUp ? 'prevChannel' : 'nextChannel');
-  }
-
-  /// 菜单键按下：启动 500ms 长按=设置
-  void _menuDown() {
-    if (_menuHeld) return;
-    _menuHeld = true;
-    _menuLongFired = false;
-    _menuLongTimer?.cancel();
-    _menuLongTimer = Timer(const Duration(milliseconds: 500), () {
-      _menuLongFired = true;
-      _toggleSettings();
-    });
-  }
-
-  /// 菜单键抬起：未到长按时长=短按，打开 EPG 节目单
-  void _menuUp() {
-    if (!_menuHeld) return;
-    _menuHeld = false;
-    _menuLongTimer?.cancel();
-    if (!_menuLongFired) {
-      _toggleDrawer(left: false);
-    }
-    _menuLongFired = false;
   }
 
   /// 媒体键（⏪/⏩）单步 seek ±60 秒：以当前播放位置为基准，
@@ -1452,7 +1409,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
             width: _edgeWidth.toDouble(),
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onTap: () => _openDrawer(left: true),
+              onTap: _openDrawer,
             ),
           ),
           Positioned(
@@ -1462,7 +1419,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
             width: _edgeWidth.toDouble(),
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onTap: () => _openDrawer(left: false),
+              onTap: () => _toggleSettings(open: true),
             ),
           ),
           Positioned(
@@ -1480,42 +1437,29 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     );
   }
 
-  void _openDrawer({required bool left}) {
+  /// 打开左侧三级抽屉（与右侧设置中心互斥）
+  void _openDrawer() {
     setState(() {
       // 打开面板时隐藏悬停标题栏，避免遮挡面板顶部按钮
       _topBarVisible = false;
-      if (left) {
-        _leftDrawerOpen = true;
-        _rightEpgOpen = false;
-      } else {
-        _rightEpgOpen = true;
-        _leftDrawerOpen = false;
-      }
+      _leftDrawerOpen = true;
+      _settingsOpen = false;
     });
     _armDrawerAutoHide();
   }
 
-  /// 快捷键用：再次按键时关闭对应面板
-  void _toggleDrawer({required bool left}) {
+  /// 快捷键/OK 短按用：抽屉已打开则关闭，否则打开
+  void _toggleDrawer() {
     setState(() {
       _topBarVisible = false;
-      if (left) {
-        if (_leftDrawerOpen) {
-          _leftDrawerOpen = false;
-        } else {
-          _leftDrawerOpen = true;
-          _rightEpgOpen = false;
-        }
+      if (_leftDrawerOpen) {
+        _leftDrawerOpen = false;
       } else {
-        if (_rightEpgOpen) {
-          _rightEpgOpen = false;
-        } else {
-          _rightEpgOpen = true;
-          _leftDrawerOpen = false;
-        }
+        _leftDrawerOpen = true;
+        _settingsOpen = false;
       }
     });
-    _armDrawerAutoHide();
+    if (_leftDrawerOpen) _armDrawerAutoHide();
   }
 
   // ==================== 切台 OSD / 时钟 ====================
@@ -1642,7 +1586,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   if (_dragStartX != null &&
                       _dragStartX! <= _edgeWidth &&
                       details.velocity.pixelsPerSecond.dx > 100) {
-                    _openDrawer(left: true);
+                    _openDrawer();
                   }
                 },
               ),
@@ -1668,7 +1612,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                               : null,
                     ),
             ),
-            // 右侧：音量调节 + 右边缘滑出 EPG（与 v1.0.98 一致：不设 onTap）
+            // 右侧：音量调节 + 右边缘滑出设置中心
             Expanded(
               child: GestureDetector(
                 onVerticalDragStart: (details) {
@@ -1691,7 +1635,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   if (_dragStartX != null &&
                       _dragStartX! >= width - _edgeWidth &&
                       details.velocity.pixelsPerSecond.dx < -100) {
-                    _openDrawer(left: false);
+                    _toggleSettings(open: true);
                   }
                 },
               ),
@@ -1736,33 +1680,68 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     });
   }
 
-  void _toggleSettings() {
+  /// 开关右侧设置中心（与左侧抽屉互斥）。
+  /// [open] 为 null 时切换；显式传值且状态已相同则不做事。
+  void _toggleSettings({bool? open}) {
+    final next = open ?? !_settingsOpen;
+    if (next == _settingsOpen) return;
     setState(() {
-      _settingsOpen = !_settingsOpen;
-      // 打开设置时隐藏悬停标题栏
-      if (_settingsOpen) _topBarVisible = false;
+      _settingsOpen = next;
+      if (next) {
+        // 打开设置时隐藏悬停标题栏、关闭左侧抽屉
+        _topBarVisible = false;
+        _leftDrawerOpen = false;
+      }
     });
-    // 设置面板有输入框：打开时放行数字键给输入框，关闭后恢复选台拦截
-    _winHotkeys.setCapture(!_settingsOpen);
+    // rail 打开期间数字键不用于选台（源管理弹层内还有输入框），
+    // 释放低级钩子捕获；关闭后恢复
+    _winHotkeys.setCapture(!next);
   }
 
-  /// 底部控制面板「手机扫码管理」按钮：弹出二维码
-  void _showRemoteAdminQr(PlayerController controller) {
-    final url = controller.remoteAdminUrl;
-    if (url.isEmpty) return;
-    showRemoteAdminQrDialog(context, url);
+  /// 打开节目源 / EPG 源管理窗口（modal）。
+  /// 打开前收口抽屉、设置中心、底部面板；窗口期间按键由
+  /// _handleKeyWhileModal 转发给对话框。
+  Future<void> _openSourceDialog({required bool isPlaylist}) async {
+    // 从设置中心进入时，关闭窗口后回到设置中心（而非直接回播放态）
+    final cameFromRail = _settingsOpen;
+    _bottomHideTimer?.cancel();
+    setState(() {
+      _leftDrawerOpen = false;
+      _bottomPanelVisible = false;
+      _settingsOpen = false;
+      _topBarVisible = false;
+      _sourceDialogOpen = true;
+    });
+    _winHotkeys.setCapture(false);
+    try {
+      await SourceManageDialog.present(
+        context,
+        isPlaylist: isPlaylist,
+        key: _sourceDialogKey,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _sourceDialogOpen = false);
+        if (cameFromRail) {
+          setState(() => _settingsOpen = true);
+          _winHotkeys.setCapture(false);
+        } else {
+          _winHotkeys.setCapture(true);
+        }
+      }
+      WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _ensureShortcutFocus());
+    }
   }
 
   /// 桌面端快捷键：空格 播放/暂停，F/F11 全屏，M 静音，
-  /// PrintScreen 截屏，C 频道列表开/关，E 节目单开/关，S 设置，R 录制
+  /// PrintScreen 截屏，C/E 频道抽屉开/关，S 设置，R 录制
   void _onShortcut(String action) {
-    if (_settingsOpen && action != 'settings') return;
     final controller = context.read<PlayerController>();
     switch (action) {
       case 'channels':
-        _toggleDrawer(left: true);
       case 'epg':
-        _toggleDrawer(left: false);
+        _toggleDrawer();
       case 'settings':
         _toggleSettings();
       case 'record':
@@ -1789,7 +1768,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 方向键：←/→ 切换播放源，↑/↓ 切换频道
   void _onArrow(String action) {
-    if (_settingsOpen || _leftDrawerOpen || _rightEpgOpen) return;
+    if (_settingsOpen || _leftDrawerOpen) return;
     if (_throttled()) return;
     final controller = context.read<PlayerController>();
     switch (action) {
@@ -1819,54 +1798,61 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     } else {
       _nativeHeld.remove(action);
     }
-    // 设置面板打开：仅返回键关面板，其余（字母键/空格等）忽略，
-    // 此时钩子捕获本就由 setCapture(false) 关闭，这里是双保险
+    // 设置中心打开：遥控器动作全部转发给 rail（含按下/抬起边沿）
     if (_settingsOpen) {
-      if (isDown && (action == 'esc' || action == 'back')) {
-        _handleBackPressed();
+      const navActions = {'up', 'down', 'left', 'right', 'ok', 'back'};
+      if (navActions.contains(action)) {
+        _settingsRailKey.currentState
+            ?.handleRemoteKey(action, isDown: isDown);
+      } else if (isDown && (action == 'esc' || action == 'menu')) {
+        _settingsRailKey.currentState
+            ?.handleRemoteKey('back', isDown: true);
       }
       return;
     }
-    // 对话框（二维码/退出确认等）打开：统一收口；抬起边沿复位配对状态，
+    // 对话框（源管理/退出确认等）打开：统一收口，
     // 绝不能落到 _handleBackPressed（否则会退全屏/缩小窗口）
     if (_modalRouteOpen) {
-      if (!isDown) {
-        if (action == 'ok') {
-          _okHeld = false;
-          _okLongTimer?.cancel();
-          _okLongFired = false;
-        } else if (action == 'left' || action == 'right') {
-          _arrowDown = false;
-          _arrowLongTimer?.cancel();
-          _arrowLongFired = false;
-        } else if (action == 'menu') {
-          _menuHeld = false;
-          _menuLongTimer?.cancel();
-          _menuLongFired = false;
-        }
-        return;
-      }
-      // 退出确认对话框：←/→ 移动焦点，OK 确认，返回/菜单取消
+      // 退出确认对话框：←/→ 循环移动焦点，OK 确认，返回/菜单/Esc 取消
       if (_exitDialogOpen) {
-        if (action == 'left') {
-          _exitDialogFocusIndex = 0;
-          _exitDialogRefresh?.call(() {});
-        } else if (action == 'right') {
-          _exitDialogFocusIndex = 1;
+        if (!isDown) return;
+        if (action == 'left' || action == 'right') {
+          final count = _exitOptionCount;
+          final step = action == 'right' ? 1 : -1;
+          _exitDialogFocusIndex = (_exitDialogFocusIndex + step) % count;
+          if (_exitDialogFocusIndex < 0) _exitDialogFocusIndex += count;
           _exitDialogRefresh?.call(() {});
         } else if (action == 'ok') {
           // 一次性守卫：先摘标志再 pop，任何重复/残余事件都不会
           // 再弹一次（第二次 pop 会把播放器路由弹掉 → 黑屏）
+          final idx = _exitDialogFocusIndex;
           _exitDialogOpen = false;
-          Navigator.of(context).pop(_exitDialogFocusIndex == 1);
+          Navigator.of(context).pop<int?>(idx == 0 ? null : idx);
         } else if (action == 'back' ||
             action == 'esc' ||
             action == 'menu') {
           _exitDialogOpen = false;
-          Navigator.of(context).pop(false);
+          Navigator.of(context).pop<int?>(null);
         }
         return;
       }
+      // 源管理窗口：转发方向/OK/返回；抬起边沿直接吞掉
+      if (_sourceDialogOpen) {
+        const fwd = {'up', 'down', 'left', 'right', 'ok'};
+        if (isDown) {
+          if (fwd.contains(action)) {
+            _sourceDialogKey.currentState
+                ?.handleRemoteKey(action, isDown: true);
+          } else if (action == 'back' ||
+              action == 'esc' ||
+              action == 'menu') {
+            _sourceDialogKey.currentState
+                ?.handleRemoteKey('back', isDown: true);
+          }
+        }
+        return;
+      }
+      if (!isDown) return;
       if (action == 'ok' ||
           action == 'back' ||
           action == 'esc' ||
@@ -1875,7 +1861,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       }
       return;
     }
-    // OK / 左右 / 菜单需要按下-抬起配对
+    // OK / 左右 需要按下-抬起配对
     if (action == 'ok') {
       isDown ? _okDown() : _okUp();
       return;
@@ -1888,8 +1874,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       isDown ? _lrDown(false) : _lrUp(false);
       return;
     }
+    // 菜单键：单击开关右侧设置中心（只响应按下沿）
     if (action == 'menu') {
-      isDown ? _menuDown() : _menuUp();
+      if (isDown) _toggleSettings();
       return;
     }
     if (!isDown) return; // 其余动作只响应按下边沿
@@ -2005,10 +1992,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _drawerHideTimer?.cancel();
     _drawerHideTimer = Timer(_drawerAutoHide, () {
       if (mounted) {
-        setState(() {
-          _leftDrawerOpen = false;
-          _rightEpgOpen = false;
-        });
+        setState(() => _leftDrawerOpen = false);
         _ensureShortcutFocus();
       }
     });

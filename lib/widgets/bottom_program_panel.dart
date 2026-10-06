@@ -16,15 +16,14 @@ class BottomProgramPanel extends StatefulWidget {
   final bool isVisible;
   final VoidCallback onTogglePlayPause;
   final VoidCallback onOpenChannels;
-  final VoidCallback onOpenEpg;
+
+  /// 打开节目源管理窗口（窗口内可切换到 EPG 源设置）
+  final VoidCallback onOpenManageSources;
   final VoidCallback onOpenSettings;
   final VoidCallback onScreenshot;
   final VoidCallback onToggleRecord;
 
-  /// 调出手机扫码管理页（地址为空时传 null，按钮不显示）
-  final VoidCallback? onOpenRemoteAdmin;
-
-  /// 遥控器激活「跳转类」按钮（频道/EPG/设置/扫码）后通知播放页关闭面板
+  /// 遥控器激活「跳转类」按钮（频道/节目源/设置）后通知播放页关闭面板
   final VoidCallback? onDismissRemote;
 
   /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
@@ -37,11 +36,10 @@ class BottomProgramPanel extends StatefulWidget {
     required this.isVisible,
     required this.onTogglePlayPause,
     required this.onOpenChannels,
-    required this.onOpenEpg,
+    required this.onOpenManageSources,
     required this.onOpenSettings,
     required this.onScreenshot,
     required this.onToggleRecord,
-    this.onOpenRemoteAdmin,
     this.onDismissRemote,
     this.onHoverEnter,
     this.onHoverExit,
@@ -354,12 +352,9 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           hasVideo ? c.cycleVideoRotation : null),
       _KbAction('channels', Icons.list, '频道列表', widget.onOpenChannels,
           dismiss: true),
-      _KbAction('epg', Icons.menu_book, '节目单', widget.onOpenEpg,
+      _KbAction(
+          'manageSources', Icons.source, '节目源', widget.onOpenManageSources,
           dismiss: true),
-      if (widget.onOpenRemoteAdmin != null)
-        _KbAction('remoteAdmin', Icons.qr_code_2, '手机扫码管理',
-            widget.onOpenRemoteAdmin,
-            dismiss: true),
       _KbAction('settings', Icons.settings, '设置', widget.onOpenSettings,
           dismiss: true),
       if (c.isCasting)
@@ -394,8 +389,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
     }
 
     addById('channels');
-    addById('epg');
-    addById('remoteAdmin');
+    addById('manageSources');
     addById('settings');
     addById('cast');
 

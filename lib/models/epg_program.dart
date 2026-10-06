@@ -10,6 +10,9 @@ class EpgProgram {
   final DateTime endTime;
   final String? posterUrl;
 
+  /// 该节目自身的回看地址模板（XMLTV <catchup-source>），可为空
+  final String? catchupUrl;
+
   const EpgProgram({
     required this.id,
     required this.channelId,
@@ -18,6 +21,7 @@ class EpgProgram {
     required this.startTime,
     required this.endTime,
     this.posterUrl,
+    this.catchupUrl,
   });
 
   /// 节目时长（分钟）
@@ -65,6 +69,7 @@ class EpgProgram {
     DateTime? startTime,
     DateTime? endTime,
     String? posterUrl,
+    String? catchupUrl,
   }) {
     return EpgProgram(
       id: id ?? this.id,
@@ -74,6 +79,7 @@ class EpgProgram {
       startTime: startTime ?? this.startTime,
       endTime: endTime ?? this.endTime,
       posterUrl: posterUrl ?? this.posterUrl,
+      catchupUrl: catchupUrl ?? this.catchupUrl,
     );
   }
 }
