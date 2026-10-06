@@ -70,6 +70,12 @@ class PlayerController extends ChangeNotifier {
   bool _isCasting = false;
   Channel? _preCastChannel; // 投屏前的频道，用于断开后恢复
 
+  // 回看/点播模式标记：仅当用户从节目菜单主动选择回看/点播时为 true。
+  // 用于区分「直播频道播放 MP4 文件」（按返回应直接弹退出框）和
+  // 「节目菜单点播视频」（按返回应回到节目菜单继续选台）。
+  bool _isCatchupPlayback = false;
+  bool get isCatchupPlayback => _isCatchupPlayback;
+
   // 局域网 Web 管理服务（手机扫码后增删改直播源/EPG）
   final RemoteAdminService remoteAdminService = RemoteAdminService();
   String _remoteAdminUrl = '';
@@ -864,6 +870,7 @@ class PlayerController extends ChangeNotifier {
     }
     _webPageActive = false;
     _webPageForeground = false;
+    _isCatchupPlayback = false;
     _currentChannel = channel;
     _sourceIndex = 0;
     await _playCurrentSource();
@@ -2130,6 +2137,7 @@ class PlayerController extends ChangeNotifier {
       epgCatchupSource: program.catchupUrl,
     );
     if (url == null || url.isEmpty) return false;
+    _isCatchupPlayback = true;
     final temp = channel.copyWith(streamUrls: [url]);
     await playChannel(temp);
     return true;

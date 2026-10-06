@@ -838,9 +838,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (c.state == PlayerState.loading) {
       return;
     }
-    // 点播（可拖动）按返回：先呼出频道抽屉选台，再按返回才退出。
-    // 投屏（isCasting）已在上面优先处理，走到这里的一定是频道列表点播
-    if (!c.isCasting && c.isSeekable && !c.webPageActive) {
+    // 回看/点播（从节目菜单主动选的）按返回：先呼出频道抽屉选台，
+    // 再按返回才退出。直播频道（含播放 MP4 文件）按返回直接弹退出框
+    if (!c.isCasting && c.isCatchupPlayback && !c.webPageActive) {
       _toggleDrawer();
       return;
     }
