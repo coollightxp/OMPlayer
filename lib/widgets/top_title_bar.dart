@@ -52,8 +52,8 @@ class TopTitleBar extends StatelessWidget {
                 child: Row(
                   children: [
                     const SizedBox(width: 14),
-                    const Icon(Icons.live_tv,
-                        color: Colors.white70, size: 18),
+                    Image.asset('branding/icon_1024.png',
+                        width: 18, height: 18),
                     const SizedBox(width: 8),
                     const Text(
                       'OMPlayer',

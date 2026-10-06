@@ -1,8 +1,10 @@
 import 'dart:convert' show jsonDecode, utf8;
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:fl_charset/fl_charset.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -35,6 +37,12 @@ class SourceManager {
   Map<String, String> _cachedEpgChannelIcons = {};
   bool _channelsLoaded = false;
   bool _epgLoaded = false;
+
+  /// 频道 -> EPG 频道 id 的匹配结果缓存。
+  /// [XmltvEpgParser.matchChannelId] 是 O(频道数 × 别名数)，抽屉每次
+  /// build 都会为当前频道调用一次，大节目单下会造成明显卡顿；
+  /// EPG 数据不变时同一频道的匹配结果恒定，缓存到下次加载为止。
+  final Map<String, String?> _matchIdCache = <String, String?>{};
 
   List<PlaylistSource> get playlists => List.unmodifiable(_playlists);
   List<EpgSource> get epgs => List.unmodifiable(_epgs);
@@ -423,6 +431,7 @@ class SourceManager {
     final source = currentEpg;
     if (source == null) {
       _cachedEpg = {};
+      _matchIdCache.clear();
       _epgLoaded = true;
       return {};
     }
@@ -435,16 +444,15 @@ class SourceManager {
         throw Exception('HTTP ${resp.statusCode}');
       }
 
-      // 支持 .gz 压缩的 EPG（按 gzip 魔数 1f 8b 判断，不依赖扩展名）
-      final bytes = resp.bodyBytes;
-      final body =
-          (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b)
-              ? utf8.decode(GZipDecoder().decodeBytes(bytes))
-              : utf8.decode(bytes);
-      final parsed = XmltvEpgParser.parse(body);
+      // gzip 解压 + UTF-8 解码 + XML DOM 解析整体放到后台 isolate：
+      // 大节目单（数 MB、上万条 programme）在主 isolate 解析会造成
+      // 数秒卡顿，拖慢首次进抽屉/切台。compute 在 Web 上自动退化为
+      // 当前 isolate 执行，不影响兼容性。
+      final parsed = await compute(_parseEpgBytes, resp.bodyBytes);
       _cachedEpg = parsed.programs;
       _cachedEpgChannelNames = parsed.channelNames;
       _cachedEpgChannelIcons = parsed.channelIcons;
+      _matchIdCache.clear(); // EPG 数据变更，频道->id 匹配缓存作废
       _epgLoaded = true;
 
       final idx = _epgs.indexWhere((e) => e.id == source.id);
@@ -454,23 +462,48 @@ class SourceManager {
       }
     } catch (e) {
       _cachedEpg = {};
+      _matchIdCache.clear();
       _epgLoaded = true;
       rethrow;
     }
     return _cachedEpg;
   }
 
+  /// 频道在 EPG 数据中的稳定缓存键（id/tvgId/名称任一变化才重算）
+  static String _matchKey(Channel channel) =>
+      '${channel.id} ${channel.tvgId} ${channel.tvgName} ${channel.name}';
+
+  /// 返回频道匹配到的 EPG 频道 id（带缓存），无匹配返回 null
+  String? _epgIdFor(Channel channel) {
+    final key = _matchKey(channel);
+    if (_matchIdCache.containsKey(key)) return _matchIdCache[key];
+    final id = XmltvEpgParser.matchChannelId(
+        channel, _cachedEpg, _cachedEpgChannelNames);
+    _matchIdCache[key] = id;
+    return id;
+  }
+
   /// 根据频道获取 EPG 节目列表
   List<EpgProgram> getProgramsForChannel(Channel channel) {
-    return XmltvEpgParser.findProgramsForChannel(
-        channel, _cachedEpg, _cachedEpgChannelNames);
+    if (_cachedEpg.isEmpty) return const [];
+    final id = _epgIdFor(channel);
+    return id == null ? const [] : (_cachedEpg[id] ?? const []);
   }
 
   /// 获取频道台标：优先 M3U tvg-logo，其次 EPG icon
   String getLogoForChannel(Channel channel) {
     if (channel.logoUrl.isNotEmpty) return channel.logoUrl;
-    final id = XmltvEpgParser.matchChannelId(
-        channel, _cachedEpg, _cachedEpgChannelNames);
+    final id = _epgIdFor(channel);
     return id == null ? '' : (_cachedEpgChannelIcons[id] ?? '');
   }
+}
+
+/// 在后台 isolate 中执行：gzip 解压（按魔数 1f 8b 判断，不依赖扩展名）、
+/// UTF-8 解码与 XMLTV 解析。必须是顶层函数以供 [compute] 调用。
+XmltvResult _parseEpgBytes(Uint8List bytes) {
+  final body =
+      (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b)
+          ? utf8.decode(GZipDecoder().decodeBytes(bytes))
+          : utf8.decode(bytes);
+  return XmltvEpgParser.parse(body);
 }

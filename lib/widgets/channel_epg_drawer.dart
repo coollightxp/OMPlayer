@@ -28,6 +28,9 @@ class ChannelEpgDrawer extends StatefulWidget {
   /// 空源状态下「去设置添加」回调
   final VoidCallback? onOpenSettings;
 
+  /// 中央 OSD 消息提示（收藏/预约/回看结果等），替代底部 SnackBar
+  final void Function(String message)? onShowMessage;
+
   const ChannelEpgDrawer({
     super.key,
     required this.isOpen,
@@ -37,6 +40,7 @@ class ChannelEpgDrawer extends StatefulWidget {
     this.onHoverMove,
     this.onChannelTap,
     this.onOpenSettings,
+    this.onShowMessage,
   });
 
   @override
@@ -215,6 +219,20 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
     _kbDateIndex = 0;
     _kbProgIndex = 0;
     _kbProgKey = null;
+  }
+
+  /// 鼠标悬停某个 L2 频道：与遥控器上下移动完全同效——框选频道、
+  /// 焦点落到 L2、右侧 EPG 同步刷新，但不播放（点击才播放）
+  void _hoverSelectChannel(List<Channel> channels, int index) {
+    if (!mounted || channels.isEmpty) return;
+    final target = index.clamp(0, channels.length - 1);
+    if (_level == 2 && _kbChannelIndex == target) return;
+    setState(() {
+      _level = 2;
+      _kbChannelIndex = target;
+      _channelFocusChanged();
+    });
+    _ensureVisible(_chScroll, _chKeys, target, est: 64);
   }
 
   // ================= 按键入口 =================
@@ -431,25 +449,36 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
     switch (action) {
       case 'up':
         if (dayPrograms.isEmpty) break;
-        if (_kbProgIndex <= 0) {
-          // 列表首项继续向上 → 进入日期条
+        // 向上跳过不支持回看的置灰节目；越过列表顶部 → 进入日期条
+        var target = _kbProgIndex - 1;
+        while (target >= 0 &&
+            !_isProgramEnabled(c, ch, dayPrograms[target])) {
+          target--;
+        }
+        if (target < 0) {
           setState(() => _epgFocusDate = true);
           WidgetsBinding.instance.addPostFrameCallback((_) => _ensureVisible(
               _dateScroll, _dateKeys, _kbDateIndex,
               est: 76));
         } else {
-          setState(() =>
-              _kbProgIndex = (_kbProgIndex - 1).clamp(0, dayPrograms.length - 1));
-          _kbProgKey = _programKey(dayPrograms[_kbProgIndex]);
-          _ensureVisible(_progScroll, _progKeys, _kbProgIndex, est: 64);
+          setState(() => _kbProgIndex = target);
+          _kbProgKey = _programKey(dayPrograms[target]);
+          _ensureVisible(_progScroll, _progKeys, target, est: 64);
         }
         break;
       case 'down':
         if (dayPrograms.isEmpty) break;
-        setState(() =>
-            _kbProgIndex = (_kbProgIndex + 1).clamp(0, dayPrograms.length - 1));
-        _kbProgKey = _programKey(dayPrograms[_kbProgIndex]);
-        _ensureVisible(_progScroll, _progKeys, _kbProgIndex, est: 64);
+        // 向下跳过不支持回看的置灰节目；到底则停住
+        var target = _kbProgIndex + 1;
+        while (target < dayPrograms.length &&
+            !_isProgramEnabled(c, ch, dayPrograms[target])) {
+          target++;
+        }
+        if (target < dayPrograms.length) {
+          setState(() => _kbProgIndex = target);
+          _kbProgKey = _programKey(dayPrograms[target]);
+          _ensureVisible(_progScroll, _progKeys, target, est: 64);
+        }
         break;
       case 'left':
         setState(() => _level = 2);
@@ -487,19 +516,66 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
     widget.onClose();
   }
 
-  Future<void> _toggleFavorite(Channel ch) async {
-    final c = context.read<PlayerController>();
-    final nowFav = await c.toggleFavoriteChannel(ch.id);
-    if (!mounted) return;
+  /// 统一消息提示：优先走屏幕中央 OSD（由播放页注入），
+  /// 未注入时回退到底部 SnackBar
+  void _showMsg(String text) {
+    final cb = widget.onShowMessage;
+    if (cb != null) {
+      cb(text);
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(nowFav ? '已收藏：${ch.name}' : '已取消收藏：${ch.name}'),
+        content: Text(text),
         duration: const Duration(seconds: 2),
       ),
     );
   }
 
+  Future<void> _toggleFavorite(Channel ch) async {
+    final c = context.read<PlayerController>();
+    final nowFav = await c.toggleFavoriteChannel(ch.id);
+    if (!mounted) return;
+    _showMsg(nowFav ? '已收藏：${ch.name}' : '已取消收藏：${ch.name}');
+  }
+
   // ================= L3 动作（五级状态）=================
+
+  /// 已播节目是否可回看：能构造出回看地址，且在 catchup-days 窗口内
+  bool _canCatchup(Channel ch, EpgProgram p) {
+    final url = ch.buildCatchupUrl(
+      start: p.startTime,
+      end: p.endTime,
+      epgCatchupSource: p.catchupUrl,
+    );
+    if (url == null || url.isEmpty) return false;
+    final days = ch.catchupDays;
+    if (days != null && days > 0) {
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final lower = today.subtract(Duration(days: days));
+      final day =
+          DateTime(p.startTime.year, p.startTime.month, p.startTime.day);
+      if (day.isBefore(lower)) return false;
+    }
+    return true;
+  }
+
+  /// 节目行是否可选择/操作。不支持回看的已播节目返回 false（置灰、跳过）。
+  bool _isProgramEnabled(PlayerController c, Channel ch, EpgProgram p) {
+    if (!p.isPast) return true; // 直播中 / 未播预约
+    if (c.isReservationTriggered(p)) return true; // 已播放（仅提示）
+    return _canCatchup(ch, p);
+  }
+
+  /// 返回当天第一个可操作节目的索引（优先直播中），没有则 0
+  int _firstEnabledIndex(
+      PlayerController c, Channel ch, List<EpgProgram> day) {
+    final nowIdx = day.indexWhere((p) => p.isNowPlaying);
+    if (nowIdx >= 0) return nowIdx;
+    final i = day.indexWhere((p) => _isProgramEnabled(c, ch, p));
+    return i < 0 ? 0 : i;
+  }
 
   void _activateProgram(PlayerController c) {
     final ch = _focusedChannel(c);
@@ -511,7 +587,6 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
     if (dayPrograms.isEmpty) return;
     final idx = _kbProgIndex.clamp(0, dayPrograms.length - 1);
     final p = dayPrograms[idx];
-    final messenger = ScaffoldMessenger.of(context);
 
     if (p.isNowPlaying) {
       // 直播徽标：不操作
@@ -521,44 +596,34 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
       // 未播：预约 / 取消预约
       final reserved = c.isProgramReserved(p);
       c.toggleReservation(p);
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(reserved
-              ? '已取消预约：${p.title}'
-              : '已预约：${p.title}，到时间将自动播放'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+      _showMsg(reserved
+          ? '已取消预约：${p.title}'
+          : '已预约：${p.title}，到时间将自动播放');
       return;
     }
     // 已播且预约已触发：灰态不可操作
     if (c.isReservationTriggered(p)) {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('预约已执行'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      _showMsg('预约已执行');
+      return;
+    }
+    // 源不支持回看：行已置灰，理论上选不到；兜底提示
+    if (!_canCatchup(ch, p)) {
+      _showMsg('该节目暂不支持回看');
       return;
     }
     // 其余已播：回看
-    _playCatchup(c, ch, p, messenger);
+    _playCatchup(c, ch, p);
   }
 
-  Future<void> _playCatchup(PlayerController c, Channel ch, EpgProgram p,
-      ScaffoldMessengerState messenger) async {
+  Future<void> _playCatchup(
+      PlayerController c, Channel ch, EpgProgram p) async {
     final ok = await c.playCatchup(ch, p);
     if (!mounted) return;
     if (ok) {
       widget.onChannelTap?.call();
       widget.onClose();
     } else {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('该节目暂不支持回看'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      _showMsg('该节目暂不支持回看');
     }
   }
 
@@ -760,18 +825,22 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
       itemBuilder: (context, index) {
         final ch = channels[index];
         final number = _kbCatIndex == 0 ? index + 1 : globalOffset + index + 1;
-        return _ChannelTile(
+        return MouseRegion(
           key: _chKeys[index],
-          channel: ch,
-          number: number,
-          isCurrent: c.currentChannel?.id == ch.id,
-          isFavorite: c.isFavoriteChannel(ch.id),
-          keyboardSelected: index == _kbChannelIndex && _level == 2,
-          onTap: () {
-            _kbChannelIndex = index;
-            _playFocusedChannel(c, channels);
-          },
-          onLongPress: () => _toggleFavorite(ch),
+          // 鼠标移入与遥控器上下同效：框选该频道并同步右侧 EPG（不播放）
+          onEnter: (_) => _hoverSelectChannel(channels, index),
+          child: _ChannelTile(
+            channel: ch,
+            number: number,
+            isCurrent: c.currentChannel?.id == ch.id,
+            isFavorite: c.isFavoriteChannel(ch.id),
+            keyboardSelected: index == _kbChannelIndex && _level == 2,
+            onTap: () {
+              _kbChannelIndex = index;
+              _playFocusedChannel(c, channels);
+            },
+            onLongPress: () => _toggleFavorite(ch),
+          ),
         );
       },
     );
@@ -818,6 +887,11 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
       }
       if (_kbProgIndex >= dayPrograms.length) {
         _kbProgIndex = dayPrograms.length - 1;
+      }
+      // 落在不支持回看的置灰节目上时，跳到当天首个可操作节目
+      // （换日期/数据刷新后的兜底，保证选中项始终可选）
+      if (!_isProgramEnabled(c, ch, dayPrograms[_kbProgIndex])) {
+        _kbProgIndex = _firstEnabledIndex(c, ch, dayPrograms);
       }
       _kbProgKey = _programKey(dayPrograms[_kbProgIndex]);
     } else {
@@ -948,6 +1022,7 @@ class ChannelEpgDrawerState extends State<ChannelEpgDrawer> {
               index == _kbProgIndex && !_epgFocusDate && _level == 3,
           reserved: c.isProgramReserved(p),
           triggered: c.isReservationTriggered(p),
+          enabled: _isProgramEnabled(c, ch, p),
           onAction: () {
             _kbProgIndex = index;
             _kbProgKey = _programKey(p);
@@ -1086,19 +1161,23 @@ class _ChannelTile extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: SizedBox(
-                  width: 34,
-                  height: 34,
-                  child: channel.logoUrl.isEmpty
-                      ? const _LogoPlaceholder()
-                      : Image.network(
-                          channel.logoUrl,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, __, ___) =>
-                              const _LogoPlaceholder(),
-                        ),
+              // 所有频道统一使用程序图标（新版取景框），不再加载各源杂乱的
+              // 网络台标（加载失败/比例不一导致列表图标参差不齐）
+              Container(
+                width: 34,
+                height: 34,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: (keyboardSelected || isCurrent)
+                        ? Colors.blueAccent
+                        : Colors.white24,
+                  ),
+                ),
+                child: Image.asset(
+                  'branding/icon_1024.png',
+                  fit: BoxFit.cover,
                 ),
               ),
               const SizedBox(width: 8),
@@ -1125,24 +1204,15 @@ class _ChannelTile extends StatelessWidget {
   }
 }
 
-class _LogoPlaceholder extends StatelessWidget {
-  const _LogoPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: Colors.white10,
-      child: const Icon(Icons.tv, color: Colors.white54, size: 18),
-    );
-  }
-}
-
-/// EPG 节目行：前置日期列 + 时间段 + 标题 + 五级状态按钮
+/// EPG 节目行：前置日期列 + 时间段 + 标题 + 状态徽标
 class _ProgramTile extends StatelessWidget {
   final EpgProgram program;
   final bool keyboardSelected;
   final bool reserved;
   final bool triggered;
+
+  /// 是否可操作（不支持回看的已播节目为 false：置灰、不可点、遥控器跳过）
+  final bool enabled;
   final VoidCallback onAction;
 
   const _ProgramTile({
@@ -1151,6 +1221,7 @@ class _ProgramTile extends StatelessWidget {
     required this.keyboardSelected,
     required this.reserved,
     required this.triggered,
+    required this.enabled,
     required this.onAction,
   });
 
@@ -1159,25 +1230,35 @@ class _ProgramTile extends StatelessWidget {
     final isNow = program.isNowPlaying;
     final isPast = program.isPast;
     final grey = triggered && isPast;
+    // 源不支持回看的已播节目：整行置灰、无交互
+    final unsupported = isPast && !triggered && !enabled;
+    final dim = grey || unsupported;
+    final tappable = !isNow && !grey && !unsupported;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       child: InkWell(
-        onTap: (isNow || grey) ? null : onAction,
+        onTap: tappable ? onAction : null,
         borderRadius: BorderRadius.circular(8),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
           decoration: BoxDecoration(
-            color: isNow
-                ? Colors.redAccent.withOpacity(0.16)
-                : (keyboardSelected
-                    ? Colors.white.withOpacity(0.10)
-                    : Colors.white.withOpacity(0.03)),
+            color: unsupported
+                ? Colors.white.withOpacity(0.015)
+                : isNow
+                    ? Colors.redAccent.withOpacity(0.16)
+                    : (keyboardSelected
+                        ? Colors.white.withOpacity(0.10)
+                        : Colors.white.withOpacity(0.03)),
             border: Border.all(
-              color: keyboardSelected
-                  ? Colors.white70
-                  : (isNow ? Colors.redAccent.withOpacity(0.6) : Colors.transparent),
-              width: keyboardSelected ? 1.4 : 1,
+              color: unsupported
+                  ? Colors.white10
+                  : keyboardSelected
+                      ? Colors.white70
+                      : (isNow
+                          ? Colors.redAccent.withOpacity(0.6)
+                          : Colors.transparent),
+              width: keyboardSelected && !unsupported ? 1.4 : 1,
             ),
             borderRadius: BorderRadius.circular(8),
           ),
@@ -1193,7 +1274,9 @@ class _ProgramTile extends StatelessWidget {
                       ChannelEpgDrawerState._weekNames[
                           program.startTime.weekday - 1],
                       style: TextStyle(
-                        color: isNow ? Colors.redAccent : Colors.white54,
+                        color: isNow
+                            ? Colors.redAccent
+                            : (dim ? Colors.white24 : Colors.white54),
                         fontSize: 11,
                       ),
                     ),
@@ -1209,7 +1292,9 @@ class _ProgramTile extends StatelessWidget {
                 child: Text(
                   program.timeRange,
                   style: TextStyle(
-                    color: isNow ? Colors.redAccent : Colors.white60,
+                    color: isNow
+                        ? Colors.redAccent
+                        : (dim ? Colors.white24 : Colors.white60),
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
                   ),
@@ -1221,16 +1306,18 @@ class _ProgramTile extends StatelessWidget {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    color: grey
-                        ? Colors.white30
-                        : (isPast ? Colors.white54 : Colors.white),
+                    color: unsupported
+                        ? Colors.white24
+                        : grey
+                            ? Colors.white30
+                            : (isPast ? Colors.white54 : Colors.white),
                     fontSize: 13,
                     fontWeight: isNow ? FontWeight.bold : FontWeight.normal,
                   ),
                 ),
               ),
               const SizedBox(width: 8),
-              _buildStatus(),
+              _buildStatus(unsupported),
             ],
           ),
         ),
@@ -1259,8 +1346,8 @@ class _ProgramTile extends StatelessWidget {
     );
   }
 
-  Widget _buildStatus() {
-    // 优先级：直播 > 未播已预约 > 未播未预约 > 已播且已触发 > 回看
+  Widget _buildStatus(bool unsupported) {
+    // 优先级：直播 > 未播已预约 > 未播未预约 > 已播且已触发 > 无回看(灰) > 回看
     if (program.isNowPlaying) {
       return _badge('直播', Colors.redAccent, filled: true);
     }
@@ -1271,6 +1358,9 @@ class _ProgramTile extends StatelessWidget {
     }
     if (triggered) {
       return _badge('已播放', Colors.white24);
+    }
+    if (unsupported) {
+      return _badge('无回看', Colors.white12);
     }
     return _badge('回看', Colors.blueAccent);
   }

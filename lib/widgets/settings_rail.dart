@@ -155,12 +155,23 @@ class SettingsRailState extends State<SettingsRail> {
     final out = <_Entry>[];
     switch (sub) {
       case 0: // 画面比例（6 选 1）
+        // 网页频道走 WebView，画面由站点页面自身排版控制，fvp 的
+        // 纹理比例变换对其无效：六个选项一律置灰并给出说明
+        final ratioEnabled = !c.webPageActive;
         for (final m in AspectRatioMode.values) {
           out.add(_Entry(
             label: m.label,
             radio: true,
+            enabled: ratioEnabled,
             selected: s.aspectRatioMode == m,
             onOk: () => c.setAspectRatioMode(m),
+          ));
+        }
+        if (!ratioEnabled) {
+          out.add(_Entry(
+            label: '网页频道不支持画面比例',
+            subtitle: '网页画面由站点页面自身控制，无法在此调整',
+            enabled: false,
           ));
         }
         break;

@@ -76,13 +76,21 @@ class VideoPlayerWidget extends StatelessWidget {
         if (vc == null || !vc.value.isInitialized) {
           return Container(
             color: Colors.black,
-            child: const Center(
+            child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.live_tv, color: Colors.white30, size: 64),
-                  SizedBox(height: 16),
-                  Text(
+                  Opacity(
+                    opacity: 0.35,
+                    child: Image.asset(
+                      'branding/icon_1024.png',
+                      width: 64,
+                      height: 64,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
                     '请选择频道开始观看',
                     style: TextStyle(color: Colors.white54, fontSize: 14),
                   ),

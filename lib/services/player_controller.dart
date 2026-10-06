@@ -218,11 +218,6 @@ class PlayerController extends ChangeNotifier {
       await refreshChannels();
     }
 
-    // 如果有选中的 EPG，加载节目单
-    if (sourceManager.currentEpg != null) {
-      await refreshEpg();
-    }
-
     // 先启动 DLNA 投屏接收服务（不等系统值初始化，避免被阻塞）；
     // 用户可在设置中关闭
     if (_settings.dlnaEnabled) {
@@ -234,10 +229,16 @@ class PlayerController extends ChangeNotifier {
     }
     _initSystemValues();
 
-    // 频道加载完毕后，恢复上次退出时播放的频道
+    // 频道加载完毕后立即恢复上次播放的频道——不等 EPG。
+    // 大节目单下载+解析耗时数秒，放在起播之后会让用户长时间盯着黑屏。
     await restoreLastChannel();
-
     notifyListeners();
+
+    // EPG（节目单）在播放恢复后于后台加载，完成时 refreshEpg 内部
+    // 会 notifyListeners 刷新抽屉；不 await，不阻塞启动与起播。
+    if (sourceManager.currentEpg != null) {
+      unawaited(refreshEpg());
+    }
   }
 
   // ==================== 网络状态处理 ====================

@@ -214,26 +214,19 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
   Widget _buildLogo(PlayerController c, double scale) {
     // 手机台标 64→92：用户反馈偏小，配合面板整体加高
     final size = scale < 1 ? 92.0 : 128.0;
-    final logo = c.currentLogo;
-    Widget placeholder() => Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            color: Colors.white12,
-            borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
-          ),
-          child: Icon(Icons.live_tv,
-              color: Colors.white54, size: scale < 1 ? 46 : 64),
-        );
-    if (logo.isEmpty) return placeholder();
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
-      child: Image.network(
-        logo,
-        width: size,
-        height: size,
-        fit: BoxFit.contain,
-        errorBuilder: (_, __, ___) => placeholder(),
+    // 所有频道统一使用程序图标（新版取景框，与频道列表/退出框一致），
+    // 不再加载各源杂乱的网络台标
+    return Container(
+      width: size,
+      height: size,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Image.asset(
+        'branding/icon_1024.png',
+        fit: BoxFit.cover,
       ),
     );
   }

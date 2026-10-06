@@ -53,6 +53,10 @@ class SourceManageDialogState extends State<SourceManageDialog> {
   /// 最后一个槽位为「确定」。输入框用鼠标/软键盘操作。
   int _kbIndex = 0;
 
+  /// 删除二段确认：首次 OK/点击只装填（红色高亮提示"再按一次确认删除"），
+  /// 再按一次才真正删除。防止上下移动焦点时路过删除位、一按 OK 就误删源
+  int? _deleteArmedSlot;
+
   @override
   void dispose() {
     _nameCtl.dispose();
@@ -70,11 +74,17 @@ class SourceManageDialogState extends State<SourceManageDialog> {
     final max = sources.length * 3; // 最后一个槽位=确定
     switch (action) {
       case 'up':
-        setState(() => _kbIndex = (_kbIndex - 1).clamp(0, max));
+        setState(() {
+          _kbIndex = (_kbIndex - 1).clamp(0, max);
+          _deleteArmedSlot = null; // 移动焦点即解除删除装填
+        });
         _ensureVisible();
         break;
       case 'down':
-        setState(() => _kbIndex = (_kbIndex + 1).clamp(0, max));
+        setState(() {
+          _kbIndex = (_kbIndex + 1).clamp(0, max);
+          _deleteArmedSlot = null;
+        });
         _ensureVisible();
         break;
       case 'ok':
@@ -90,7 +100,7 @@ class SourceManageDialogState extends State<SourceManageDialog> {
           } else if (part == 1) {
             _copy(src is PlaylistSource ? src.url : (src as EpgSource).url);
           } else {
-            _delete(src);
+            _deletePress(_kbIndex, src);
           }
         }
         break;
@@ -125,6 +135,16 @@ class SourceManageDialogState extends State<SourceManageDialog> {
     }
   }
 
+  /// 删除入口（遥控器 OK 与鼠标点击共用）：第一次只装填确认态并红框提示，
+  /// 第二次才真正删除
+  void _deletePress(int slot, Object src) {
+    if (_deleteArmedSlot == slot) {
+      _delete(src);
+      return;
+    }
+    setState(() => _deleteArmedSlot = slot);
+  }
+
   Future<void> _delete(Object src) async {
     final c = context.read<PlayerController>();
     final name =
@@ -145,6 +165,7 @@ class SourceManageDialogState extends State<SourceManageDialog> {
       _slotKeys.removeWhere((k, _) => k >= remaining * 3);
       setState(() {
         _kbIndex = _kbIndex.clamp(0, remaining * 3);
+        _deleteArmedSlot = null;
       });
     }
   }
@@ -258,8 +279,8 @@ class SourceManageDialogState extends State<SourceManageDialog> {
             // 标题栏
             Row(
               children: [
-                Icon(widget.isPlaylist ? Icons.live_tv : Icons.schedule,
-                    color: Colors.white70, size: 21),
+                Image.asset('branding/icon_1024.png',
+                    width: 21, height: 21),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(title,
@@ -442,10 +463,15 @@ class SourceManageDialogState extends State<SourceManageDialog> {
               ),
               _slotButton(
                 slot: base + 2,
-                icon: Icons.delete,
+                icon: _deleteArmedSlot == base + 2
+                    ? Icons.delete_forever
+                    : Icons.delete,
                 color: Colors.redAccent,
-                tooltip: '删除',
-                onPressed: () => _delete(src),
+                tooltip: _deleteArmedSlot == base + 2
+                    ? '再按一次确认删除'
+                    : '删除',
+                armed: _deleteArmedSlot == base + 2,
+                onPressed: () => _deletePress(base + 2, src),
               ),
             ],
           ),
@@ -454,13 +480,15 @@ class SourceManageDialogState extends State<SourceManageDialog> {
     );
   }
 
-  /// 遥控器槽位按钮：键盘焦点框 + 鼠标点击二合一
+  /// 遥控器槽位按钮：键盘焦点框 + 鼠标点击二合一；
+  /// [armed] 为删除二段确认装填态（红框红底醒目提示）
   Widget _slotButton({
     required int slot,
     required IconData icon,
     required Color color,
     required String tooltip,
     required VoidCallback onPressed,
+    bool armed = false,
   }) {
     final focused = slot == _kbIndex;
     final key = _slotKeys[slot] ??= GlobalKey();
@@ -473,7 +501,10 @@ class SourceManageDialogState extends State<SourceManageDialog> {
       style: IconButton.styleFrom(
         side: focused
             ? const BorderSide(color: Colors.white70, width: 1.4)
-            : null,
+            : armed
+                ? const BorderSide(color: Colors.redAccent, width: 1.6)
+                : null,
+        backgroundColor: armed ? Colors.redAccent.withOpacity(0.15) : null,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
       ),
       onPressed: onPressed,
