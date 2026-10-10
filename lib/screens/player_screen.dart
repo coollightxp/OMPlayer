@@ -119,7 +119,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.146';
+  static const String _appVersion = '1.0.147';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=取消, 1=退出, 2=关机
@@ -2899,10 +2899,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
                   const Icon(Icons.web_asset,
                       color: Colors.amber, size: 40),
                   const SizedBox(height: 12),
-                  const Text(
-                    '未检测到 WebView2 运行环境\n网页频道需要 Microsoft Edge WebView2 Runtime',
+                  Text(
+                    webEnvOfficialVersion != null
+                        ? '已检测到 WebView2 $webEnvOfficialVersion，但环境创建失败\n可尝试重装 WebView2 Runtime 或重启程序'
+                        : '未检测到 WebView2 运行环境\n网页频道需要 Microsoft Edge WebView2 Runtime',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white, fontSize: 14),
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
                   ),
                   if (webEnvLastError.isNotEmpty) ...[
                     const SizedBox(height: 10),
