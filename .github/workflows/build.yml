@@ -40,6 +40,14 @@ jobs:
       - name: Create Android project files
         run: flutter create . --platforms=android --project-name omplayer
 
+      - name: Apply app icon (视频取景框)
+        run: |
+          cp branding/android/mipmap-mdpi/ic_launcher.png    android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          cp branding/android/mipmap-hdpi/ic_launcher.png    android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          cp branding/android/mipmap-xhdpi/ic_launcher.png   android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          cp branding/android/mipmap-xxhdpi/ic_launcher.png  android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          cp branding/android/mipmap-xxxhdpi/ic_launcher.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
       - name: Patch Android config (cleartext HTTP / cutout fullscreen)
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
@@ -214,6 +222,14 @@ jobs:
       - name: Create Web project files
         run: flutter create . --platforms=web --project-name omplayer
 
+      - name: Apply app icon (视频取景框)
+        run: |
+          cp branding/web/Icon-192.png web/icons/Icon-192.png
+          cp branding/web/Icon-512.png web/icons/Icon-512.png
+          cp branding/web/Icon-192.png web/icons/Icon-maskable-192.png
+          cp branding/web/Icon-512.png web/icons/Icon-maskable-512.png
+          cp branding/web/favicon.png web/favicon.png
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -258,6 +274,10 @@ jobs:
 
       - name: Create Windows project files
         run: flutter create . --platforms=windows --project-name omplayer
+
+      - name: Apply app icon (视频取景框)
+        shell: pwsh
+        run: Copy-Item branding/app_icon.ico windows/runner/resources/app_icon.ico -Force
 
       # 仓库不提交 windows/ 目录（由 flutter create 现场生成），
       # 因此把 runner 级补丁注入生成的模板文件：

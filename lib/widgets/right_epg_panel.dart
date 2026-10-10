@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/epg_program.dart';
+import '../services/osd_bus.dart';
 import '../services/player_controller.dart';
 import 'scaled_panel.dart';
 
@@ -126,26 +127,18 @@ class RightEpgPanelState extends State<RightEpgPanel> {
 
   /// 预约/取消预约，并给出结果提示
   void _toggleReservation(EpgProgram program) {
-    final messenger = ScaffoldMessenger.of(context);
     if (program.isPast) {
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('该节目已结束，无法预约'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      OsdBus.show('该节目已结束，无法预约', icon: Icons.alarm_off);
       return;
     }
     final controller = context.read<PlayerController>();
     final reserved = controller.isProgramReserved(program);
     controller.toggleReservation(program);
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(reserved
-            ? '已取消预约：${program.title}'
-            : '已预约：${program.title}，到时间将自动播放'),
-        duration: const Duration(seconds: 2),
-      ),
+    OsdBus.show(
+      reserved
+          ? '已取消预约：${program.title}'
+          : '已预约：${program.title}，到时间将自动播放',
+      icon: reserved ? Icons.alarm_off : Icons.alarm_on,
     );
   }
 
@@ -442,13 +435,11 @@ class _EpgProgramTile extends StatelessWidget {
                       ),
                       onPressed: () {
                         controller.toggleReservation(program);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(reserved
-                                ? '已取消预约：${program.title}'
-                                : '已预约：${program.title}，到时间将自动播放'),
-                            duration: const Duration(seconds: 2),
-                          ),
+                        OsdBus.show(
+                          reserved
+                              ? '已取消预约：${program.title}'
+                              : '已预约：${program.title}，到时间将自动播放',
+                          icon: reserved ? Icons.alarm_off : Icons.alarm_on,
                         );
                       },
                       tooltip: reserved ? '取消预约' : '预约节目',

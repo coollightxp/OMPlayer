@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 import '../models/epg_source.dart';
 import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
+import '../services/osd_bus.dart';
 import '../services/player_controller.dart';
 import 'scaled_panel.dart';
 
@@ -255,9 +256,7 @@ class _PlaylistTabState extends State<_PlaylistTab> {
     final name = _nameController.text.trim();
     final url = _urlController.text.trim();
     if (name.isEmpty || url.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请填写名称和地址')),
-      );
+      OsdBus.show('请填写名称和地址', icon: Icons.warning_amber_rounded);
       return;
     }
     setState(() => _isLoading = true);
@@ -365,9 +364,7 @@ class _PlaylistTabState extends State<_PlaylistTab> {
   Future<void> _copyPlaylist(PlaylistSource p) async {
     await Clipboard.setData(ClipboardData(text: p.url));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('地址已复制'), duration: Duration(seconds: 1)),
-    );
+    OsdBus.show('地址已复制', icon: Icons.copy);
   }
 
   @override
@@ -556,9 +553,7 @@ class _EpgTabState extends State<_EpgTab> {
     final name = _nameController.text.trim();
     final url = _urlController.text.trim();
     if (name.isEmpty || url.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请填写名称和地址')),
-      );
+      OsdBus.show('请填写名称和地址', icon: Icons.warning_amber_rounded);
       return;
     }
     setState(() => _isLoading = true);
@@ -625,9 +620,7 @@ class _EpgTabState extends State<_EpgTab> {
   Future<void> _copyEpg(EpgSource e) async {
     await Clipboard.setData(ClipboardData(text: e.url));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('地址已复制'), duration: Duration(seconds: 1)),
-    );
+    OsdBus.show('地址已复制', icon: Icons.copy);
   }
 
   @override
@@ -1182,12 +1175,7 @@ Future<void> showRemoteAdminQrDialog(BuildContext context, String url) {
                       await Clipboard.setData(ClipboardData(text: url));
                       if (!ctx.mounted) return;
                       Navigator.pop(ctx);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('地址已复制'),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
+                      OsdBus.show('地址已复制', icon: Icons.copy);
                     },
                     icon: const Icon(Icons.copy, size: 18),
                     label: const Text('复制地址'),

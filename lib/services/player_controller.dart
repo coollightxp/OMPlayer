@@ -166,6 +166,23 @@ class PlayerController extends ChangeNotifier {
   bool get isInitialized =>
       _videoController != null && _videoController!.value.isInitialized;
 
+  // 用户收藏的频道 ID（独立持久化，不改动频道/分类结构）
+  final Set<String> _favoriteChannelIds = <String>{};
+  List<String> get favoriteChannelIds =>
+      _favoriteChannelIds.toList(growable: false);
+  bool isFavoriteChannel(String id) => _favoriteChannelIds.contains(id);
+
+  /// 聚合收藏频道：按频道在源分类中的原始顺序输出
+  List<Channel> buildFavoriteChannels() {
+    final result = <Channel>[];
+    for (final cat in _categories) {
+      for (final ch in cat.channels) {
+        if (_favoriteChannelIds.contains(ch.id)) result.add(ch);
+      }
+    }
+    return result;
+  }
+
   PlayerController() {
     _init();
   }
@@ -1500,6 +1517,7 @@ class PlayerController extends ChangeNotifier {
   static const _kUiScale = 'settings_ui_scale';
   static const _kUiScaleAuto = 'settings_ui_scale_auto';
   static const _kRemoteAdmin = 'settings_remote_admin';
+  static const _kFavoriteChannelIds = 'omplayer_favorite_channel_ids';
 
   Future<void> _loadSettings() async {
     try {
@@ -1522,6 +1540,9 @@ class PlayerController extends ChangeNotifier {
         uiScaleAuto: p.getBool(_kUiScaleAuto) ?? true,
         remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
       );
+      _favoriteChannelIds
+        ..clear()
+        ..addAll(p.getStringList(_kFavoriteChannelIds) ?? const <String>[]);
       // 同步独立时钟通知器的初值
       clockVisible.value = _settings.showClock;
     } catch (_) {}
@@ -1935,6 +1956,27 @@ class PlayerController extends ChangeNotifier {
       programStartTime: cur?.startTime,
       programEndTime: cur?.endTime,
     );
+  }
+
+  // ==================== 频道收藏 ====================
+
+  /// 切换频道收藏状态，返回切换后是否为已收藏
+  Future<bool> toggleFavoriteChannel(String channelId) async {
+    bool now;
+    if (_favoriteChannelIds.contains(channelId)) {
+      _favoriteChannelIds.remove(channelId);
+      now = false;
+    } else {
+      _favoriteChannelIds.add(channelId);
+      now = true;
+    }
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setStringList(
+          _kFavoriteChannelIds, _favoriteChannelIds.toList(growable: false));
+    } catch (_) {}
+    notifyListeners();
+    return now;
   }
 
   // ==================== 预约 ====================

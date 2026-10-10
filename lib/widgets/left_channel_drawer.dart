@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/channel.dart';
+import '../services/osd_bus.dart';
 import '../services/player_controller.dart';
 import 'scaled_panel.dart';
 
@@ -39,6 +42,12 @@ class LeftChannelDrawer extends StatefulWidget {
 }
 
 class LeftChannelDrawerState extends State<LeftChannelDrawer> {
+  /// 「我的收藏」虚拟分类 ID（不与真实源分类冲突）
+  static const String _favCategoryId = '::favorites::';
+
+  /// 收藏分类对象（按需重建，buildFavoriteChannels 内容随收藏变化）
+  ChannelCategory? _favCategoryCache;
+
   ChannelCategory? _selectedCategory;
   final ScrollController _categoryScroll = ScrollController();
   final ScrollController _channelScroll = ScrollController();
@@ -46,6 +55,10 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
   /// 遥控器/键盘导航的当前选中索引（与鼠标点击的 isCurrent 播放中区分）
   int _kbCategoryIndex = 0;
   int _kbChannelIndex = 0;
+
+  /// OK 长按收藏：按下边沿启动计时，800ms 内抬起=播放，超时=收藏/取消收藏
+  Timer? _okLongTimer;
+  bool _okLongFired = false;
 
   /// 上次触发播放的时间，用于播放内核重建期间的防抖
   DateTime? _lastPlayAt;
@@ -62,7 +75,42 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
   void dispose() {
     _categoryScroll.dispose();
     _channelScroll.dispose();
+    _okLongTimer?.cancel();
     super.dispose();
+  }
+
+  /// 第一级列表：收藏夹（非空时）排在最前，其后为真实分类
+  List<ChannelCategory> _l1Categories(PlayerController controller) {
+    final favs = controller.buildFavoriteChannels();
+    if (favs.isEmpty) return controller.categories;
+    final fav = _favCategoryCache;
+    if (fav == null || fav.channels.length != favs.length) {
+      _favCategoryCache = ChannelCategory(
+        id: _favCategoryId,
+        name: '我的收藏',
+        channels: favs,
+      );
+    } else {
+      _favCategoryCache =
+          ChannelCategory(id: _favCategoryId, name: '我的收藏', channels: favs);
+    }
+    return [_favCategoryCache!, ...controller.categories];
+  }
+
+  /// 分类下实际展示的频道列表（收藏分类动态聚合）
+  List<Channel> _channelsOf(PlayerController controller, ChannelCategory cat) =>
+      cat.id == _favCategoryId
+          ? controller.buildFavoriteChannels()
+          : cat.channels;
+
+  /// 收藏/取消收藏并提示（鼠标点星标或遥控器长按 OK）
+  Future<void> _toggleFavorite(Channel ch) async {
+    final c = context.read<PlayerController>();
+    final nowFav = await c.toggleFavoriteChannel(ch.id);
+    OsdBus.show(
+      nowFav ? '已收藏：${ch.name}' : '已取消收藏：${ch.name}',
+      icon: Icons.star,
+    );
   }
 
   @override
@@ -107,14 +155,13 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       if (isDown) widget.onClose();
       return;
     }
-    // 其余动作只在按下边沿处理一次（长按重复由系统 repeat 过滤在上游）
-    if (!isDown) return;
     final controller = context.read<PlayerController>();
-    final cats = controller.categories;
+    final cats = _l1Categories(controller);
     final cat = _selectedCategory;
     if (cat == null) {
-      // ===== 第一级：分类列表 =====
+      // ===== 第一级：分类列表（长按收藏只作用于第二级频道行） =====
       if (cats.isEmpty) return;
+      if (!isDown) return;
       switch (action) {
         case 'up':
           setState(() => _kbCategoryIndex =
@@ -126,14 +173,15 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           _scrollKeyboardTo(_categoryKeys, _kbCategoryIndex);
         case 'ok':
         case 'right':
-          final next = cats[_kbCategoryIndex];
+          final next = cats[_kbCategoryIndex.clamp(0, cats.length - 1)];
+          final nextChannels = _channelsOf(controller, next);
           setState(() {
             _selectedCategory = next;
             final curId = controller.currentChannel?.id;
-            final idx = next.channels.indexWhere((ch) => ch.id == curId);
+            final idx = nextChannels.indexWhere((ch) => ch.id == curId);
             // 进入分类时默认选中当前播放频道，没有则选第一条
             _kbChannelIndex =
-                idx >= 0 ? idx.clamp(0, next.channels.length - 1) : 0;
+                idx >= 0 ? idx.clamp(0, nextChannels.length - 1) : 0;
           });
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _scrollToCurrentChannel();
@@ -142,22 +190,40 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       }
     } else {
       // ===== 第二级：频道列表 =====
-      final channels = cat.channels;
+      final channels = _channelsOf(controller, cat);
       switch (action) {
         case 'up':
-          if (channels.isEmpty) break;
+          if (!isDown || channels.isEmpty) break;
           setState(() => _kbChannelIndex =
               (_kbChannelIndex - 1).clamp(0, channels.length - 1));
           _scrollKeyboardTo(_channelKeys, _kbChannelIndex);
         case 'down':
-          if (channels.isEmpty) break;
+          if (!isDown || channels.isEmpty) break;
           setState(() => _kbChannelIndex =
               (_kbChannelIndex + 1).clamp(0, channels.length - 1));
           _scrollKeyboardTo(_channelKeys, _kbChannelIndex);
         case 'left':
+          if (!isDown) break;
           setState(() => _selectedCategory = null);
         case 'ok':
           if (channels.isEmpty) break;
+          if (isDown) {
+            // 长按 OK（800ms）= 收藏/取消收藏；抬起前未超时则按短按播放
+            _okLongFired = false;
+            _okLongTimer?.cancel();
+            _okLongTimer = Timer(const Duration(milliseconds: 800), () {
+              _okLongFired = true;
+              final idx = _kbChannelIndex.clamp(0, channels.length - 1);
+              _toggleFavorite(channels[idx]);
+            });
+            break;
+          }
+          // 抬起边沿：长按已触发收藏，不再播放
+          if (_okLongFired) {
+            _okLongFired = false;
+            break;
+          }
+          _okLongTimer?.cancel();
           // 播放内核重建期间防抖：连按 OK 只执行一次，避免频道乱跳
           if (_lastPlayAt != null &&
               DateTime.now().difference(_lastPlayAt!) <
@@ -246,6 +312,16 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       if (c == cat) return offset + indexInCat + 1;
       offset += c.channels.length;
     }
+    // 虚拟分类（我的收藏）：按频道 id 反查其在源分类中的全局序号
+    if (indexInCat < cat.channels.length) {
+      final id = cat.channels[indexInCat].id;
+      var off = 0;
+      for (final c in controller.categories) {
+        final i = c.channels.indexWhere((ch) => ch.id == id);
+        if (i >= 0) return off + i + 1;
+        off += c.channels.length;
+      }
+    }
     return indexInCat + 1;
   }
 
@@ -329,8 +405,9 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       builder: (context, controller, _) {
         final cats = controller.categories;
         // 当前选中的分类对象已不在新列表中（说明刚切换了节目源），
-        // 自动回到第一级分类列表
+        // 自动回到第一级分类列表；收藏虚拟分类不受源切换影响
         if (_selectedCategory != null &&
+            _selectedCategory!.id != _favCategoryId &&
             !cats.contains(_selectedCategory)) {
           _selectedCategory = null;
           // 本帧先按第一级渲染，下一帧刷新标题栏（标题栏在 Consumer 外）
@@ -339,15 +416,17 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           });
         }
         if (_selectedCategory == null) {
-          return _buildCategoryList(cats);
+          return _buildCategoryList(controller);
         }
         return _buildChannelList(_selectedCategory!, controller);
       },
     );
   }
 
-  /// 第一级：分类列表
-  Widget _buildCategoryList(List<ChannelCategory> cats) {
+  /// 第一级：分类列表（收藏夹非空时排在最前）
+  Widget _buildCategoryList(PlayerController controller) {
+    final cats = controller.categories;
+    final favs = controller.buildFavoriteChannels();
     if (cats.isEmpty) {
       return Center(
         child: Padding(
@@ -381,16 +460,24 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
         ),
       );
     }
+    // 收藏夹（非空时）占第 0 项，其后为真实分类
+    final hasFav = favs.isNotEmpty;
+    final favCat = hasFav
+        ? ChannelCategory(id: _favCategoryId, name: '我的收藏', channels: favs)
+        : null;
     return ListView.builder(
       controller: _categoryScroll,
       padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: cats.length,
+      itemCount: cats.length + (hasFav ? 1 : 0),
       itemBuilder: (context, index) {
-        final cat = cats[index];
+        final isFav = hasFav && index == 0;
+        final cat = isFav ? favCat! : cats[index - (hasFav ? 1 : 0)];
         final key = _categoryKeys.putIfAbsent(index, GlobalKey.new);
         return _CategoryTile(
           key: key,
           category: cat,
+          icon: isFav ? Icons.star : Icons.category,
+          iconColor: isFav ? Colors.amber : Colors.blueAccent,
           keyboardSelected: index == _kbCategoryIndex,
           onTap: () => setState(() {
             _selectedCategory = cat;
@@ -405,12 +492,13 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
   /// 第二级：频道列表
   Widget _buildChannelList(
       ChannelCategory category, PlayerController controller) {
+    final channels = _channelsOf(controller, category);
     return ListView.builder(
       controller: _channelScroll,
       padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: category.channels.length,
+      itemCount: channels.length,
       itemBuilder: (context, index) {
-        final channel = category.channels[index];
+        final channel = channels[index];
         final isCurrent = controller.currentChannel?.id == channel.id;
         final number = _globalIndexOf(controller, category, index);
         final key = _channelKeys.putIfAbsent(index, GlobalKey.new);
@@ -420,6 +508,8 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           number: number,
           isSelected: isCurrent,
           keyboardSelected: index == _kbChannelIndex,
+          isFav: controller.isFavoriteChannel(channel.id),
+          onToggleFavorite: () => _toggleFavorite(channel),
           onTap: () {
             _kbChannelIndex = index;
             controller.playChannel(channel);
@@ -436,6 +526,10 @@ class _CategoryTile extends StatelessWidget {
   final ChannelCategory category;
   final VoidCallback onTap;
 
+  /// 分类图标与颜色（收藏夹用星标）
+  final IconData icon;
+  final Color iconColor;
+
   /// 遥控器/键盘焦点高亮（区别于鼠标）
   final bool keyboardSelected;
 
@@ -443,6 +537,8 @@ class _CategoryTile extends StatelessWidget {
     super.key,
     required this.category,
     required this.onTap,
+    this.icon = Icons.category,
+    this.iconColor = Colors.blueAccent,
     this.keyboardSelected = false,
   });
 
@@ -468,11 +564,10 @@ class _CategoryTile extends StatelessWidget {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: Colors.blueAccent.withOpacity(0.2),
+                color: iconColor.withOpacity(0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(Icons.category,
-                  color: Colors.blueAccent, size: 20),
+              child: Icon(icon, color: iconColor, size: 20),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -512,6 +607,10 @@ class _ChannelTile extends StatelessWidget {
   final bool isSelected;
   final VoidCallback onTap;
 
+  /// 是否已收藏 + 切换回调（null=不显示收藏按钮）
+  final bool isFav;
+  final VoidCallback? onToggleFavorite;
+
   /// 遥控器/键盘焦点高亮
   final bool keyboardSelected;
 
@@ -521,6 +620,8 @@ class _ChannelTile extends StatelessWidget {
     required this.number,
     required this.isSelected,
     required this.onTap,
+    this.isFav = false,
+    this.onToggleFavorite,
     this.keyboardSelected = false,
   });
 
@@ -590,7 +691,20 @@ class _ChannelTile extends StatelessWidget {
                 ),
               ),
             ),
-            if (channel.isFavorite)
+            // 收藏星标：鼠标点按切换收藏（阻断冒泡，不触发播放）
+            if (onToggleFavorite != null)
+              GestureDetector(
+                onTap: onToggleFavorite,
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(
+                    isFav ? Icons.star : Icons.star_border,
+                    color: isFav ? Colors.amber : Colors.white38,
+                    size: 18,
+                  ),
+                ),
+              )
+            else if (channel.isFavorite)
               const Icon(Icons.star, color: Colors.amber, size: 16),
             if (isSelected)
               const Padding(

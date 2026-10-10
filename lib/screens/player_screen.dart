@@ -8,7 +8,9 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../services/osd_bus.dart';
 import '../services/player_controller.dart';
+import '../services/system_power.dart';
 import '../services/web_env.dart';
 import '../services/web_launch.dart';
 import '../services/win_hotkeys.dart';
@@ -109,8 +111,18 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   DateTime _loadingLockUntil = DateTime.fromMillisecondsSinceEpoch(0);
   static const _loadingLock = Duration(milliseconds: 900);
 
+  // 屏幕中央消息 OSD：替代页面底部 SnackBar（电视远距离看不清底部小字，
+  // 中央半透明大卡片更醒目）。新消息刷新文字并重新计时。
+  Timer? _msgOsdTimer;
+  bool _msgOsdVisible = false;
+  String _msgOsdText = '';
+  IconData _msgOsdIcon = Icons.info_outline;
+
+  // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
+  static const String _appVersion = '1.0.146';
+
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
-  int _exitDialogFocusIndex = 0; // 0=取消, 1=退出
+  int _exitDialogFocusIndex = 0; // 0=取消, 1=退出, 2=关机
   bool _exitDialogOpen = false;
 
   /// 对话框内部 StatefulBuilder 的刷新句柄：遥控器 ←/→ 改焦点后
@@ -144,6 +156,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     // 全局硬件键盘监听：不依赖 Flutter 焦点，任何控件持有焦点、面板
     // 关闭后都能收到按键；中文输入法状态下硬件 KeyDown 照样送达。
     HardwareKeyboard.instance.addHandler(_onGlobalKeyEvent);
+    // 深层 widget（设置/EPG 面板）发来的中央 OSD 消息
+    OsdBus.message.addListener(_onBusOsd);
     // Windows：低级键盘钩子转发数字键与动作键（网页 HWND 吞焦点时也有效）
     _winHotkeys.setDigitHandler(_onNumberKey);
     _winHotkeys.setActionHandler(_onNativeAction);
@@ -167,9 +181,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         // 等一帧让 WebView 平台视图完成原生销毁，规避退出崩溃
         await Future<void>.delayed(const Duration(milliseconds: 600));
       }
+      // 释放 WebView2 环境及其宿主子进程，避免退出后残留
+      // WebView2 进程继续解码占用资源（Win10 家庭版报"已停止工作"）
+      try {
+        await webViewEnvironment?.dispose();
+      } catch (_) {}
       await windowManager.setPreventClose(false);
       await windowManager.destroy();
     } catch (_) {
+      try {
+        await webViewEnvironment?.dispose();
+      } catch (_) {}
       await windowManager.setPreventClose(false);
       await windowManager.destroy();
     }
@@ -380,6 +402,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _arrowLongTimer?.cancel();
     _menuLongTimer?.cancel();
     _seekOsdHideTimer?.cancel();
+    _msgOsdTimer?.cancel();
+    OsdBus.message.removeListener(_onBusOsd);
     _rootFocusNode.dispose();
     _controllerRef?.removeListener(_onControllerChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -673,6 +697,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     },
                   ),
 
+                  // 鼠标右键 = 遥控器返回：按层级关闭 设置→投屏→抽屉→面板，
+                  // 再按弹退出确认（网页频道前台时右键被 WebView 消费，
+                  // 网页区内不触发；网页菜单已在 JS 层禁用）
+                  if (controller.isDesktop)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onSecondaryTapUp: (_) => _handleBackPressed(),
+                      ),
+                    ),
+
                   // 亮度调节指示
                   GestureIndicatorOverlay(
                     isVisible: _showBrightnessIndicator,
@@ -697,6 +732,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
                   // 点播长按左右键：数字进度 OSD（不拦截手势）
                   _buildSeekOsd(),
+
+                  // 屏幕中央消息 OSD（截图/录制/关机等提示）
+                  _buildMessageOsd(),
 
                   // 录制指示器（网页/原生均显示）
                   if (controller.isRecording)
@@ -794,8 +832,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     //
     // 无任何可关闭项：退出前确认，避免误触
     _exitDialogOpen = true;
-    _exitDialogFocusIndex = 0; // 默认聚焦「取消」，避免误触退出
-    final shouldExit = await showDialog<bool>(
+    _exitDialogFocusIndex = 0; // 默认聚焦「取消」，避免误触退出/关机
+    final result = await showDialog<int?>(
       context: context,
       builder: (dialogCtx) {
         // 遥控器友好：AlertDialog 用 StatefulBuilder 包裹，按钮高亮
@@ -804,79 +842,108 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             _exitDialogRefresh = setDialogState;
-            return AlertDialog(
-      title: const Text('退出 OMPlayer'),
-      content: const Text('确定要退出 OMPlayer 吗？'),
-      actions: [
-        // 遥控器走全局按键 handler（_handleExitDialogKey），
-        // 按钮不获取键盘焦点（canRequestFocus: false），
-        // 避免 Enter 同时触发全局 pop + 按钮 onPressed 双 pop
-        // 导致弹层和播放器一起被弹掉、出现黑屏死机
-        Focus(
-          canRequestFocus: false,
-          child: TextButton(
-            onPressed: () {
-              _exitDialogOpen = false;
-              Navigator.of(ctx).pop(false);
-            },
-            style: TextButton.styleFrom(
-              backgroundColor: _exitDialogFocusIndex == 0
-                  ? Colors.blueAccent.withOpacity(0.25)
-                  : null,
-              side: _exitDialogFocusIndex == 0
-                  ? const BorderSide(color: Colors.blueAccent, width: 1.5)
-                  : null,
-            ),
-            child: Text(
-              '取消',
-              style: TextStyle(
-                color: _exitDialogFocusIndex == 0
-                    ? Colors.blueAccent
-                    : Colors.white70,
-                fontWeight: _exitDialogFocusIndex == 0
-                    ? FontWeight.bold
-                    : FontWeight.normal,
+            // 自绘退出面板：左侧放大的程序图标，右侧上部为程序名称与
+            // 版本号，文字下方为直角矩形按钮（取消/退出/关机）。
+            // 安卓电视逻辑分辨率较小（常见 960x540），按屏宽等比缩小面板
+            final double panelScale =
+                (MediaQuery.sizeOf(ctx).width / 1280).clamp(0.55, 1.0);
+            return Dialog(
+              backgroundColor: const Color(0xFF12151A),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Colors.white24),
               ),
-            ),
-          ),
-        ),
-        Focus(
-          canRequestFocus: false,
-          child: TextButton(
-            onPressed: () {
-              _exitDialogOpen = false;
-              Navigator.of(ctx).pop(true);
-            },
-            style: TextButton.styleFrom(
-              backgroundColor: _exitDialogFocusIndex == 1
-                  ? Colors.redAccent.withOpacity(0.25)
-                  : null,
-              side: _exitDialogFocusIndex == 1
-                  ? const BorderSide(color: Colors.redAccent, width: 1.5)
-                  : null,
-            ),
-            child: Text(
-              '退出',
-              style: TextStyle(
-                color: _exitDialogFocusIndex == 1
-                    ? Colors.redAccent
-                    : Colors.white70,
-                fontWeight: _exitDialogFocusIndex == 1
-                    ? FontWeight.bold
-                    : FontWeight.normal,
+              child: SizedBox(
+                // 外层按比例给尺寸，内层 FittedBox 把 620 宽的面板整体缩放
+                width: 620 * panelScale,
+                height: 240 * panelScale,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: SizedBox(
+                    width: 620,
+                    child: Padding(
+                      // 图标+文字+按钮整块在弹窗内水平居中，左右留白对称；
+                      // 用 Column(min) 收紧高度——Center 在 Dialog 的松散
+                      // 高度约束下会把弹窗撑到近乎全屏高（内容缩在中间）
+                      padding: const EdgeInsets.all(34),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // 左侧放大程序图标
+                              Container(
+                                width: 136,
+                                height: 136,
+                                clipBehavior: Clip.antiAlias,
+                                decoration: BoxDecoration(
+                                  color: Colors.white10,
+                                  borderRadius: BorderRadius.circular(18),
+                                ),
+                                child: Image.asset(
+                                  'branding/icon_1024.png',
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                              const SizedBox(width: 48),
+                              // 右侧：名称 / 版本 / 按钮
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'OMPlayer',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 27,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '版本 $_appVersion',
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 32),
+                                  Wrap(
+                                    spacing: 14,
+                                    runSpacing: 12,
+                                    children: [
+                                      _buildExitOption(
+                                          ctx, 0, '取消', Colors.blueAccent),
+                                      _buildExitOption(
+                                          ctx, 1, '退出', Colors.redAccent),
+                                      // 关闭系统仅 Windows/Linux 原生显示
+                                      if (_canShutdownSystem)
+                                        _buildExitOption(
+                                            ctx, 2, '关机', Colors.orangeAccent),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ),
-        ),
-      ],
-    );
+            );
           },
         );
       },
     );
     _exitDialogOpen = false;
     _exitDialogRefresh = null;
-    if (shouldExit == true) {
+    if (!mounted) return;
+    if (result == 1) {
       // SystemNavigator.pop() 只在 Android/iOS 有效，桌面端需要用 windowManager
       if (!kIsWeb &&
           (defaultTargetPlatform == TargetPlatform.windows ||
@@ -886,7 +953,63 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       } else {
         await SystemNavigator.pop();
       }
+    } else if (result == 2) {
+      final isWindows =
+          !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+      _showOsd(
+        isWindows ? '5 秒后将关闭系统，可运行 shutdown /a 取消' : '即将关闭系统…',
+        icon: Icons.power_settings_new,
+        duration: const Duration(seconds: 5),
+      );
+      await shutdownSystem();
     }
+  }
+
+  /// 退出框是否提供「关闭系统」：仅 Windows/Linux 原生（Web/安卓/iOS/macOS 不显示）
+  bool get _canShutdownSystem =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.windows ||
+          defaultTargetPlatform == TargetPlatform.linux);
+
+  /// 退出框按钮数（2 或 3）
+  int get _exitOptionCount => _canShutdownSystem ? 3 : 2;
+
+  /// 构建退出框中的一个直角矩形按钮（不取键盘焦点，高亮由全局按键维护）
+  Widget _buildExitOption(
+      BuildContext ctx, int index, String label, Color color) {
+    final selected = _exitDialogFocusIndex == index;
+    return Focus(
+      canRequestFocus: false,
+      child: TextButton(
+        // 一次性守卫：先摘标志再 pop，鼠标点击与遥控器 OK 都不会双 pop
+        onPressed: () {
+          _exitDialogOpen = false;
+          Navigator.of(ctx).pop<int?>(index == 0 ? null : index);
+        },
+        style: TextButton.styleFrom(
+          backgroundColor: selected
+              ? color.withOpacity(0.22)
+              : Colors.white.withOpacity(0.04),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.zero,
+          ),
+          side: BorderSide(
+            color: selected ? color : Colors.white24,
+            width: selected ? 2.0 : 1.0,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? color : Colors.white70,
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ),
+    );
   }
 
   // ==================== 硬件按键快捷键 ====================
@@ -966,19 +1089,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         k == LogicalKeyboardKey.arrowRight;
     if (isOk) {
       if (isDown && _exitDialogOpen) {
-        // 确认当前选中按钮（取消=false，退出=true）
         // 先置标志位，防止同一按键事件被路由双处理（全局 handler + 按钮 Focus）
+        final idx = _exitDialogFocusIndex;
         _exitDialogOpen = false;
-        Navigator.of(context).pop(_exitDialogFocusIndex == 1);
+        Navigator.of(context).pop<int?>(idx == 0 ? null : idx);
       }
       return true;
     }
     if (isLr) {
       if (isDown) {
-        // 改焦点并刷新对话框：showDialog 里的 StatefulBuilder
+        // 按钮间循环移动：showDialog 里的 StatefulBuilder
         // 需要内部 setState 才能看到高亮移动
+        final count = _exitOptionCount;
+        final step = k == LogicalKeyboardKey.arrowRight ? 1 : -1;
         _exitDialogFocusIndex =
-            k == LogicalKeyboardKey.arrowRight ? 1 : 0;
+            (_exitDialogFocusIndex + step) % count;
+        if (_exitDialogFocusIndex < 0) _exitDialogFocusIndex += count;
         _exitDialogRefresh?.call(() {});
       }
       return true;
@@ -990,14 +1116,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (k == LogicalKeyboardKey.contextMenu) {
       if (isDown && _exitDialogOpen) {
         _exitDialogOpen = false;
-        Navigator.of(context).pop(false);
+        Navigator.of(context).pop<int?>(null);
       }
       return true;
     }
     if (k == LogicalKeyboardKey.escape) {
       if (isDown && _exitDialogOpen) {
         _exitDialogOpen = false;
-        Navigator.of(context).pop(false);
+        Navigator.of(context).pop<int?>(null);
       }
       return true;
     }
@@ -1358,6 +1484,73 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _seekOsdHideTimer = Timer(const Duration(milliseconds: 1200), () {
       if (mounted) setState(() => _seekOsdVisible = false);
     });
+  }
+
+  /// 在屏幕中央显示一条消息 OSD（截图/录制/关机等提示），
+  /// 取代底部 SnackBar。[duration] 后自动淡出。
+  void _showOsd(
+    String text, {
+    IconData icon = Icons.info_outline,
+    Duration duration = const Duration(milliseconds: 2200),
+  }) {
+    if (!mounted) return;
+    _msgOsdTimer?.cancel();
+    setState(() {
+      _msgOsdText = text;
+      _msgOsdIcon = icon;
+      _msgOsdVisible = true;
+    });
+    _msgOsdTimer = Timer(duration, () {
+      if (mounted) setState(() => _msgOsdVisible = false);
+    });
+  }
+
+  /// 深层 widget 通过 OsdBus 发来的消息 → 中央 OSD
+  void _onBusOsd() {
+    final m = OsdBus.message.value;
+    if (m != null) _showOsd(m.text, icon: m.icon);
+  }
+
+  /// 屏幕中央消息 OSD：半透明深色圆角卡片 + 图标 + 文字，不拦截输入
+  Widget _buildMessageOsd() {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: AnimatedOpacity(
+          opacity: _msgOsdVisible ? 1.0 : 0.0,
+          duration: const Duration(milliseconds: 180),
+          child: Center(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 560),
+              margin: const EdgeInsets.symmetric(horizontal: 48),
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 22),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.72),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(_msgOsdIcon, color: Colors.blueAccent, size: 30),
+                  const SizedBox(width: 14),
+                  Flexible(
+                    child: Text(
+                      _msgOsdText,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// 时长格式化：不足 1 小时显示 m:ss，否则 h:mm:ss
@@ -1846,24 +2039,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         }
         return;
       }
-      // 退出确认对话框：←/→ 移动焦点，OK 确认，返回/菜单取消
+      // 退出确认对话框：←/→ 循环移动焦点，OK 确认，返回/菜单取消
       if (_exitDialogOpen) {
-        if (action == 'left') {
-          _exitDialogFocusIndex = 0;
-          _exitDialogRefresh?.call(() {});
-        } else if (action == 'right') {
-          _exitDialogFocusIndex = 1;
+        if (action == 'left' || action == 'right') {
+          final count = _exitOptionCount;
+          final step = action == 'right' ? 1 : -1;
+          _exitDialogFocusIndex = (_exitDialogFocusIndex + step) % count;
+          if (_exitDialogFocusIndex < 0) _exitDialogFocusIndex += count;
           _exitDialogRefresh?.call(() {});
         } else if (action == 'ok') {
           // 一次性守卫：先摘标志再 pop，任何重复/残余事件都不会
           // 再弹一次（第二次 pop 会把播放器路由弹掉 → 黑屏）
+          final idx = _exitDialogFocusIndex;
           _exitDialogOpen = false;
-          Navigator.of(context).pop(_exitDialogFocusIndex == 1);
+          Navigator.of(context).pop<int?>(idx == 0 ? null : idx);
         } else if (action == 'back' ||
             action == 'esc' ||
             action == 'menu') {
           _exitDialogOpen = false;
-          Navigator.of(context).pop(false);
+          Navigator.of(context).pop<int?>(null);
         }
         return;
       }
@@ -1923,11 +2117,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     final controller = context.read<PlayerController>();
     final path = await controller.takeScreenshot();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(path != null ? '截图已保存: $path' : '截图失败'),
-          duration: const Duration(seconds: 3),
-        ),
+      _showOsd(
+        path != null ? '截图已保存: $path' : '截图失败',
+        icon: Icons.photo_camera,
+        duration: const Duration(seconds: 3),
       );
     }
   }
@@ -1937,27 +2130,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (controller.isRecording) {
       final path = await controller.stopRecording();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(path != null
-                ? '录制已停止，保存至: $path'
-                : '录制已停止（未捕获到视频数据）'),
-            duration: const Duration(seconds: 3),
-          ),
+        _showOsd(
+          path != null
+              ? '录制已停止，保存至: $path'
+              : '录制已停止（未捕获到视频数据）',
+          icon: Icons.stop,
+          duration: const Duration(seconds: 3),
         );
       }
     } else {
       final ok = await controller.startRecording();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(ok
-                ? (controller.webPageActive
-                    ? '开始录制网页视频，保存到程序所在文件夹的 recordings 子文件夹'
-                    : '开始录制，视频保存到程序所在文件夹的 recordings 子文件夹')
-                : (controller.lastError ?? '录制失败')),
-            duration: const Duration(seconds: 2),
-          ),
+        _showOsd(
+          ok
+              ? (controller.webPageActive
+                  ? '开始录制网页视频，保存到程序所在文件夹的 recordings 子文件夹'
+                  : '开始录制，视频保存到程序所在文件夹的 recordings 子文件夹')
+              : (controller.lastError ?? '录制失败'),
+          icon: Icons.fiber_manual_record,
+          duration: const Duration(seconds: 2),
         );
       }
     }
@@ -2124,6 +2315,48 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 
   /// 15 秒内 WebView 毫无加载进度：判定为缺少 WebView2 运行时
   Timer? _runtimeTimer;
+
+  /// 禁用网页右键菜单（<video> 默认的“循环/复制视频地址/另存”等菜单
+  /// 不该出现在播放应用里）。捕获阶段拦截 contextmenu，并对所有
+  /// 同源 iframe 递归挂载；MutationObserver 处理后续动态插入的 iframe。
+  /// 幂等：顶层与各文档各自打 __omNoCtx 标记，可重复注入。
+  static const String _noContextMenuJs = r'''
+(function(){
+  function kill(e){ try { e.preventDefault(); e.stopImmediatePropagation(); } catch(_){} }
+  function bindDoc(d){
+    try {
+      if (!d || d.__omNoCtx) return;
+      d.__omNoCtx = true;
+      d.addEventListener('contextmenu', kill, true);
+      bindFrames(d);
+    } catch(e) {}
+  }
+  function bindFrames(root){
+    var fs;
+    try { fs = root.querySelectorAll('iframe'); } catch(e) { return; }
+    for (var i=0;i<fs.length;i++){
+      try { bindDoc(fs[i].contentDocument); } catch(e) {}
+    }
+  }
+  bindDoc(document);
+  if (!window.__omNoCtxObs) {
+    window.__omNoCtxObs = true;
+    try {
+      new MutationObserver(function(muts){
+        for (var i=0;i<muts.length;i++){
+          var added = muts[i].addedNodes;
+          for (var j=0;j<added.length;j++){
+            var n = added[j];
+            if (n.nodeType !== 1) continue;
+            if (n.tagName === 'IFRAME') { try { bindDoc(n.contentDocument); } catch(e) {} }
+            else { try { bindFrames(n); } catch(e) {} }
+          }
+        }
+      }).observe(document.documentElement, {childList:true, subtree:true});
+    } catch(e) {}
+  }
+})();
+''';
 
   /// CSS：把页面里的 <video> 伪全屏铺满窗口
   static const String _cssJs = r'''
@@ -2459,8 +2692,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     });
     // 运行时缺失判定（乐观策略）：注册表/版本查询在不同系统上都不可靠
     // （实测已装 WebView2 的家庭版也会误报）。只要 WebView 能报告任何
-    // 加载进度，就证明运行时正常；15 秒内毫无进展才提示安装。
-    _runtimeTimer = Timer(const Duration(seconds: 15), () {
+    // 加载进度，就证明运行时正常；25 秒内毫无进展才提示安装。
+    // 放宽到 25 秒：慢站点 + 弱网下 15 秒易误判"未安装"，导致程序
+    // 状态不一致、退出时 WebView 未正确释放进而崩溃。
+    _runtimeTimer = Timer(const Duration(seconds: 25), () {
       if (mounted && !_sawProgress && _error == null) {
         setState(() => _runtimeMissing = true);
       }
@@ -2480,6 +2715,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     final c = _webController;
     if (c == null) return;
     try {
+      await c.evaluateJavascript(source: _noContextMenuJs);
       await c.evaluateJavascript(source: _cssJs);
       await c.evaluateJavascript(source: _bootJs);
     } catch (_) {

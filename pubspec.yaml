@@ -1,7 +1,7 @@
 name: omplayer
 description: A cross-platform Flutter live streaming media player.
 publish_to: 'none'
-version: 1.0.145+146
+version: 1.0.146+147
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -80,3 +80,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - branding/icon_1024.png
