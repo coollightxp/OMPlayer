@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
@@ -119,7 +120,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.148';
+  static const String _appVersion = '1.0.149';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -842,10 +843,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             _exitDialogRefresh = setDialogState;
-            // 自绘退出面板：左侧程序图标贴左边缘；右侧剩余区域内
-            // 上部为程序名称/版本两行，下部为「返回/退出/关机」三个
-            // 方块图标按钮（无文字，鼠标悬停或遥控器框选时在方块下方
-            // 显示对应文字）；名称、版本与三个图标在右侧区域整体居中。
+            // 自绘退出面板：不显示程序图标，内容全部居中，
+            // 紧凑布局（短小精悍）：程序名称/版本两行 +
+            // 「返回/退出/关机」三个方块图标按钮（无文字，
+            // 鼠标悬停或遥控器框选时在方块下方显示对应文字）。
             // 安卓电视逻辑分辨率较小（常见 960x540），按屏宽等比缩小面板
             final double panelScale =
                 (MediaQuery.sizeOf(ctx).width / 1280).clamp(0.55, 1.0);
@@ -865,70 +866,46 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                 side: const BorderSide(color: Colors.white24),
               ),
               child: SizedBox(
-                width: 620 * panelScale,
-                height: 224 * panelScale,
+                width: 380 * panelScale,
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
-                  child: SizedBox(
-                    width: 620,
-                    height: 224,
-                    child: Row(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 34, vertical: 24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // 左侧程序图标：贴近左边缘，仅留小边距
-                        Padding(
-                          padding: const EdgeInsets.only(left: 22),
-                          child: Container(
-                            width: 120,
-                            height: 120,
-                            clipBehavior: Clip.antiAlias,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Image.asset(
-                              'branding/icon_1024.png',
-                              fit: BoxFit.cover,
-                            ),
+                        const Text(
+                          'OMPlayer',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                        // 右侧剩余区域：名称/版本 + 三方块按钮，整体居中
-                        Expanded(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: [
-                              const Text(
-                                'OMPlayer',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 26,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                '版本 $_appVersion',
-                                style: const TextStyle(
-                                  color: Colors.white54,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              const SizedBox(height: 22),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  for (var i = 0; i < options.length; i++)
-                                    Padding(
-                                      padding: EdgeInsets.only(
-                                          right: i == options.length - 1
-                                              ? 0
-                                              : 26),
-                                      child: _buildExitIconOption(
-                                          ctx, i, options[i]),
-                                    ),
-                                ],
-                              ),
-                            ],
+                        const SizedBox(height: 3),
+                        Text(
+                          '版本 $_appVersion',
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 13,
                           ),
+                        ),
+                        const SizedBox(height: 18),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            for (var i = 0; i < options.length; i++)
+                              Padding(
+                                padding: EdgeInsets.only(
+                                    right:
+                                        i == options.length - 1 ? 0 : 22),
+                                child: _buildExitIconOption(
+                                    ctx, i, options[i]),
+                              ),
+                          ],
                         ),
                       ],
                     ),
@@ -2346,6 +2323,45 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 15 秒内 WebView 毫无加载进度：判定为缺少 WebView2 运行时
   Timer? _runtimeTimer;
 
+  /// XHR/fetch 嗅探到的页面真实媒体流（m3u8/mpd/flv），
+  /// 非空时右下角浮出「用内置播放器全屏播放」按钮
+  String? _sniffUrl;
+  String? _sniffKind;
+  String? _sniffReferer;
+  String? _sniffUa;
+  bool _sniffDismissed = false;
+
+  void _onSniffedStream(dynamic raw) {
+    try {
+      final s = raw is String ? raw : raw.toString();
+      final m = jsonDecode(s) as Map<dynamic, dynamic>;
+      final url = (m['u'] as String?) ?? '';
+      final kind = (m['k'] as String?) ?? 'hls';
+      if (url.isEmpty || !mounted) return;
+      const priority = {'hls': 3, 'dash': 2, 'flv': 1};
+      final old = _sniffKind == null ? 0 : (priority[_sniffKind] ?? 0);
+      // 已采用更高优先级的流（如先探测到 m3u8 后又冒 flv）则不降级
+      if (_sniffUrl != null && (priority[kind] ?? 0) <= old) return;
+      setState(() {
+        _sniffUrl = url;
+        _sniffKind = kind;
+        _sniffReferer = (m['r'] as String?) ?? widget.url;
+        _sniffUa = m['ua'] as String?;
+        _sniffDismissed = false;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _switchSniffedToNative() async {
+    final url = _sniffUrl;
+    if (url == null) return;
+    await context.read<PlayerController>().playSniffedWebStream(
+          url: url,
+          referer: _sniffReferer ?? widget.url,
+          userAgent: _sniffUa,
+        );
+  }
+
   /// 禁用网页右键菜单（<video> 默认的“循环/复制视频地址/另存”等菜单
   /// 不该出现在播放应用里）。捕获阶段拦截 contextmenu，并对所有
   /// 同源 iframe 递归挂载；MutationObserver 处理后续动态插入的 iframe。
@@ -2708,6 +2724,115 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 })();
 ''';
 
+  /// 媒体流嗅探：劫持 XHR/fetch + 轮询 performance 资源计时 + 扫描
+  /// video[src]，捕获芒果TV/网页直播页内部拉取的真实流地址
+  /// （m3u8/mpd/http-flv），上报 omStream，由 Dart 侧浮层提供
+  /// 「切到内置播放器全屏播放」。
+  /// 同源 iframe（部分站点播放器在内层框架）递归安装；跨域框架
+  /// 访问会抛异常，静默跳过。
+  static const String _sniffJs = r'''
+(function(){
+  var MEDIA = /\.(m3u8|m3u|mpd|flv)(?:$|[?#/])/i;
+  // 明显是广告/统计/日志的地址不采用
+  var NOISE = /\/(ad|ads|advert|dsp|stat|stats|track|tracking|log|logs|report|metrics)(?:\/|$)/i;
+  var seen = {};
+  function report(u, via, win){
+    try {
+      if (!u || typeof u !== 'string') return;
+      if (/^(blob:|data:|about:|javascript:|chrome-extension:)/i.test(u)) return;
+      var base = (win && win.location) ? win.location.href : location.href;
+      var abs;
+      try { abs = new win.URL(u, base).href; } catch(e) { abs = new URL(u, base).href; }
+      var p = abs.split('#')[0].split('?')[0];
+      if (!MEDIA.test(p) || NOISE.test(p)) return;
+      var m = p.match(/\.(m3u8|m3u|mpd|flv)(?:$|[?#/])/i);
+      var ext = (m && m[1] || '').toLowerCase();
+      var kind = (ext === 'mpd') ? 'dash' : (ext === 'flv' ? 'flv' : 'hls');
+      if (seen[abs]) return;
+      seen[abs] = kind;
+      var payload = JSON.stringify({
+        u: abs, k: kind, via: via || '',
+        ua: navigator.userAgent || '',
+        r: base
+      });
+      try {
+        window.top.flutter_inappwebview.callHandler('omStream', payload);
+      } catch(e) {
+        try { window.flutter_inappwebview.callHandler('omStream', payload); }
+          catch(e2) {}
+      }
+    } catch(e) {}
+  }
+  function install(win){
+    var w = win;
+    try {
+      if (!w || w.__omSniffed) return;
+      // 跨域 frame：访问其属性即抛异常，下面标记也写不进去，直接跳过
+      var doc = w.document;
+      w.__omSniffed = true;
+
+      var XO = w.XMLHttpRequest && w.XMLHttpRequest.prototype.open;
+      if (XO) {
+        w.XMLHttpRequest.prototype.open = function(method, url){
+          try { report(url, 'xhr', w); } catch(e) {}
+          return XO.apply(this, arguments);
+        };
+      }
+      var of = w.fetch;
+      if (of) {
+        w.fetch = function(input, init){
+          try {
+            var u = (typeof input === 'string') ? input
+                : (input && input.url) ? input.url : null;
+            if (u) report(u, 'fetch', w);
+          } catch(e) {}
+          return of.apply(this, arguments);
+        };
+      }
+      // 嗅探脚本安装之前页面已经发出的媒体请求：从资源计时补捞
+      function scanPerf(){
+        try {
+          var es = w.performance.getEntriesByType('resource');
+          for (var i=0;i<es.length;i++) report(es[i].name, 'perf', w);
+        } catch(e) {}
+      }
+      scanPerf();
+      w.setInterval(scanPerf, 1500);
+
+      // 直接挂在 <video src>/currentSrc 上的非 MSE 直链
+      function scanVideos(){
+        try {
+          var vs = doc ? doc.querySelectorAll('video') : [];
+          for (var i=0;i<vs.length;i++){
+            try {
+              var s = vs[i].src || vs[i].currentSrc;
+              if (s) report(s, 'video', w);
+            } catch(e){}
+          }
+        } catch(e) {}
+      }
+      w.setInterval(scanVideos, 2000);
+      scanVideos();
+    } catch(e) {}
+  }
+  function walk(){
+    install(window);
+    try {
+      var fs = document.querySelectorAll('iframe,frame');
+      for (var i=0;i<fs.length;i++){
+        try {
+          var iw = fs[i].contentWindow;
+          if (iw) { install(iw); }
+        } catch(e) {}
+      }
+    } catch(e) {}
+  }
+  walk();
+  // 播放器 iframe 可能晚于本脚本创建，周期补装
+  setInterval(walk, 2000);
+})();
+''';
+
   @override
   void initState() {
     super.initState();
@@ -2748,6 +2873,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       await c.evaluateJavascript(source: _noContextMenuJs);
       await c.evaluateJavascript(source: _cssJs);
       await c.evaluateJavascript(source: _bootJs);
+      await c.evaluateJavascript(source: _sniffJs);
     } catch (_) {
       // 页面尚未就绪时注入可能失败，轮询探测会在后续重试
     }
@@ -2852,6 +2978,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
                 return null;
               },
             );
+            // 网页 XHR/fetch 嗅探到的真实媒体流（芒果TV 等）
+            controller.addJavaScriptHandler(
+              handlerName: 'omStream',
+              callback: (args) {
+                if (args.isNotEmpty) _onSniffedStream(args.first);
+                return null;
+              },
+            );
             // 注册控制桥：执行 JS（播放/暂停）与网页截图
             widget.onBridgeAttached(
               eval: (js) => controller.evaluateJavascript(source: js),
@@ -2886,6 +3020,74 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             }
           },
         ),
+        // 嗅探到页面真实媒体流：浮出「用内置播放器全屏播放」入口
+        // （芒果TV 等自研播放器站点）。仅网页在前台时可见。
+        if (widget.foreground && _sniffUrl != null && !_sniffDismissed)
+          Positioned(
+            right: 24,
+            bottom: 28,
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.72),
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    InkWell(
+                      borderRadius: BorderRadius.circular(22),
+                      onTap: _switchSniffedToNative,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.switch_video,
+                                color: Colors.greenAccent, size: 18),
+                            const SizedBox(width: 8),
+                            const Text('用内置播放器全屏播放',
+                                style: TextStyle(
+                                    color: Colors.white, fontSize: 13)),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.white12,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                (_sniffKind ?? '').toUpperCase(),
+                                style: const TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(22),
+                      onTap: () =>
+                          setState(() => _sniffDismissed = true),
+                      child: const Padding(
+                        padding:
+                            EdgeInsets.fromLTRB(4, 10, 12, 10),
+                        child: Icon(Icons.close,
+                            size: 15, color: Colors.white54),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         // 等待层：仅后台缓冲期间显示（推到前台后即使页面慢也露出来，
         // 避免「正在打开网页频道」永久转圈把用户锁死）
         if (!_loaded && _error == null && !_runtimeMissing && !widget.foreground)

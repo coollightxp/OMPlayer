@@ -148,6 +148,20 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       if (cur != null) {
         // 收藏夹非空时在 L1 占第 0 项，真实分类索引整体 +1
         final favOffset = favs.isEmpty ? 0 : 1;
+        // 当前播放频道在收藏夹中：优先定位到「我的收藏」
+        // （含下次启动恢复播放收藏频道的场景）
+        final favIdx = favs.indexWhere((ch) => ch.id == cur.id);
+        if (favIdx >= 0) {
+          _favCategoryCache = ChannelCategory(
+              id: _favCategoryId, name: '我的收藏', channels: favs);
+          setState(() => _selectedCategory = _favCategoryCache);
+          _kbCategoryIndex = 0;
+          _kbChannelIndex = favIdx.clamp(0, favs.length - 1);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _scrollToCurrentChannel();
+          });
+          return;
+        }
         var catIndex = 0;
         for (final cat in controller.categories) {
           if (cat.channels.any((ch) => ch.id == cur.id)) {

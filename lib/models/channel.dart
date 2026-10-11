@@ -46,6 +46,10 @@ class Channel {
   /// 例如 APTV 源必须带 AptvPlayer-UA，否则服务器返回 404）
   final String userAgent;
 
+  /// 播放该频道流时要求的 HTTP Referer（网页嗅探出的真实流通常
+  /// 校验 Referer/Origin 防盗链）
+  final String httpReferer;
+
   /// 默认播放源（第一个）
   String get streamUrl => streamUrls.first;
 
@@ -75,6 +79,7 @@ class Channel {
     this.tvgName = '',
     this.groupTitle = '',
     this.userAgent = '',
+    this.httpReferer = '',
   });
 
   Channel copyWith({
@@ -88,6 +93,7 @@ class Channel {
     String? tvgName,
     String? groupTitle,
     String? userAgent,
+    String? httpReferer,
   }) {
     return Channel(
       id: id ?? this.id,
@@ -100,6 +106,7 @@ class Channel {
       tvgName: tvgName ?? this.tvgName,
       groupTitle: groupTitle ?? this.groupTitle,
       userAgent: userAgent ?? this.userAgent,
+      httpReferer: httpReferer ?? this.httpReferer,
     );
   }
 }

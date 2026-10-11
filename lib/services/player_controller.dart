@@ -33,6 +33,7 @@ import 'source_manager.dart';
 import 'web_env.dart';
 import 'web_launch.dart';
 import 'network_monitor.dart';
+import 'osd_bus.dart';
 
 /// 播放器状态
 enum PlayerState { idle, loading, playing, paused, error, ended, waitingForNetwork }
@@ -1081,6 +1082,54 @@ class PlayerController extends ChangeNotifier {
     });
   }
 
+  /// 嗅探转原生播放失败时回退用的原网页频道
+  Channel? _lastWebChannel;
+  bool _sniffedFromWeb = false;
+
+  /// 把网页内 XHR/fetch 嗅探到的真实媒体流（m3u8/mpd/flv 等）
+  /// 交给内置原生播放器全屏播放（完整遥控器/进度/录制交互）。
+  /// 流普遍校验 Referer 防盗链，UA 需与网页环境一致。
+  Future<void> playSniffedWebStream({
+    required String url,
+    required String referer,
+    String? userAgent,
+  }) async {
+    final web =
+        (_currentChannel != null && _currentChannel!.isWebPage)
+            ? _currentChannel
+            : null;
+    _lastWebChannel = web;
+    exitWebPage();
+    const desktopUa =
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    final ch = Channel(
+      id: 'sniff_${DateTime.now().millisecondsSinceEpoch}',
+      name: web?.name ?? '网页视频',
+      logoUrl: web?.logoUrl ?? '',
+      streamUrls: [url],
+      categoryId: web?.categoryId ?? '',
+      userAgent: (userAgent != null && userAgent.trim().isNotEmpty)
+          ? userAgent.trim()
+          : desktopUa,
+      httpReferer: referer,
+    );
+    _sniffedFromWeb = true;
+    await playChannel(ch);
+  }
+
+  /// 嗅探流原生播放失败：提示并自动回退到原网页继续观看
+  void _sniffPlaybackFailed() {
+    if (!_sniffedFromWeb) return;
+    _sniffedFromWeb = false;
+    final web = _lastWebChannel;
+    OsdBus.show('内置播放器无法播放该流（可能加密），返回网页观看',
+        icon: Icons.language);
+    if (web != null) {
+      Future(() => _openWebPageChannel(web));
+    }
+  }
+
   /// 换台/退出网页时复位网页录制状态（旧 WebView 销毁后 JS 上下文
   /// 随之消失，无法再取回末尾分块，已落盘部分保留为可用文件）
   void _resetWebRecording() {
@@ -1190,6 +1239,10 @@ class PlayerController extends ChangeNotifier {
     if (channel.userAgent.trim().isNotEmpty) {
       headers['User-Agent'] = channel.userAgent.trim();
     }
+    // 网页嗅探出的真实流普遍校验 Referer 防盗链
+    if (channel.httpReferer.trim().isNotEmpty) {
+      headers['Referer'] = channel.httpReferer.trim();
+    }
 
     // ExoPlayer（安卓）不嗅探内容：live.php?id=... 这类脚本入口 302 跳到
     // m3u8，没有后缀又没有显式 MIME 时会被当作 progressive 文件解析而失败。
@@ -1283,8 +1336,13 @@ class PlayerController extends ChangeNotifier {
       await WakelockPlus.enable();
 
       _state = PlayerState.playing;
-      // 记录当前频道，下次启动时恢复
-      await _saveLastChannel();
+      // 嗅探流起播成功：清回退标记
+      _sniffedFromWeb = false;
+      // 记录当前频道，下次启动时恢复（嗅探临时频道的 URL 带时效 token，
+      // 不持久化，避免下次启动恢复一个失效地址）
+      if (!_currentChannel!.id.startsWith('sniff_')) {
+        await _saveLastChannel();
+      }
     } on TimeoutException {
       if (gen != _playGeneration) {
         discardLate();
@@ -1311,6 +1369,10 @@ class PlayerController extends ChangeNotifier {
         // 不再一直显示"已连接"或等待
         dlnaService.clearCurrentMedia();
       }
+      if (_sniffedFromWeb) {
+        _sniffPlaybackFailed();
+        return;
+      }
       _state = PlayerState.error;
     } catch (e) {
       if (gen != _playGeneration) {
@@ -1326,6 +1388,10 @@ class PlayerController extends ChangeNotifier {
       }
       if (_isCasting) {
         dlnaService.clearCurrentMedia();
+      }
+      if (_sniffedFromWeb) {
+        _sniffPlaybackFailed();
+        return;
       }
       _state = PlayerState.error;
     }
@@ -1346,6 +1412,10 @@ class PlayerController extends ChangeNotifier {
       // 播放中途出错且有备用源时自动切换
       if (hasNextSource) {
         nextSource();
+        return;
+      }
+      if (_sniffedFromWeb) {
+        _sniffPlaybackFailed();
         return;
       }
       _state = PlayerState.error;
