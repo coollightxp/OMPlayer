@@ -124,14 +124,37 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       _categoryKeys.clear();
       final controller = context.read<PlayerController>();
       final cur = controller.currentChannel;
+      final favs = controller.buildFavoriteChannels();
+
+      // 上次停留在「我的收藏」：收藏夹仍非空时保持收藏夹层级，
+      // 框选对齐刚播放的收藏频道；收藏已清空才退回普通分类定位
+      if (_selectedCategory?.id == _favCategoryId && favs.isNotEmpty) {
+        _kbCategoryIndex = 0;
+        final favIdx = cur == null
+            ? -1
+            : favs.indexWhere((ch) => ch.id == cur.id);
+        _kbChannelIndex =
+            favIdx >= 0 ? favIdx.clamp(0, favs.length - 1) : 0;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollToCurrentChannel();
+        });
+        return;
+      }
+      if (_selectedCategory?.id == _favCategoryId) {
+        // 收藏夹已空：退回第一级
+        _selectedCategory = null;
+      }
+
       if (cur != null) {
+        // 收藏夹非空时在 L1 占第 0 项，真实分类索引整体 +1
+        final favOffset = favs.isEmpty ? 0 : 1;
         var catIndex = 0;
         for (final cat in controller.categories) {
           if (cat.channels.any((ch) => ch.id == cur.id)) {
             if (_selectedCategory != cat) {
               setState(() => _selectedCategory = cat);
             }
-            _kbCategoryIndex = catIndex;
+            _kbCategoryIndex = catIndex + favOffset;
             _kbChannelIndex = cat.channels
                 .indexWhere((ch) => ch.id == cur.id)
                 .clamp(0, cat.channels.length - 1);

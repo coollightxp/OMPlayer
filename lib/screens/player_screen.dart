@@ -119,10 +119,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.147';
+  static const String _appVersion = '1.0.148';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
-  int _exitDialogFocusIndex = 0; // 0=取消, 1=退出, 2=关机
+  int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
   bool _exitDialogOpen = false;
 
   /// 对话框内部 StatefulBuilder 的刷新句柄：遥控器 ←/→ 改焦点后
@@ -842,11 +842,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             _exitDialogRefresh = setDialogState;
-            // 自绘退出面板：左侧放大的程序图标，右侧上部为程序名称与
-            // 版本号，文字下方为直角矩形按钮（取消/退出/关机）。
+            // 自绘退出面板：左侧程序图标贴左边缘；右侧剩余区域内
+            // 上部为程序名称/版本两行，下部为「返回/退出/关机」三个
+            // 方块图标按钮（无文字，鼠标悬停或遥控器框选时在方块下方
+            // 显示对应文字）；名称、版本与三个图标在右侧区域整体居中。
             // 安卓电视逻辑分辨率较小（常见 960x540），按屏宽等比缩小面板
             final double panelScale =
                 (MediaQuery.sizeOf(ctx).width / 1280).clamp(0.55, 1.0);
+            final options = <_ExitOption>[
+              const _ExitOption(
+                  Icons.arrow_back, '返回', Colors.blueAccent),
+              const _ExitOption(Icons.logout, '退出', Colors.redAccent),
+              // 关闭系统仅 Windows/Linux 原生显示
+              if (_canShutdownSystem)
+                const _ExitOption(
+                    Icons.power_settings_new, '关机', Colors.orangeAccent),
+            ];
             return Dialog(
               backgroundColor: const Color(0xFF12151A),
               shape: RoundedRectangleBorder(
@@ -854,83 +865,72 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                 side: const BorderSide(color: Colors.white24),
               ),
               child: SizedBox(
-                // 外层按比例给尺寸，内层 FittedBox 把 620 宽的面板整体缩放
                 width: 620 * panelScale,
-                height: 240 * panelScale,
+                height: 224 * panelScale,
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
                   child: SizedBox(
                     width: 620,
-                    child: Padding(
-                      // 图标+文字+按钮整块在弹窗内水平居中，左右留白对称；
-                      // 用 Column(min) 收紧高度——Center 在 Dialog 的松散
-                      // 高度约束下会把弹窗撑到近乎全屏高（内容缩在中间）
-                      padding: const EdgeInsets.all(34),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                    height: 224,
+                    child: Row(
+                      children: [
+                        // 左侧程序图标：贴近左边缘，仅留小边距
+                        Padding(
+                          padding: const EdgeInsets.only(left: 22),
+                          child: Container(
+                            width: 120,
+                            height: 120,
+                            clipBehavior: Clip.antiAlias,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Image.asset(
+                              'branding/icon_1024.png',
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        ),
+                        // 右侧剩余区域：名称/版本 + 三方块按钮，整体居中
+                        Expanded(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
-                              // 左侧放大程序图标
-                              Container(
-                                width: 136,
-                                height: 136,
-                                clipBehavior: Clip.antiAlias,
-                                decoration: BoxDecoration(
-                                  color: Colors.white10,
-                                  borderRadius: BorderRadius.circular(18),
-                                ),
-                                child: Image.asset(
-                                  'branding/icon_1024.png',
-                                  fit: BoxFit.cover,
+                              const Text(
+                                'OMPlayer',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
-                              const SizedBox(width: 48),
-                              // 右侧：名称 / 版本 / 按钮
-                              Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                              const SizedBox(height: 4),
+                              Text(
+                                '版本 $_appVersion',
+                                style: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              const SizedBox(height: 22),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  const Text(
-                                    'OMPlayer',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 27,
-                                      fontWeight: FontWeight.bold,
+                                  for (var i = 0; i < options.length; i++)
+                                    Padding(
+                                      padding: EdgeInsets.only(
+                                          right: i == options.length - 1
+                                              ? 0
+                                              : 26),
+                                      child: _buildExitIconOption(
+                                          ctx, i, options[i]),
                                     ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '版本 $_appVersion',
-                                    style: const TextStyle(
-                                      color: Colors.white54,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 32),
-                                  Wrap(
-                                    spacing: 14,
-                                    runSpacing: 12,
-                                    children: [
-                                      _buildExitOption(
-                                          ctx, 0, '取消', Colors.blueAccent),
-                                      _buildExitOption(
-                                          ctx, 1, '退出', Colors.redAccent),
-                                      // 关闭系统仅 Windows/Linux 原生显示
-                                      if (_canShutdownSystem)
-                                        _buildExitOption(
-                                            ctx, 2, '关机', Colors.orangeAccent),
-                                    ],
-                                  ),
                                 ],
                               ),
                             ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -974,39 +974,69 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 退出框按钮数（2 或 3）
   int get _exitOptionCount => _canShutdownSystem ? 3 : 2;
 
-  /// 构建退出框中的一个直角矩形按钮（不取键盘焦点，高亮由全局按键维护）
-  Widget _buildExitOption(
-      BuildContext ctx, int index, String label, Color color) {
+  /// 构建退出框中的一个方块图标按钮（不取键盘焦点，高亮由全局按键维护）。
+  /// 方块仅显示图标；鼠标悬停或遥控器框选时，方块下方显示文字标签。
+  Widget _buildExitIconOption(
+      BuildContext ctx, int index, _ExitOption opt) {
     final selected = _exitDialogFocusIndex == index;
-    return Focus(
-      canRequestFocus: false,
-      child: TextButton(
+    final color = opt.color;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) {
+        // 鼠标移入即框选该项（与遥控器左右移动等效），下方显示文字
+        if (_exitDialogFocusIndex != index) {
+          _exitDialogFocusIndex = index;
+          _exitDialogRefresh?.call(() {});
+        }
+      },
+      child: GestureDetector(
         // 一次性守卫：先摘标志再 pop，鼠标点击与遥控器 OK 都不会双 pop
-        onPressed: () {
+        onTap: () {
           _exitDialogOpen = false;
           Navigator.of(ctx).pop<int?>(index == 0 ? null : index);
         },
-        style: TextButton.styleFrom(
-          backgroundColor: selected
-              ? color.withOpacity(0.22)
-              : Colors.white.withOpacity(0.04),
-          shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.zero,
-          ),
-          side: BorderSide(
-            color: selected ? color : Colors.white24,
-            width: selected ? 2.0 : 1.0,
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? color : Colors.white70,
-            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-          ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 58,
+              height: 58,
+              decoration: BoxDecoration(
+                color: selected
+                    ? color.withOpacity(0.22)
+                    : Colors.white.withOpacity(0.04),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: selected ? color : Colors.white24,
+                  width: selected ? 2.0 : 1.0,
+                ),
+              ),
+              child: Icon(
+                opt.icon,
+                color: selected ? color : Colors.white70,
+                size: 28,
+              ),
+            ),
+            // 标签行固定高度：仅框选/悬停项显示文字，避免布局跳动
+            SizedBox(
+              height: 20,
+              child: Center(
+                child: selected
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          opt.label,
+                          style: TextStyle(
+                            color: color,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -2999,4 +3029,12 @@ class _ClockOverlayState extends State<ClockOverlay> {
       ),
     );
   }
+}
+
+/// 退出确认面板的一个操作项（方块图标按钮）
+class _ExitOption {
+  final IconData icon;
+  final String label;
+  final Color color;
+  const _ExitOption(this.icon, this.label, this.color);
 }

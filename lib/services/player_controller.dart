@@ -30,6 +30,7 @@ import 'native_capture.dart';
 import 'remote_admin_service.dart';
 import 'reservation_manager.dart';
 import 'source_manager.dart';
+import 'web_env.dart';
 import 'web_launch.dart';
 import 'network_monitor.dart';
 
@@ -1069,6 +1070,15 @@ class PlayerController extends ChangeNotifier {
     WinHotkeys().setCursorHide(false);
     WinHotkeys().setWebForward(false);
     notifyListeners();
+    // WebView 平台视图销毁后清理其用户数据目录：网页视频播放久了
+    // 缓存膨胀会让后续频道读入变慢（用户实测删除目录后立即变快）。
+    // InPrivate 下文件关闭即释放，可整个删除；仍有锁定时
+    // cleanWebView2Cache 内部退化为只删缓存子目录，下次启动再全删。
+    Timer(const Duration(milliseconds: 1500), () {
+      try {
+        cleanWebView2Cache();
+      } catch (_) {}
+    });
   }
 
   /// 换台/退出网页时复位网页录制状态（旧 WebView 销毁后 JS 上下文
@@ -1983,6 +1993,9 @@ class PlayerController extends ChangeNotifier {
 
   /// 切换节目预约状态
   Future<bool> toggleReservation(EpgProgram program) async {
+    // 防御：已结束或正在直播的节目不允许预约（UI 已拦，
+    // 此处兜底避免任何残留调用写入无效预约）
+    if (program.isPast || program.isNowPlaying) return false;
     // 找到对应频道，记录：时间、节目名、频道名、播放地址（全部备用源）、
     // 台标、EPG 标识。到点后直接用记录的地址播放，避免按名称反查跳错台。
     // 注意：预约只能用「精确匹配」的频道，匹配不到时以当前频道兜底

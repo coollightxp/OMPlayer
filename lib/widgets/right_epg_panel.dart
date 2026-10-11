@@ -131,6 +131,10 @@ class RightEpgPanelState extends State<RightEpgPanel> {
       OsdBus.show('该节目已结束，无法预约', icon: Icons.alarm_off);
       return;
     }
+    if (program.isNowPlaying) {
+      OsdBus.show('该节目正在直播，无需预约', icon: Icons.play_circle_fill);
+      return;
+    }
     final controller = context.read<PlayerController>();
     final reserved = controller.isProgramReserved(program);
     controller.toggleReservation(program);
@@ -286,8 +290,11 @@ class RightEpgPanelState extends State<RightEpgPanel> {
             ),
           );
         }
-        // 打开后首次构建：键盘焦点落在当前正在播放的节目
-        if (!_kbInitialized) {
+        // 打开后首次构建：键盘焦点落在当前正在播放的节目。
+        // 必须要求面板处于打开状态：面板常驻树中（仅偏移隐藏），
+        // 程序启动/EPG 后台刷新时也会 build，若不挡会在用户真正
+        // 打开前就把 _kbInitialized 置位，导致打开时框选不在直播条
+        if (!_kbInitialized && widget.isOpen) {
           _kbInitialized = true;
           final nowIdx = epg.indexWhere((p) => p.isNowPlaying);
           _kbIndex = nowIdx >= 0 ? nowIdx.clamp(0, epg.length - 1) : 0;
@@ -358,7 +365,8 @@ class _EpgProgramTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final isNow = program.isNowPlaying;
     final isPast = program.isPast;
-    final canReserve = !isPast;
+    // 已结束和正在直播的节目都不可预约（直播无需预约）
+    final canReserve = !isPast && !isNow;
 
     // 节目条目本身不可点击（避免误触切台）；
     // 只有右侧的“预约”按钮可操作

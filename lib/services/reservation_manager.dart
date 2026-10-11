@@ -109,15 +109,22 @@ class ReservationManager {
 
   Future<void> _checkReservations() async {
     final now = DateTime.now();
+    // 触发后即删除的一次性预约（触发完成后预约按钮归零，
+    // 不可对同一节目重复预约/重复触发）
+    final fired = <String>[];
     for (final r in _reservations) {
       if (_triggeredIds.contains(r.id)) continue;
-      // 到达开始时间（允许 1 分钟误差）
+      // 到达开始时间（允许 30 秒提前量）
       if (now.isAfter(r.startTime.subtract(const Duration(seconds: 30))) &&
           now.isBefore(r.endTime)) {
         _triggeredIds.add(r.id);
         await _saveTriggered();
+        fired.add(r.id);
         onReservationTriggered?.call(r);
       }
+    }
+    for (final id in fired) {
+      await removeReservation(id);
     }
   }
 

@@ -20,6 +20,9 @@ String? webEnvOfficialVersion;
 String? _resolvedUserDataFolder;
 
 const _browserArgs =
+    // InPrivate：用户数据/缓存写入临时位置，WebView2 退出后自动丢弃，
+    // 不累积磁盘缓存（长时间播放网页视频后读入变慢的根因）
+    '--inprivate '
     '--disk-cache-size=268435456 --autoplay-policy=no-user-gesture-required';
 
 // ==================== 用户数据目录 ====================
@@ -309,22 +312,39 @@ Future<void> initWebViewEnvironment() async {
 
 // ==================== 缓存清理 ====================
 
-/// 清理 WebView2 纯缓存目录（Cache / Code Cache / GPUCache / Service Worker）。
-/// 保留 Cookies / Local Storage 等登录态。
+/// 清理 WebView2 用户数据目录。
+///
+/// InPrivate 模式下数据本应在退出时丢弃，但部分版本仍会在 UDF 留下
+/// 缓存/锁文件；播放网页视频久了目录膨胀会导致下次读入明显变慢。
+/// 策略（按场景调用，均在 WebView 未持有该目录或已销毁后）：
+/// 1. 优先整个删除 UDF 目录（启动时环境尚未创建，无锁定）；
+/// 2. 个别文件被残留进程锁定时退化为只删缓存类子目录。
 void cleanWebView2Cache() {
   if (!Platform.isWindows) return;
   final sep = Platform.pathSeparator;
   final exeFile = File(Platform.resolvedExecutable);
   final exeName = exeFile.path.split(sep).last.replaceAll('.exe', '');
-  final legacy = '${exeFile.parent.path}$sep$exeName.WebView2';
   final folders = <String>{
     _resolvedUserDataFolder ?? _resolveUserDataFolder(),
-    legacy, // 旧版本遗留目录
+    '${exeFile.parent.path}$sep$exeName.WebView2', // 旧版本/默认位置遗留
   };
-  const cacheDirs = ['Cache', 'Code Cache', 'GPUCache', 'Service Worker'];
+  const cacheDirs = [
+    'Cache',
+    'Code Cache',
+    'GPUCache',
+    'Service Worker',
+    'blob_storage',
+    'IndexedDB',
+  ];
   for (final path in folders) {
     final wvDir = Directory(path);
     if (!wvDir.existsSync()) continue;
+    // 先尝试整体删除（启动时调用，正常无锁）
+    try {
+      wvDir.deleteSync(recursive: true);
+      continue;
+    } catch (_) {}
+    // 退化：仅删缓存类子目录，锁定的单个文件跳过
     for (final name in cacheDirs) {
       final d = Directory('$path$sep$name');
       if (d.existsSync()) {
