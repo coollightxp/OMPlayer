@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show Icons;
 import 'package:flutter/widgets.dart';
 import 'package:video_player/video_player.dart';
 import 'package:screen_brightness/screen_brightness.dart';

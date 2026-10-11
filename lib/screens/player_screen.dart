@@ -120,7 +120,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.149';
+  static const String _appVersion = '1.0.150';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
