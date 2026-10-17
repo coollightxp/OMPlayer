@@ -121,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.154';
+  static const String _appVersion = '1.0.155';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2808,17 +2808,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 })();
 ''';
 
-  /// 媒体流深度嗅探（借鉴 TVBox 系 live.parse.js 方案）：
-  /// 除劫持 XHR/fetch 请求地址外，还扫描响应体（JSON/清单文本）、
-  /// WebSocket 帧、URL.createObjectURL(Blob) 合成清单、TextDecoder、
-  /// String.fromCharCode / Array.join / indexOf / atob 拼装、
-  /// HTMLMediaElement.src / setAttribute('src')、Shadow DOM 轮询、
-  /// 内联 <script> 硬编码地址，并劫持 Worker 构造函数把嗅探器前置
-  /// 注入 worker 线程（清单解析/解密在 worker 里做的播放器）。
-  /// 捕获到的真实流地址（m3u8/mpd/http-flv）统一走既有 omStream
-  /// JSON 协议上报，Dart 侧聚合决策自动切内置播放器全屏播放。
-  /// 必须在页面其他 JS 之前注入（AT_DOCUMENT_START UserScript），
-  /// 否则页面已持有原始 fetch/JSON.parse 引用，hook 无效；
+  /// 媒体流轻嗅探：只上报请求地址，不读响应体、不 hook
+  /// JSON.parse/Worker/WebSocket/拼装函数——深度 hook 会拖垮页面
+  /// 自身播放器（咪咕/央视频 MSE 卡顿甚至不可用）。对齐 TVBox 系
+  /// webview:// 纯网页播放策略：页面播放优先，轻量地址嗅探用于
+  /// 自动/手动切内置。捕获 m3u8/mpd/http-flv 走 omStream JSON 协议。
+  /// document-start 注入保证 fetch/XHR 包装先于页面 JS；
   /// __omSniffed 哨兵保证只安装一次，运行时 _inject() 重注入是兜底。
   static const String _sniffJs = r'''
 (function(){
@@ -2828,9 +2823,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   var MEDIA = /\.(m3u8|m3u|mpd|flv)(?:$|[?#/])/i;
   // 明显是广告/统计/日志的地址不采用
   var NOISE = /\/(ad|ads|advert|dsp|stat|stats|track|tracking|log|logs|report|metrics)(?:\/|$)/i;
-  var MAX_SCAN = 512 * 1024;
 
-  // ---- 主文档上报出口：保持 omStream 既有 JSON 协议 {u,k,via,ua,r} ----
+  // ---- 上报出口：omStream JSON 协议 {u,k,via,ua,r} ----
   var lastEmit = Object.create(null);
   var emitCount = 0;
   function report(u, via, base){
@@ -2848,529 +2842,139 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       var kind = (ext === 'mpd') ? 'dash' : (ext === 'flv' ? 'flv' : 'hls');
       var now = Date.now();
       // 直播清单会被持续轮询：3 秒节流去重（不永久去重，
-      // Dart 侧靠重复计数识别当前正在播放的主流，一次性噪声沉底）
-      if (now - (lastEmit[abs] || 0) < 3000) return;
+      // Dart 侧按"持续轮询的主流"语义计数）
+      if (lastEmit[abs] && now - lastEmit[abs] < 3000) return;
       lastEmit[abs] = now;
-      if (++emitCount > 4096) { lastEmit = Object.create(null); emitCount = 0; }
-      var payload = JSON.stringify({
-        u: abs, k: kind, via: via || '',
-        ua: navigator.userAgent || '',
-        r: base
-      });
-      try {
-        window.top.flutter_inappwebview.callHandler('omStream', payload);
-      } catch(e) {
-        try { window.flutter_inappwebview.callHandler('omStream', payload); }
-          catch(e2) {}
+      if (++emitCount > 256) { lastEmit = Object.create(null); emitCount = 0; }
+      var bridge = window.top && window.top.flutter_inappwebview;
+      if (bridge && bridge.callHandler) {
+        bridge.callHandler('omStream', JSON.stringify({
+          u: abs, k: kind, via: via || 'dom',
+          ua: navigator.userAgent || '', r: base
+        }));
       }
     } catch(e) {}
   }
 
-  // ==================== 深度嗅探安装器（主文档与 Worker 复用） ====================
-  // reportFn(u, via) 由调用方按上下文注入：
-  //   主文档 → omStream 桥；Worker → self.postMessage 回主线程转发
-  //   （worker 作用域没有 flutter_inappwebview 桥）。
-  // installSource 为本函数源码字符串，供（嵌套）Worker 复制安装。
-  // origBase 仅 Worker 场景传入：本 worker 原始脚本的绝对 URL，
-  // 用于修复 blob 重建后相对地址（fetch/XHR/importScripts）的解析基准。
-  function installDeep(reportFn, installSource, origBase) {
-    var scope = (typeof self !== 'undefined') ? self : this;
-    if (scope.__omDeepInstalled) return;
-    scope.__omDeepInstalled = true;
+  // hook 伪装：页面检测函数源码时显示为原生代码
+  function spoof(fn, original){
+    try {
+      fn.toString = function(){
+        return 'function ' + (original.name || '') + '() { [native code] }';
+      };
+    } catch(e) {}
+  }
 
-    // 捕获原始引用（务必在覆盖前，内部一律用这些引用，避免 hook 自触发递归）
-    var _JSONparse = JSON.parse;
-    var _atob = (typeof scope.atob === 'function') ? scope.atob : null;
-    var _fromCharCode = String.fromCharCode;
-    var _arrJoin = Array.prototype.join;
-    var _strIndexOf = String.prototype.indexOf;
-
-    var RE_URL = /(?:https?:)?\/\/[^\s"'<>\\]+\.(?:m3u8|m3u|mpd|flv)(?:[?#][^\s"'<>\\]*)?/gi;
-    var reHasScheme = /^[a-z][a-z0-9+.\-]*:/i;
-
-    function isUrl(s){ return typeof s === 'string' && /^https?:\/\/.+/i.test(s); }
-    function toAbs(u){
-      // worker 场景把相对 url 修回绝对（origBase 为空则原样，主文档不受影响）
-      if (!origBase || typeof u !== 'string' || u === '' || reHasScheme.test(u)) return u;
-      try { return new URL(u, origBase).href; } catch(e) { return u; }
-    }
-    // 文本里的绝对/协议相对媒体地址全部捞出上报
-    function extractUrls(text, via){
-      if (!text || typeof text !== 'string') return;
-      var m;
-      RE_URL.lastIndex = 0;
-      while ((m = RE_URL.exec(text)) !== null) {
-        var u = m[0];
-        if (u.substring(0, 2) === '//') {
-          var proto = 'https:';
-          try { proto = (scope.location && scope.location.protocol) || 'https:'; } catch(e) {}
-          u = proto + u;
-        }
-        reportFn(u, via || 'scan');
-      }
-    }
-    function scanText(text, method, srcUrl){
-      if (!text || typeof text !== 'string') return;
-      if (text.length > MAX_SCAN) text = text.substring(0, MAX_SCAN);
-      // GET 响应本身是清单：直接上报来源地址（播放器按来源解析相对分片，最稳）
-      if (srcUrl && (method === undefined || method === 'GET')) {
-        if (text.substring(0, 7) === '#EXTM3U' ||
-            text.toLowerCase().indexOf('urn:mpeg:dash:schema:mpd') >= 0) {
-          reportFn(srcUrl, 'resp');
-          return;
-        }
-      }
-      extractUrls(text, 'scan');
-      if (text.charAt(0) === '{' || text.charAt(0) === '[') {
-        var j = null;
-        try { j = _JSONparse(text); } catch(e) {}
-        if (j) walkJson(j, 0);
-      }
-    }
-    function walkJson(data, depth){
-      if (!data || typeof data !== 'object' || depth > 12) return;
-      for (var key in data) {
-        var v;
-        try { v = data[key]; } catch(e) { continue; }
-        if (typeof v === 'object' && v !== null) { walkJson(v, depth + 1); continue; }
-        if (typeof v === 'string') {
-          if (isUrl(v) || v.substring(0, 2) === '//') { reportFn(v, 'json'); continue; }
-          if (v.indexOf('#EXTM3U') >= 0 ||
-              v.toLowerCase().indexOf('urn:mpeg:dash:schema:mpd') >= 0) {
-            extractUrls(v, 'json');
-          }
-        }
-      }
-    }
-    // 廉价二进制前缀判定：快速淘汰媒体分片（TS 同步字节 0x47 不在白名单）
-    function looksTextual(ab){
-      try {
-        var n = ab.byteLength < 64 ? ab.byteLength : 64;
-        var head = new Uint8Array(ab, 0, n);
-        var c = -1;
-        for (var i = 0; i < head.length; i++) {
-          var b = head[i];
-          if (b === 9 || b === 10 || b === 13 || b === 32 || b === 0xEF || b === 0xBB || b === 0xBF) continue;
-          c = b; break;
-        }
-        if (c < 0) return false;
-        return c === 35 || c === 123 || c === 91 || c === 60 ||
-               c === 104 || c === 72 || c === 100 || c === 68 || c === 117 || c === 85;
-      } catch(e) { return false; }
-    }
-    function scanArrayBuffer(ab, method, srcUrl){
-      try {
-        if (!ab || typeof ab.byteLength !== 'number') return;
-        if (ab.byteLength === 0 || ab.byteLength > MAX_SCAN || !looksTextual(ab)) return;
-        scanText(new TextDecoder().decode(ab), method, srcUrl);
-      } catch(e) {}
-    }
-    function readBlob(blob, method, srcUrl){
-      try {
-        if (blob && typeof blob.arrayBuffer === 'function') {
-          var b = (blob.size && blob.size > MAX_SCAN && typeof blob.slice === 'function')
-              ? blob.slice(0, MAX_SCAN) : blob;
-          b.arrayBuffer().then(function(ab){ scanArrayBuffer(ab, method, srcUrl); }).catch(function(){});
-        }
-      } catch(e) {}
-    }
-    function spoof(fn, original){
-      try { fn.toString = function(){ return original.toString(); }; } catch(e) {}
-    }
-
-    // ==================== hook: JSON.parse ====================
-    JSON.parse = function(){
-      var data = _JSONparse.apply(this, arguments);
-      try { walkJson(data, 0); } catch(e) {}
-      return data;
+  // ---- hook: XMLHttpRequest.open（只取地址，不碰响应） ----
+  try {
+    var _open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url){
+      try { report(url, 'xhr'); } catch(e) {}
+      return _open.apply(this, arguments);
     };
-    spoof(JSON.parse, _JSONparse);
+    spoof(XMLHttpRequest.prototype.open, _open);
+  } catch(e) {}
 
-    // ==================== hook: XMLHttpRequest ====================
-    if (typeof XMLHttpRequest !== 'undefined') {
-      var _xhrOpen = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function(method, url){
-        try {
-          if (typeof url === 'string') reportFn(toAbs(url), 'xhr');
-          var upMethod = (method || 'GET').toUpperCase();
-          this.addEventListener('readystatechange', function(){
-            try {
-              if (this.readyState !== 4 || this.status !== 200) return;
-              var src = this.responseURL || undefined;
-              var rt = this.responseType;
-              if (rt === 'arraybuffer' && this.response) { scanArrayBuffer(this.response, upMethod, src); return; }
-              if (rt === 'blob' && this.response) { readBlob(this.response, upMethod, src); return; }
-              if (typeof this.response === 'string' && this.response !== '') {
-                scanText(this.response, upMethod, src);
-              }
-            } catch(e) {}
-          });
-        } catch(e) {}
-        if (origBase && arguments.length >= 2) arguments[1] = toAbs(url);
-        return _xhrOpen.apply(this, arguments);
-      };
-      spoof(XMLHttpRequest.prototype.open, _xhrOpen);
-    }
-
-    // ==================== hook: fetch ====================
-    // 克隆门控必须保守：直播分段/无限流（http-flv）一旦 clone().arrayBuffer()
-    // 会被整段缓冲导致内存爆炸、页面卡死。只放行清单/JSON/文本类型；
-    // octet-stream 仅在 content-length 明确且够小（可能是清单）时才克隆。
-    function worthReading(response){
-      try {
-        var h = response.headers;
-        if (!h || typeof h.get !== 'function') return false;
-        var ct = (h.get('content-type') || '').toLowerCase();
-        if (ct.indexOf('mpegurl') >= 0 || ct.indexOf('dash') >= 0 ||
-            ct.indexOf('json') >= 0 || ct.indexOf('text') >= 0 ||
-            ct.indexOf('xml') >= 0 || ct.indexOf('javascript') >= 0) return true;
-        if (ct.indexOf('video/') >= 0 || ct.indexOf('audio/') >= 0 ||
-            ct.indexOf('image/') >= 0 || ct.indexOf('font') >= 0 ||
-            ct.indexOf('mp2t') >= 0) return false;
-        var cl = parseInt(h.get('content-length') || '0', 10);
-        return cl > 0 && cl <= MAX_SCAN;
-      } catch(e) { return false; }
-    }
-    var _fetch = scope.fetch;
+  // ---- hook: fetch（只取地址，不克隆响应） ----
+  try {
+    var _fetch = window.fetch;
     if (typeof _fetch === 'function') {
-      scope.fetch = function(input, init){
+      window.fetch = function(input){
         try {
-          var u = (typeof input === 'string') ? input : (input && input.url) ? input.url : null;
-          if (u) reportFn(toAbs(u), 'fetch');
-          if (origBase && typeof input === 'string') {
-            var abs = toAbs(input);
-            if (abs !== input) { input = abs; arguments[0] = abs; }
-          }
+          var u = (typeof input === 'string') ? input : (input && input.url);
+          if (u) report(u, 'fetch');
         } catch(e) {}
-        var p = _fetch.apply(this, arguments);
-        try {
-          p.then(function(response){
-            try {
-              if (!worthReading(response)) return;
-              var src = response.url || (typeof input === 'object' ? input.url : input);
-              var method = (init && init.method) ? init.method.toUpperCase() : 'GET';
-              response.clone().arrayBuffer().then(function(ab){ scanArrayBuffer(ab, method, src); }).catch(function(){});
-            } catch(e) {}
-          }).catch(function(){});
-        } catch(e) {}
-        return p;
+        return _fetch.apply(this, arguments);
       };
-      spoof(scope.fetch, _fetch);
+      spoof(window.fetch, _fetch);
     }
+  } catch(e) {}
 
-    // ==================== hook: WebSocket（部分站点用 WS 下发清单）====================
+  // ---- <video>/<source> 的 src：DOM 扫描 + src setter 钩子 ----
+  function collectMediaEl(v){
     try {
-      var _WS = scope.WebSocket;
-      if (_WS && !_WS.__omDeepHooked) {
-        var handleWsData = function(d){
-          try {
-            if (typeof d === 'string') scanText(d, 'GET');
-            else if (d instanceof ArrayBuffer) scanArrayBuffer(d, 'GET');
-            else if (typeof Blob !== 'undefined' && d instanceof Blob) readBlob(d, 'GET');
-          } catch(e) {}
-        };
-        var NewWS = function(url, protocols){
-          var ws = arguments.length > 1 ? new _WS(url, protocols) : new _WS(url);
-          try { ws.addEventListener('message', function(ev){ handleWsData(ev.data); }); } catch(e) {}
-          return ws;
-        };
-        NewWS.prototype = _WS.prototype;
-        NewWS.__omDeepHooked = true;
-        ['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k){
-          try { NewWS[k] = _WS[k]; } catch(e) {}
-        });
-        scope.WebSocket = NewWS;
-        spoof(NewWS, _WS);
+      var s = v.currentSrc || v.src;
+      if (s) {
+        report(s, 'videoel',
+            v.ownerDocument ? v.ownerDocument.location.href : location.href);
       }
     } catch(e) {}
-
-    // ==================== hook: URL.createObjectURL(Blob) 前端合成清单 ====================
-    try {
-      if (typeof URL !== 'undefined' && URL.createObjectURL && !URL.createObjectURL.__omDeepHooked) {
-        var _createObjURL = URL.createObjectURL;
-        var wrapCreate = function(obj){
-          try {
-            if (typeof Blob !== 'undefined' && obj instanceof Blob) {
-              var t = (obj.type || '').toLowerCase();
-              if (t === '' || t.indexOf('mpegurl') >= 0 || t.indexOf('dash') >= 0 ||
-                  t.indexOf('octet-stream') >= 0 || t.indexOf('video') >= 0 ||
-                  t.indexOf('mp2t') >= 0) {
-                readBlob(obj, 'GET');
-              }
-            }
-          } catch(e) {}
-          return _createObjURL.apply(this, arguments);
-        };
-        wrapCreate.__omDeepHooked = true;
-        URL.createObjectURL = wrapCreate;
-        spoof(wrapCreate, _createObjURL);
-      }
-    } catch(e) {}
-
-    // ==================== hook: HTMLMediaElement.src / setAttribute（仅主文档有 DOM）====================
-    function handleMediaSrc(v){
-      if (!v || typeof v !== 'string') return;
-      if (v.substring(0, 5) === 'blob:' || v.substring(0, 11) === 'javascript:') return;
-      reportFn(v, 'video');
+  }
+  try {
+    var proto = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
+    var desc = proto && Object.getOwnPropertyDescriptor(proto, 'src');
+    if (desc && desc.set && desc.configurable) {
+      Object.defineProperty(proto, 'src', {
+        configurable: true,
+        enumerable: desc.enumerable,
+        get: desc.get,
+        set: function(v){
+          try { report(v, 'srcset'); } catch(e) {}
+          return desc.set.call(this, v);
+        }
+      });
     }
-    try {
-      if (typeof HTMLMediaElement !== 'undefined') {
-        var proto = HTMLMediaElement.prototype;
-        var desc = Object.getOwnPropertyDescriptor(proto, 'src');
-        if (desc && desc.set && !proto.__omDeepSrcHooked) {
-          Object.defineProperty(proto, 'src', {
-            configurable: true, enumerable: desc.enumerable, get: desc.get,
-            set: function(v){ try { handleMediaSrc(v); } catch(e) {} return desc.set.call(this, v); }
-          });
-          proto.__omDeepSrcHooked = true;
+  } catch(e) {}
+  try {
+    var _setAttr = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value){
+      try {
+        var n = (name || '').toLowerCase();
+        if (n === 'src' && this && this.tagName === 'VIDEO') {
+          report(value, 'setattr');
         }
-      }
-      if (typeof Element !== 'undefined' && Element.prototype.setAttribute && !Element.prototype.__omDeepSetAttrHooked) {
-        var _setAttr = Element.prototype.setAttribute;
-        Element.prototype.setAttribute = function(name, value){
-          try {
-            if (name && name.toLowerCase() === 'src') {
-              var tag = this.tagName;
-              if (tag === 'VIDEO' || tag === 'SOURCE' || tag === 'AUDIO') handleMediaSrc(value);
-            }
-          } catch(e) {}
-          return _setAttr.apply(this, arguments);
-        };
-        Element.prototype.__omDeepSetAttrHooked = true;
-        spoof(Element.prototype.setAttribute, _setAttr);
-      }
-    } catch(e) {}
+      } catch(e) {}
+      return _setAttr.apply(this, arguments);
+    };
+    spoof(Element.prototype.setAttribute, _setAttr);
+  } catch(e) {}
 
-    // ==================== hook: TextDecoder.decode（清单流式解码）====================
-    try {
-      if (typeof TextDecoder !== 'undefined' && !TextDecoder.prototype.__omDeepHooked) {
-        var _decode = TextDecoder.prototype.decode;
-        TextDecoder.prototype.decode = function(){
-          var result = _decode.apply(this, arguments);
-          try {
-            if (typeof result === 'string' && result.substring(0, 7) === '#EXTM3U') {
-              extractUrls(result, 'decode');
-            }
-          } catch(e) {}
-          return result;
-        };
-        TextDecoder.prototype.__omDeepHooked = true;
-        spoof(TextDecoder.prototype.decode, _decode);
-      }
-    } catch(e) {}
-
-    // ==================== hook: String.fromCharCode（逐字符拼清单）====================
-    try {
-      var m3u8Buf = '';
-      String.fromCharCode = function(){
-        var data = _fromCharCode.apply(null, arguments);
-        var L = data.length;
-        if (L >= 7) {
-          var isM3u = (data.charCodeAt(0) === 35 && data.substring(0, 7) === '#EXTM3U')
-              || data.indexOf('#EXTINF:') >= 0;
-          if (isM3u) {
-            try {
-              m3u8Buf += data;
-              if (m3u8Buf.indexOf('#EXT-X-ENDLIST') >= 0) {
-                extractUrls(m3u8Buf.split('#EXT-X-ENDLIST')[0], 'fcc');
-                m3u8Buf = '';
-              } else if (m3u8Buf.length > 2 * 1024 * 1024) {
-                // 直播清单无 ENDLIST：达上限发一次再清空，防内存泄漏
-                extractUrls(m3u8Buf, 'fcc');
-                m3u8Buf = '';
-              }
-            } catch(e) {}
-          }
-        }
-        return data;
-      };
-      spoof(String.fromCharCode, _fromCharCode);
-    } catch(e) {}
-
-    // ==================== hook: Array.prototype.join（拼装清单）====================
-    try {
-      Array.prototype.join = function(sep){
-        var data = _arrJoin.call(this, sep);
-        if (data.length >= 7 && data.charCodeAt(0) === 35 && data.substring(0, 7) === '#EXTM3U') {
-          try { extractUrls(data, 'join'); } catch(e) {}
-        }
-        return data;
-      };
-      spoof(Array.prototype.join, _arrJoin);
-    } catch(e) {}
-
-    // ==================== hook: String.prototype.indexOf（页面自查 '#EXTM3U'）====================
-    try {
-      String.prototype.indexOf = function(searchValue, fromIndex){
-        var out = _strIndexOf.call(this, searchValue, fromIndex);
-        if (out !== -1 && searchValue === '#EXTM3U') {
-          try { extractUrls(this.substring(out), 'idx'); } catch(e) {}
-        }
-        return out;
-      };
-      spoof(String.prototype.indexOf, _strIndexOf);
-    } catch(e) {}
-
-    // ==================== hook: atob（base64 解码出清单/地址）====================
-    try {
-      if (_atob) {
-        scope.atob = function(){
-          var data = _atob.apply(this, arguments);
-          try {
-            if (typeof data === 'string' && data.length < MAX_SCAN &&
-                (data.indexOf('#EXTM3U') >= 0 || data.indexOf('//') >= 0)) {
-              extractUrls(data, 'atob');
-            }
-          } catch(e) {}
-          return data;
-        };
-        spoof(scope.atob, _atob);
-      }
-    } catch(e) {}
-
-    // ==================== hook: Worker（清单解析/解密在 worker 线程的播放器）====================
-    try {
-      if (typeof scope.Worker === 'function' && !scope.Worker.__omDeepHooked && installSource) {
-        var _Worker = scope.Worker;
-        var resolveBase = origBase || (scope.location && scope.location.href) || undefined;
-        var absOf = function(u){
-          try { return new URL(u, resolveBase).href; } catch(e) { return '' + u; }
-        };
-        var reporterSrc = "function(u,v){try{self.postMessage({__omDeepMsg:1,u:u,via:v});}catch(_){}}";
-        // importScripts 修复 shim：blob 重建后 self.location 变 blob:，
-        // 相对 importScripts 会 404，按原始脚本目录解析成绝对地址
-        var buildPrelude = function(absUrl){
-          var shim = "(function(){try{var _i=self.importScripts;" +
-            "if(typeof _i==='function'&&!self.importScripts.__omFixed){" +
-            "var B=" + JSON.stringify(absUrl) + ";" +
-            "var f=function(){var a=[];for(var i=0;i<arguments.length;i++){" +
-            "try{a.push(new URL(arguments[i],B).href);}catch(e){a.push(arguments[i]);}}" +
-            "return _i.apply(self,a);};f.__omFixed=1;self.importScripts=f;}}catch(e){}})();";
-          return shim + "(" + installSource + ")(" + reporterSrc + "," +
-            JSON.stringify(installSource) + "," + JSON.stringify(absUrl) + ");\n";
-        };
-        var forward = function(worker){
-          try {
-            worker.addEventListener('message', function(ev){
-              var m = ev && ev.data;
-              if (m && m.__omDeepMsg === 1) {
-                try { reportFn(m.u, m.via); } catch(_) {}
-              }
-            });
-          } catch(e) {}
-        };
-        var NewWorker = function(scriptURL, options){
-          // module worker 无法用 blob 重建保留导入说明符 → 回退原生（不注入）
-          if (options && options.type === 'module') {
-            return arguments.length > 1 ? new _Worker(scriptURL, options) : new _Worker(scriptURL);
-          }
-          try {
-            var absUrl = absOf(scriptURL);
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', absUrl, false);
-            xhr.send();
-            if (xhr.status === 200 || xhr.status === 0) {
-              var blob = new Blob([buildPrelude(absUrl), xhr.responseText || xhr.response || ''],
-                  {type: 'text/javascript'});
-              var w = new _Worker(URL.createObjectURL(blob), options);
-              forward(w);
-              return w;
-            }
-          } catch(e) {}
-          // 跨域/同步取脚本失败：回退原生 Worker（不注入，仅挂转发监听，无副作用）
-          var raw = arguments.length > 1 ? new _Worker(scriptURL, options) : new _Worker(scriptURL);
-          forward(raw);
-          return raw;
-        };
-        try { NewWorker.prototype = _Worker.prototype; } catch(e) {}
-        NewWorker.__omDeepHooked = true;
-        scope.Worker = NewWorker;
-        spoof(NewWorker, _Worker);
-      }
-    } catch(e) {}
-
-    // ==================== 扫内联 <script> 里的硬编码地址（仅主文档）====================
-    try {
-      if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
-        var scanInlineScripts = function(){
-          try {
-            var scripts = document.querySelectorAll('script:not([src])');
-            for (var i = 0; i < scripts.length; i++) {
-              var txt = scripts[i].textContent;
-              if (txt) extractUrls(txt, 'inline');
-            }
-          } catch(e) {}
-        };
-        if (document.readyState === 'interactive' || document.readyState === 'complete') {
-          scanInlineScripts();
-        } else if (typeof document.addEventListener === 'function') {
-          document.addEventListener('DOMContentLoaded', scanInlineScripts);
-        }
-      }
-    } catch(e) {}
-  }
-
-  // 主文档安装：注入 omStream 上报出口 + 安装器自身源码（供 Worker 复制）
-  installDeep(function(u, via){ report(u, via); }, installDeep.toString(), null);
-
-  // ==================== 主文档补充：Shadow DOM video / 资源计时 / iframe 兜底 ====================
-  function collectMediaEl(el){
-    try {
-      var s = el.currentSrc || el.src;
-      if (s) report(s, 'video');
-      if (!el.querySelectorAll) return;
-      var sources = el.querySelectorAll('source');
-      for (var i = 0; i < sources.length; i++) {
-        report(sources[i].src || sources[i].getAttribute('src'), 'video');
-      }
-    } catch(e) {}
-  }
-  function walkShadow(root){
-    if (!root || !root.querySelectorAll) return;
-    try {
-      var media = root.querySelectorAll('video, audio');
-      for (var i = 0; i < media.length; i++) collectMediaEl(media[i]);
-      var all = root.querySelectorAll('*');
-      for (var j = 0; j < all.length; j++) {
-        if (all[j].shadowRoot) walkShadow(all[j].shadowRoot);
-      }
-    } catch(e) {}
-  }
-  function scanDom(){ try { walkShadow(document); } catch(e) {} }
-  // 嗅探脚本安装之前页面已发出的媒体请求：从资源计时补捞
+  // ---- performance 资源表补扫（hook 之前已发出的请求） ----
+  var perfSeen = Object.create(null);
   function scanPerf(){
     try {
-      var es = performance.getEntriesByType('resource');
-      for (var i = 0; i < es.length; i++) report(es[i].name, 'perf');
+      if (!window.performance || !performance.getEntriesByType) return;
+      var list = performance.getEntriesByType('resource');
+      for (var i = 0; i < list.length; i++) {
+        var n = list[i] && list[i].name;
+        if (!n || perfSeen[n]) continue;
+        perfSeen[n] = 1;
+        report(n, 'perf');
+      }
     } catch(e) {}
   }
-  if (document.readyState === 'interactive' || document.readyState === 'complete') {
-    scanDom();
-  } else {
-    document.addEventListener('DOMContentLoaded', scanDom);
-  }
-  scanPerf();
-  setInterval(scanPerf, 1500);
-  // <video> 可能晚于本脚本创建（含 Shadow DOM），但 Shadow 全遍历
-  // （querySelectorAll('*')）开销大，只在加载后 60 秒窗口内做；
-  // 之后退回轻量的 video-only 扫描（与旧版一致），避免弹幕/动态页
-  // 长期触发全量遍历导致掉帧卡死
-  function scanVideosLight(){
+
+  // ---- DOM 扫描：Shadow 全遍历（querySelectorAll('*')）开销大，
+  // 只在加载后 60 秒窗口内做；之后退回轻量 video-only 扫描，
+  // 避免弹幕/动态页长期全量遍历导致掉帧 ----
+  function collectFrom(root, deep){
+    if (!root || !root.querySelectorAll) return;
+    var i, list;
     try {
-      var vs = document.querySelectorAll('video');
-      for (var i = 0; i < vs.length; i++) collectMediaEl(vs[i]);
-      var fs = document.querySelectorAll('iframe');
-      for (var j = 0; j < fs.length; j++) {
+      list = root.querySelectorAll('video,source');
+      for (i = 0; i < list.length; i++) collectMediaEl(list[i]);
+    } catch(e) {}
+    if (deep) {
+      try {
+        var all = root.querySelectorAll('*');
+        for (i = 0; i < all.length; i++) {
+          try { if (all[i].shadowRoot) collectFrom(all[i].shadowRoot, true); } catch(e) {}
+        }
+      } catch(e) {}
+    }
+    try {
+      var fs = root.querySelectorAll('iframe');
+      for (i = 0; i < fs.length; i++) {
         try {
-          var d = fs[j].contentDocument;
-          if (d) {
-            var ivs = d.querySelectorAll('video');
-            for (var k = 0; k < ivs.length; k++) collectMediaEl(ivs[k]);
-          }
+          var d = fs[i].contentDocument;
+          if (d) collectFrom(d, deep);
         } catch(e) {}
       }
     } catch(e) {}
   }
+
+  scanPerf();
+  setInterval(scanPerf, 1500);
   var domScans = 0;
   var mo = null;
   var domTimer = setInterval(function(){
@@ -3379,11 +2983,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       try { clearInterval(domTimer); } catch(e) {}
       try { if (mo) mo.disconnect(); } catch(e) {}
       // 窗口期结束：切换为轻量扫描，长期运行
-      setInterval(scanVideosLight, 2000);
-      scanVideosLight();
+      setInterval(function(){ collectFrom(document, false); }, 2000);
       return;
     }
-    scanDom();
+    collectFrom(document, true);
   }, 1000);
   try {
     if (typeof MutationObserver === 'function' && document.documentElement) {
@@ -3391,50 +2994,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       mo = new MutationObserver(function(){
         if (moPending) return;
         moPending = true;
-        setTimeout(function(){ moPending = false; scanDom(); }, 300);
+        setTimeout(function(){ moPending = false; collectFrom(document, true); }, 300);
       });
       mo.observe(document.documentElement,
           {childList: true, subtree: true, attributes: true, attributeFilter: ['src']});
     }
   } catch(e) {}
-
-  // 同源 iframe 兜底：document-start 注入在不支持的平台上可能只进主框架，
-  // 从父侧给子框架补装轻量 XHR/fetch 钩子（完整安装由各框架自身的
-  // document-start 注入完成，__omSniffed 哨兵防重；跨域访问即抛异常，静默跳过）
-  function installFrame(iw){
-    try {
-      if (!iw || iw.__omSniffed) return;
-      iw.__omSniffed = true;
-      var XO = iw.XMLHttpRequest && iw.XMLHttpRequest.prototype.open;
-      if (XO) {
-        iw.XMLHttpRequest.prototype.open = function(method, url){
-          try { report(url, 'xhr', iw.location.href); } catch(e) {}
-          return XO.apply(this, arguments);
-        };
-      }
-      var of = iw.fetch;
-      if (of) {
-        iw.fetch = function(input, init){
-          try {
-            var u = (typeof input === 'string') ? input
-                : (input && input.url) ? input.url : null;
-            if (u) report(u, 'fetch', iw.location.href);
-          } catch(e) {}
-          return of.apply(this, arguments);
-        };
-      }
-    } catch(e) {}
-  }
-  function walkFrames(){
-    try {
-      var fs = document.querySelectorAll('iframe,frame');
-      for (var i = 0; i < fs.length; i++) {
-        try { var iw = fs[i].contentWindow; if (iw) installFrame(iw); } catch(e) {}
-      }
-    } catch(e) {}
-  }
-  walkFrames();
-  setInterval(walkFrames, 2000);
 })();
 ''';
 
