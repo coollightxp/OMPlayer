@@ -12,6 +12,7 @@ import 'package:volume_controller/volume_controller.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 
 import '../models/channel.dart';
 import '../models/epg_program.dart';
@@ -303,11 +304,11 @@ class PlayerController extends ChangeNotifier {
   static const _kLastChannel = 'last_channel_v1';
 
   /// 播放成功后记录当前频道，供下次启动恢复
-  Future<void> _saveLastChannel() async {
+  Future<void> _saveLastChannel({Channel? channel}) async {
     // 投屏会话不记录：投屏链接是临时的（如手机推来的抖音直播），
     // 记录后下次启动会尝试恢复一个已失效的投屏地址
     if (_isCasting) return;
-    final ch = _currentChannel;
+    final ch = channel ?? _currentChannel;
     if (ch == null) return;
     try {
       final p = await SharedPreferences.getInstance();
@@ -1087,9 +1088,75 @@ class PlayerController extends ChangeNotifier {
   Channel? _lastWebChannel;
   bool _sniffedFromWeb = false;
 
+  /// 已判定无法内置播放、放弃自动切换的网页地址（内置播放失败回退
+  /// 网页后，同一页面本次运行内不再重复嗅探切换，避免循环）
+  String? _abandonedSniffWebUrl;
+  bool isSniffAbandonedFor(String webUrl) =>
+      _abandonedSniffWebUrl == webUrl;
+
+  /// 预检嗅探到的媒体流能否被内置播放器（ffmpeg 内核）直接播放。
+  /// 带 Referer/UA 模拟网页环境；HLS/DASH 下载清单文本判断是否
+  /// DRM/自定义加密，HTTP-FLV 校验文件头。
+  Future<bool> checkSniffedStreamPlayable({
+    required String url,
+    required String kind,
+    required String referer,
+    required String userAgent,
+  }) async {
+    Map<String, String> hdrs() => {
+          'User-Agent': userAgent,
+          if (referer.isNotEmpty) 'Referer': referer,
+          'Accept': '*/*',
+        };
+    try {
+      if (kind == 'hls') {
+        final r = await http
+            .get(Uri.parse(url), headers: hdrs())
+            .timeout(const Duration(seconds: 8));
+        if (r.statusCode != 200 && r.statusCode != 206) return false;
+        final body = r.body;
+        if (!body.contains('#EXTM3U')) return false;
+        // FairPlay / SAMPLE-AES / 自定义 WASM 解密：内置播不了
+        if (body.contains('SAMPLE-AES') ||
+            body.contains('skd://') ||
+            body.contains('streamingkeydelivery') ||
+            body.contains('METHOD=UNKNOWN')) {
+          return false;
+        }
+        // AES-128 标准 HLS 加密 ffmpeg 可直接解密（key 可访问时），放行
+        return true;
+      } else if (kind == 'dash') {
+        final r = await http
+            .get(Uri.parse(url), headers: hdrs())
+            .timeout(const Duration(seconds: 8));
+        if (r.statusCode != 200 && r.statusCode != 206) return false;
+        final body = r.body;
+        if (!body.contains('<MPD')) return false;
+        // 含 ContentProtection（Widevine/PlayReady/Marlin）= DRM
+        if (body.contains('ContentProtection')) return false;
+        return true;
+      } else if (kind == 'flv') {
+        final h = hdrs()..['Range'] = 'bytes=0-4095';
+        final r =
+            await http.get(Uri.parse(url), headers: h).timeout(
+                const Duration(seconds: 8));
+        if (r.statusCode != 200 && r.statusCode != 206) return false;
+        final ct = r.headers['content-type'] ?? '';
+        if (ct.contains('x-flv') || ct.contains('video-flv')) return true;
+        final b = r.bodyBytes;
+        // FLV 文件头：0x46 0x4C 0x56 ("FLV")
+        return b.length >= 3 && b[0] == 0x46 && b[1] == 0x4C && b[2] == 0x56;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 把网页内 XHR/fetch 嗅探到的真实媒体流（m3u8/mpd/flv 等）
   /// 交给内置原生播放器全屏播放（完整遥控器/进度/录制交互）。
-  /// 流普遍校验 Referer 防盗链，UA 需与网页环境一致。
+  /// 保留原网页频道的全部身份字段（id/tvgId/台名/台标/分类），
+  /// 左上角台名与右侧 EPG 节目单保持不变。
   Future<void> playSniffedWebStream({
     required String url,
     required String referer,
@@ -1104,27 +1171,40 @@ class PlayerController extends ChangeNotifier {
     const desktopUa =
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
         '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-    final ch = Channel(
-      id: 'sniff_${DateTime.now().millisecondsSinceEpoch}',
-      name: web?.name ?? '网页视频',
-      logoUrl: web?.logoUrl ?? '',
-      streamUrls: [url],
-      categoryId: web?.categoryId ?? '',
-      userAgent: (userAgent != null && userAgent.trim().isNotEmpty)
-          ? userAgent.trim()
-          : desktopUa,
-      httpReferer: referer,
-    );
+    final ua = (userAgent != null && userAgent.trim().isNotEmpty)
+        ? userAgent.trim()
+        : desktopUa;
+    final Channel ch;
+    if (web != null) {
+      // 只换流地址与防盗链头，身份字段原样保留：EPG 按原 id/tvgId
+      // 匹配，左上角台名/台标不丢
+      ch = web.copyWith(
+        streamUrls: [url],
+        userAgent: ua,
+        httpReferer: referer,
+      );
+    } else {
+      ch = Channel(
+        id: 'sniff_${DateTime.now().millisecondsSinceEpoch}',
+        name: '网页视频',
+        streamUrls: [url],
+        categoryId: '',
+        userAgent: ua,
+        httpReferer: referer,
+      );
+    }
     _sniffedFromWeb = true;
     await playChannel(ch);
   }
 
-  /// 嗅探流原生播放失败：提示并自动回退到原网页继续观看
+  /// 嗅探流原生播放失败：标记本页放弃自动切换，提示并自动回退到
+  /// 原网页全屏继续观看
   void _sniffPlaybackFailed() {
     if (!_sniffedFromWeb) return;
     _sniffedFromWeb = false;
     final web = _lastWebChannel;
-    OsdBus.show('内置播放器无法播放该流（可能加密），返回网页观看',
+    if (web != null) _abandonedSniffWebUrl = web.webPageUrl;
+    OsdBus.show('该直播流为加密格式，已切换网页播放器全屏观看',
         icon: Icons.language);
     if (web != null) {
       Future(() => _openWebPageChannel(web));
@@ -1339,9 +1419,11 @@ class PlayerController extends ChangeNotifier {
       _state = PlayerState.playing;
       // 嗅探流起播成功：清回退标记
       _sniffedFromWeb = false;
-      // 记录当前频道，下次启动时恢复（嗅探临时频道的 URL 带时效 token，
-      // 不持久化，避免下次启动恢复一个失效地址）
-      if (!_currentChannel!.id.startsWith('sniff_')) {
+      // 记录当前频道，下次启动时恢复。网页嗅探接管时保存的是原网页
+      // 频道（webview://），而不是带时效 token 的嗅探流地址
+      if (_lastWebChannel != null && _currentChannel?.id == _lastWebChannel!.id) {
+        await _saveLastChannel(channel: _lastWebChannel);
+      } else {
         await _saveLastChannel();
       }
     } on TimeoutException {

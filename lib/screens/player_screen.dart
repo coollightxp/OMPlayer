@@ -120,7 +120,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.150';
+  static const String _appVersion = '1.0.151';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2323,43 +2323,107 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 15 秒内 WebView 毫无加载进度：判定为缺少 WebView2 运行时
   Timer? _runtimeTimer;
 
-  /// XHR/fetch 嗅探到的页面真实媒体流（m3u8/mpd/flv），
-  /// 非空时右下角浮出「用内置播放器全屏播放」按钮
-  String? _sniffUrl;
-  String? _sniffKind;
-  String? _sniffReferer;
-  String? _sniffUa;
-  bool _sniffDismissed = false;
+  /// XHR/fetch 嗅探到的媒体流候选：自动聚合 + 服务端预检，
+  /// 可直连则自动切内置播放器全屏播放；加密/不可直连则留在网页
+  /// 全屏播放，不弹任何常驻提示
+  final Map<String, _SniffCandidate> _sniffCandidates = {};
+  Timer? _sniffAggTimer;
+  Timer? _sniffDeadline;
+  bool _sniffChecking = false;
+  bool _sniffDone = false;
+  bool _sniffAbandoned = false;
+
+  static int _sniffKindPri(String kind) =>
+      kind == 'hls' ? 3 : (kind == 'dash' ? 2 : 1);
 
   void _onSniffedStream(dynamic raw) {
+    if (_sniffAbandoned || _sniffDone) return;
     try {
       final s = raw is String ? raw : raw.toString();
       final m = jsonDecode(s) as Map<dynamic, dynamic>;
       final url = (m['u'] as String?) ?? '';
-      final kind = (m['k'] as String?) ?? 'hls';
       if (url.isEmpty || !mounted) return;
-      const priority = {'hls': 3, 'dash': 2, 'flv': 1};
-      final old = _sniffKind == null ? 0 : (priority[_sniffKind] ?? 0);
-      // 已采用更高优先级的流（如先探测到 m3u8 后又冒 flv）则不降级
-      if (_sniffUrl != null && (priority[kind] ?? 0) <= old) return;
-      setState(() {
-        _sniffUrl = url;
-        _sniffKind = kind;
-        _sniffReferer = (m['r'] as String?) ?? widget.url;
-        _sniffUa = m['ua'] as String?;
-        _sniffDismissed = false;
+      final kind = (m['k'] as String?) ?? 'hls';
+      final now = DateTime.now();
+      final c = _sniffCandidates.putIfAbsent(
+          url,
+          () => _SniffCandidate(
+                url: url,
+                kind: kind,
+                referer: (m['r'] as String?) ?? widget.url,
+                ua: m['ua'] as String?,
+              ));
+      c.count++;
+      c.last = now;
+      // 更高优先级类型可升级标注
+      if (_sniffKindPri(kind) > _sniffKindPri(c.kind)) c.kind = kind;
+      // 25 秒兜底窗口：到时间强制执行最后一轮选择，之后不再尝试，
+      // 加密流就安心留在网页全屏播放
+      _sniffDeadline ??= Timer(const Duration(seconds: 25), () {
+        if (!_sniffDone) _autoPick(force: true);
       });
+      // 请求持续到达期间反复安排聚合选择；正在预检时不重入
+      if (!_sniffChecking && _sniffAggTimer == null) {
+        _sniffAggTimer = Timer(const Duration(seconds: 4), () {
+          _sniffAggTimer = null;
+          _autoPick(force: false);
+        });
+      }
     } catch (_) {}
   }
 
-  Future<void> _switchSniffedToNative() async {
-    final url = _sniffUrl;
-    if (url == null) return;
-    await context.read<PlayerController>().playSniffedWebStream(
-          url: url,
-          referer: _sniffReferer ?? widget.url,
-          userAgent: _sniffUa,
+  Future<void> _autoPick({required bool force}) async {
+    if (_sniffDone || _sniffChecking || !mounted) return;
+    final now = DateTime.now();
+    var list = _sniffCandidates.values.toList();
+    // 近 10 秒仍在被请求的才是当前播放的主流（直播清单持续轮询；
+    // 页面上的推荐位/其他频道/广告片段只请求一两次）
+    var alive =
+        list.where((c) => now.difference(c.last).inSeconds <= 10).toList();
+    if (alive.isEmpty) {
+      if (!force) return; // 聚合太早，等后续真实请求或兜底窗口
+      alive = list;
+    }
+    if (alive.isEmpty) {
+      if (force) _sniffDone = true;
+      return;
+    }
+    alive.sort((a, b) {
+      final p = _sniffKindPri(b.kind).compareTo(_sniffKindPri(a.kind));
+      if (p != 0) return p;
+      return b.count.compareTo(a.count);
+    });
+    _sniffChecking = true;
+    final pc = context.read<PlayerController>();
+    for (final c in alive.take(3)) {
+      final ok = await pc.checkSniffedStreamPlayable(
+        url: c.url,
+        kind: c.kind,
+        referer: c.referer ?? widget.url,
+        userAgent: (c.ua != null && c.ua!.trim().isNotEmpty)
+            ? c.ua!.trim()
+            : '',
+      );
+      if (!mounted) return;
+      if (ok) {
+        _sniffDone = true;
+        _sniffChecking = false;
+        _sniffDeadline?.cancel();
+        // 短暂提示（OSD 数秒自动消失），随后内置播放器全屏接管
+        OsdBus.show('检测到可直连直播流，正在切换内置播放器',
+            icon: Icons.switch_video);
+        await pc.playSniffedWebStream(
+          url: c.url,
+          referer: c.referer ?? widget.url,
+          userAgent: c.ua,
         );
+        return;
+      }
+    }
+    _sniffChecking = false;
+    // 预检全部不通过：兜底窗口结束则放弃（加密/DRM，网页继续全屏播）；
+    // 未到点则等页面后续请求触发下一轮
+    if (force) _sniffDone = true;
   }
 
   /// 禁用网页右键菜单（<video> 默认的“循环/复制视频地址/另存”等菜单
@@ -2748,8 +2812,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       var m = p.match(/\.(m3u8|m3u|mpd|flv)(?:$|[?#/])/i);
       var ext = (m && m[1] || '').toLowerCase();
       var kind = (ext === 'mpd') ? 'dash' : (ext === 'flv' ? 'flv' : 'hls');
-      if (seen[abs]) return;
-      seen[abs] = kind;
+      // xhr/fetch 每次真实请求都上报（直播 m3u8 会被持续轮询，
+      // Dart 侧据此识别当前真正播放的主流）；perf/video 补捞
+      // 只报一次，否则历史资源在计时表里长期存在会刷出假计数
+      if (seen[abs]) {
+        if (via !== 'xhr' && via !== 'fetch') return;
+      } else {
+        seen[abs] = kind;
+      }
       var payload = JSON.stringify({
         u: abs, k: kind, via: via || '',
         ua: navigator.userAgent || '',
@@ -2863,6 +2933,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _probeTimer?.cancel();
     _forceForegroundTimer?.cancel();
     _runtimeTimer?.cancel();
+    _sniffAggTimer?.cancel();
+    _sniffDeadline?.cancel();
     super.dispose();
   }
 
@@ -2928,6 +3000,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           ),
           onWebViewCreated: (controller) async {
             _webController = controller;
+            // 内置播放失败回退过的网页，本次运行不再尝试自动接管
+            _sniffAbandoned = context
+                .read<PlayerController>()
+                .isSniffAbandonedFor(widget.url);
             // 把 controller 存到 PlayerController，供 Dart 侧调用网页 JS
             context.read<PlayerController>().webController = controller;
             // JS bridge 通道
@@ -3020,74 +3096,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             }
           },
         ),
-        // 嗅探到页面真实媒体流：浮出「用内置播放器全屏播放」入口
-        // （芒果TV 等自研播放器站点）。仅网页在前台时可见。
-        if (widget.foreground && _sniffUrl != null && !_sniffDismissed)
-          Positioned(
-            right: 24,
-            bottom: 28,
-            child: Material(
-              color: Colors.transparent,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.72),
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: Colors.white24),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    InkWell(
-                      borderRadius: BorderRadius.circular(22),
-                      onTap: _switchSniffedToNative,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 10),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.switch_video,
-                                color: Colors.greenAccent, size: 18),
-                            const SizedBox(width: 8),
-                            const Text('用内置播放器全屏播放',
-                                style: TextStyle(
-                                    color: Colors.white, fontSize: 13)),
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 6, vertical: 1),
-                              decoration: BoxDecoration(
-                                color: Colors.white12,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                (_sniffKind ?? '').toUpperCase(),
-                                style: const TextStyle(
-                                    color: Colors.white54,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    InkWell(
-                      borderRadius: BorderRadius.circular(22),
-                      onTap: () =>
-                          setState(() => _sniffDismissed = true),
-                      child: const Padding(
-                        padding:
-                            EdgeInsets.fromLTRB(4, 10, 12, 10),
-                        child: Icon(Icons.close,
-                            size: 15, color: Colors.white54),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
         // 等待层：仅后台缓冲期间显示（推到前台后即使页面慢也露出来，
         // 避免「正在打开网页频道」永久转圈把用户锁死）
         if (!_loaded && _error == null && !_runtimeMissing && !widget.foreground)
@@ -3239,4 +3247,20 @@ class _ExitOption {
   final String label;
   final Color color;
   const _ExitOption(this.icon, this.label, this.color);
+}
+
+/// 网页嗅探到的媒体流候选（XHR/fetch 命中聚合）
+class _SniffCandidate {
+  final String url;
+  String kind; // hls / dash / flv
+  final String? referer;
+  final String? ua;
+  int count = 0;
+  DateTime last;
+  _SniffCandidate({
+    required this.url,
+    required this.kind,
+    required this.referer,
+    required this.ua,
+  }) : last = DateTime.now();
 }

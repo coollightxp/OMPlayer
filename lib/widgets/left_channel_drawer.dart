@@ -48,6 +48,11 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
   /// 收藏分类对象（按需重建，buildFavoriteChannels 内容随收藏变化）
   ChannelCategory? _favCategoryCache;
 
+  /// 启动后首次打开抽屉的定位是否已完成。仅这一次允许「当前频道在
+  /// 收藏夹就定位到收藏夹」（启动恢复场景）；此后用户在普通分类里
+  /// 点击恰好被收藏的频道，列表不得自动跳到收藏夹
+  bool _startupFavLocated = false;
+
   ChannelCategory? _selectedCategory;
   final ScrollController _categoryScroll = ScrollController();
   final ScrollController _channelScroll = ScrollController();
@@ -148,19 +153,24 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       if (cur != null) {
         // 收藏夹非空时在 L1 占第 0 项，真实分类索引整体 +1
         final favOffset = favs.isEmpty ? 0 : 1;
-        // 当前播放频道在收藏夹中：优先定位到「我的收藏」
-        // （含下次启动恢复播放收藏频道的场景）
-        final favIdx = favs.indexWhere((ch) => ch.id == cur.id);
-        if (favIdx >= 0) {
-          _favCategoryCache = ChannelCategory(
-              id: _favCategoryId, name: '我的收藏', channels: favs);
-          setState(() => _selectedCategory = _favCategoryCache);
-          _kbCategoryIndex = 0;
-          _kbChannelIndex = favIdx.clamp(0, favs.length - 1);
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _scrollToCurrentChannel();
-          });
-          return;
+        // 仅启动后首次打开抽屉：当前播放频道在收藏夹中则定位到
+        // 「我的收藏」（下次启动恢复收藏频道的场景）。
+        // 之后的打开不再做此跳转，避免在普通分类点击收藏频道时
+        // 列表被强制拉到收藏夹
+        if (!_startupFavLocated) {
+          _startupFavLocated = true;
+          final favIdx = favs.indexWhere((ch) => ch.id == cur.id);
+          if (favIdx >= 0) {
+            _favCategoryCache = ChannelCategory(
+                id: _favCategoryId, name: '我的收藏', channels: favs);
+            setState(() => _selectedCategory = _favCategoryCache);
+            _kbCategoryIndex = 0;
+            _kbChannelIndex = favIdx.clamp(0, favs.length - 1);
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _scrollToCurrentChannel();
+            });
+            return;
+          }
         }
         var catIndex = 0;
         for (final cat in controller.categories) {
