@@ -121,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.153';
+  static const String _appVersion = '1.0.154';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2656,28 +2656,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
   }
 
-  // 收集页面全部 <video>：含 Shadow DOM（部分播放器封装在 shadow root）
-  // 与同源 iframe（央视频等播放器在内层框架），递归遍历
   function allVideos(root){
-    var out = [];
-    function collect(r){
-      if (!r || !r.querySelectorAll) return;
-      var i, vs, all, fs;
-      try { vs = r.querySelectorAll('video'); for (i=0;i<vs.length;i++) out.push(vs[i]); } catch(e){}
-      try {
-        all = r.querySelectorAll('*');
-        for (i=0;i<all.length;i++){
-          try { if (all[i].shadowRoot) collect(all[i].shadowRoot); } catch(e){}
-        }
-      } catch(e){}
-      try {
-        fs = r.querySelectorAll('iframe');
-        for (i=0;i<fs.length;i++){
-          try { var d = fs[i].contentDocument; if (d) collect(d); } catch(e){}
-        }
-      } catch(e){}
-    }
-    collect(root || document);
+    // kick() 每 700ms 调用一次，必须轻量：只递归同源 iframe，
+    // 不做 querySelectorAll('*') 的 Shadow DOM 全遍历（弹幕重页面会掉帧）
+    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+    eachFrameDoc(document, function(d){
+      out = out.concat(Array.prototype.slice.call(d.querySelectorAll('video')));
+    });
     return out;
   }
   var clickCooldown = 0;
@@ -2794,27 +2779,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 会导致"主视频没播却被判定已起播"）；返回数字 1/0，规避字符串编解码差异。
   static const String _probeJs = r'''
 (function(){
-  // 与 _bootJs 相同的递归收集：Shadow DOM + 同源 iframe
+  // 每秒轮询一次，必须轻量：只递归同源 iframe
   function allVideos(root){
-    var out = [];
-    function collect(r){
-      if (!r || !r.querySelectorAll) return;
-      var i, vs, all, fs;
-      try { vs = r.querySelectorAll('video'); for (i=0;i<vs.length;i++) out.push(vs[i]); } catch(e){}
+    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
+    var frames = root.querySelectorAll('iframe');
+    for (var i=0;i<frames.length;i++){
       try {
-        all = r.querySelectorAll('*');
-        for (i=0;i<all.length;i++){
-          try { if (all[i].shadowRoot) collect(all[i].shadowRoot); } catch(e){}
-        }
-      } catch(e){}
-      try {
-        fs = r.querySelectorAll('iframe');
-        for (i=0;i<fs.length;i++){
-          try { var d = fs[i].contentDocument; if (d) collect(d); } catch(e){}
-        }
-      } catch(e){}
+        var d = frames[i].contentDocument;
+        if (d) out = out.concat(allVideos(d));
+      } catch(e) {}
     }
-    collect(root || document);
     return out;
   }
   var vs = allVideos(document);
@@ -3039,23 +3013,23 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
 
     // ==================== hook: fetch ====================
+    // 克隆门控必须保守：直播分段/无限流（http-flv）一旦 clone().arrayBuffer()
+    // 会被整段缓冲导致内存爆炸、页面卡死。只放行清单/JSON/文本类型；
+    // octet-stream 仅在 content-length 明确且够小（可能是清单）时才克隆。
     function worthReading(response){
       try {
         var h = response.headers;
-        if (!h || typeof h.get !== 'function') return true;
+        if (!h || typeof h.get !== 'function') return false;
         var ct = (h.get('content-type') || '').toLowerCase();
-        if (ct) {
-          if (ct.indexOf('mpegurl') >= 0 || ct.indexOf('dash') >= 0 ||
-              ct.indexOf('json') >= 0 || ct.indexOf('text') >= 0 ||
-              ct.indexOf('octet-stream') >= 0) return true;
-          if (ct.indexOf('video/') >= 0 || ct.indexOf('audio/') >= 0 ||
-              ct.indexOf('image/') >= 0 || ct.indexOf('font') >= 0 ||
-              ct.indexOf('mp2t') >= 0) return false;
-        }
+        if (ct.indexOf('mpegurl') >= 0 || ct.indexOf('dash') >= 0 ||
+            ct.indexOf('json') >= 0 || ct.indexOf('text') >= 0 ||
+            ct.indexOf('xml') >= 0 || ct.indexOf('javascript') >= 0) return true;
+        if (ct.indexOf('video/') >= 0 || ct.indexOf('audio/') >= 0 ||
+            ct.indexOf('image/') >= 0 || ct.indexOf('font') >= 0 ||
+            ct.indexOf('mp2t') >= 0) return false;
         var cl = parseInt(h.get('content-length') || '0', 10);
-        if (cl && cl > MAX_SCAN) return false;
-        return true;
-      } catch(e) { return true; }
+        return cl > 0 && cl <= MAX_SCAN;
+      } catch(e) { return false; }
     }
     var _fetch = scope.fetch;
     if (typeof _fetch === 'function') {
@@ -3377,17 +3351,44 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
   scanPerf();
   setInterval(scanPerf, 1500);
-  // <video> 可能晚于本脚本创建（含 Shadow DOM），周期补扫
+  // <video> 可能晚于本脚本创建（含 Shadow DOM），但 Shadow 全遍历
+  // （querySelectorAll('*')）开销大，只在加载后 60 秒窗口内做；
+  // 之后退回轻量的 video-only 扫描（与旧版一致），避免弹幕/动态页
+  // 长期触发全量遍历导致掉帧卡死
+  function scanVideosLight(){
+    try {
+      var vs = document.querySelectorAll('video');
+      for (var i = 0; i < vs.length; i++) collectMediaEl(vs[i]);
+      var fs = document.querySelectorAll('iframe');
+      for (var j = 0; j < fs.length; j++) {
+        try {
+          var d = fs[j].contentDocument;
+          if (d) {
+            var ivs = d.querySelectorAll('video');
+            for (var k = 0; k < ivs.length; k++) collectMediaEl(ivs[k]);
+          }
+        } catch(e) {}
+      }
+    } catch(e) {}
+  }
   var domScans = 0;
+  var mo = null;
   var domTimer = setInterval(function(){
     domScans++;
+    if (domScans >= 60) {
+      try { clearInterval(domTimer); } catch(e) {}
+      try { if (mo) mo.disconnect(); } catch(e) {}
+      // 窗口期结束：切换为轻量扫描，长期运行
+      setInterval(scanVideosLight, 2000);
+      scanVideosLight();
+      return;
+    }
     scanDom();
-    if (domScans >= 120) { try { clearInterval(domTimer); } catch(e) {} }
   }, 1000);
   try {
     if (typeof MutationObserver === 'function' && document.documentElement) {
       var moPending = false;
-      var mo = new MutationObserver(function(){
+      mo = new MutationObserver(function(){
         if (moPending) return;
         moPending = true;
         setTimeout(function(){ moPending = false; scanDom(); }, 300);
