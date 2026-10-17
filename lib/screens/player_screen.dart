@@ -121,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.156';
+  static const String _appVersion = '1.0.157';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2670,14 +2670,72 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
   }
 
+  var bootT0 = Date.now();
+  function collectVideos(root, out, deep){
+    var i, list;
+    try { list = root.querySelectorAll('video'); } catch(e) { return; }
+    for (i = 0; i < list.length; i++) out.push(list[i]);
+    if (deep) {
+      var all;
+      try { all = root.querySelectorAll('*'); } catch(e) { all = []; }
+      for (i = 0; i < all.length; i++) {
+        try { if (all[i].shadowRoot) collectVideos(all[i].shadowRoot, out, true); } catch(e) {}
+      }
+    }
+    try {
+      var fs = root.querySelectorAll('iframe');
+      for (i = 0; i < fs.length; i++) {
+        try { var d = fs[i].contentDocument; if (d) collectVideos(d, out, deep); } catch(e) {}
+      }
+    } catch(e) {}
+  }
   function allVideos(root){
-    // kick() 每 700ms 调用一次，必须轻量：只递归同源 iframe，
-    // 不做 querySelectorAll('*') 的 Shadow DOM 全遍历（弹幕重页面会掉帧）
-    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
-    eachFrameDoc(document, function(d){
-      out = out.concat(Array.prototype.slice.call(d.querySelectorAll('video')));
-    });
+    // 加载后 60 秒窗口内做 Shadow DOM 全遍历（部分站点把 video 放进
+    // shadow root），之后退回轻量扫描避免弹幕重页面长期掉帧
+    var deep = (Date.now() - bootT0) < 60000;
+    var out = [];
+    collectVideos(root, out, deep);
     return out;
+  }
+  // inline 固定铺满：对元素本身写 cssText，shadow DOM 内的 video 与
+  // 跨域 iframe（内容不可达但元素可写样式）都能铺满
+  function unclip(el){
+    var n = el;
+    while (n && n !== document.documentElement) {
+      if (n.style) {
+        n.style.setProperty('overflow', 'visible', 'important');
+        n.style.setProperty('transform', 'none', 'important');
+        n.style.setProperty('filter', 'none', 'important');
+        n.style.setProperty('clip-path', 'none', 'important');
+      }
+      n = n.parentElement;
+    }
+  }
+  var PIN_CSS = 'display:block!important;position:fixed!important;left:0!important;top:0!important;'
+      + 'width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;'
+      + 'object-fit:contain!important;z-index:2147483647!important;margin:0!important;padding:0!important;'
+      + 'border:none!important;background:#000!important;transform:none!important';
+  function pinEl(el){
+    if (!el || !el.style) return;
+    if (el.getAttribute('data-om-pin') === '1') return;
+    el.setAttribute('data-om-pin', '1');
+    unclip(el);
+    el.style.cssText = PIN_CSS;
+  }
+  // 页面没有可达 video 时（播放器在跨域 iframe 里，如芒果TV），把
+  // 占视口 40% 以上的最大 iframe 铺满；40% 门槛避开广告小窗
+  function largestIframe(){
+    var fs;
+    try { fs = document.querySelectorAll('iframe'); } catch(e) { return null; }
+    var best = null, bestA = 0;
+    var va = (window.innerWidth || 0) * (window.innerHeight || 0);
+    for (var i = 0; i < fs.length; i++) {
+      var r;
+      try { r = fs[i].getBoundingClientRect(); } catch(e) { continue; }
+      var a = (r.width >= 160 && r.height >= 120) ? r.width * r.height : 0;
+      if (a > bestA) { bestA = a; best = fs[i]; }
+    }
+    return (va > 0 && bestA >= va * 0.4) ? best : null;
   }
   var clickCooldown = 0;
   var videoClickCooldown = 0;
@@ -2755,10 +2813,36 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           if (p && p.catch) p.catch(function(){});
         }
       } catch(e) {}
+      // 必须有视频画面尺寸才算起播：音频先行（声音出了画面还没
+      // 出来）时不推前台，避免黑屏干等
       if (!window.__omPlayingFired && !v.paused && v.readyState >= 2
-          && v.currentTime > 0) {
+          && v.currentTime > 0
+          && (v.videoWidth || 0) * (v.videoHeight || 0) >= 8160) {
         window.__omPlayingFired = true;
         fire('omPlaying');
+      }
+    }
+    // 固定铺满：可见面积最大的主视频（inline 样式对 shadow DOM 内
+    // video 同样生效）；没有可达 video 时（跨域 iframe 播放器，
+    // 如芒果TV）铺满占视口 40% 以上的最大 iframe
+    var bestV = null, bestVA = 0;
+    for (var k = 0; k < vs.length; k++) {
+      var rr;
+      try { rr = vs[k].getBoundingClientRect(); } catch(e) { continue; }
+      var aa = (rr.width >= 80 && rr.height >= 60) ? rr.width * rr.height : 0;
+      if (aa > bestVA) { bestVA = aa; bestV = vs[k]; }
+    }
+    if (bestV) pinEl(bestV);
+    else {
+      var fi = largestIframe();
+      if (fi) {
+        pinEl(fi);
+        // 播放器在跨域 iframe（内容不可达，如芒果TV）：iframe 铺满
+        // 即视为网页起播推前台，不必走 8 秒重载/20 秒兜底链黑屏干等
+        if (!window.__omPlayingFired) {
+          window.__omPlayingFired = true;
+          fire('omPlaying');
+        }
       }
     }
     var st = anyPlaying ? 1 : 0;
@@ -2793,19 +2877,35 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 会导致"主视频没播却被判定已起播"）；返回数字 1/0，规避字符串编解码差异。
   static const String _probeJs = r'''
 (function(){
-  // 每秒轮询一次，必须轻量：只递归同源 iframe
-  function allVideos(root){
-    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
-    var frames = root.querySelectorAll('iframe');
-    for (var i=0;i<frames.length;i++){
-      try {
-        var d = frames[i].contentDocument;
-        if (d) out = out.concat(allVideos(d));
-      } catch(e) {}
+  // 与 _bootJs 同一套发现逻辑：加载后 60 秒窗口内做 Shadow DOM
+  // 全遍历，之后退回轻量（只递归同源 iframe）
+  if (!window.__omProbeT0) window.__omProbeT0 = Date.now();
+  var deep = (Date.now() - window.__omProbeT0) < 60000;
+  function collect(root, out){
+    var i;
+    try {
+      var list = root.querySelectorAll('video');
+      for (i = 0; i < list.length; i++) out.push(list[i]);
+    } catch(e) { return; }
+    if (deep) {
+      var all;
+      try { all = root.querySelectorAll('*'); } catch(e) { all = []; }
+      for (i = 0; i < all.length; i++) {
+        try { if (all[i].shadowRoot) collect(all[i].shadowRoot, out); } catch(e) {}
+      }
     }
-    return out;
+    try {
+      var frames = root.querySelectorAll('iframe');
+      for (i = 0; i < frames.length; i++) {
+        try {
+          var d = frames[i].contentDocument;
+          if (d) collect(d, out);
+        } catch(e) {}
+      }
+    } catch(e) {}
   }
-  var vs = allVideos(document);
+  var vs = [];
+  collect(document, vs);
   var best = null, bestA = 0;
   for (var i=0;i<vs.length;i++){
     var r;
@@ -2816,7 +2916,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   if (!best) return 0;
   try {
     if (best.paused && best.play) { var p = best.play(); if (p && p.catch) p.catch(function(){}); }
-    if (!best.paused && best.readyState >= 2 && best.currentTime > 0) return 1;
+    // 必须有视频画面尺寸：音频先行不算起播，避免黑屏推前台
+    if (!best.paused && best.readyState >= 2 && best.currentTime > 0
+        && (best.videoWidth || 0) * (best.videoHeight || 0) >= 8160) return 1;
   } catch(e) {}
   return 0;
 })();
