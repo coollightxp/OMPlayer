@@ -121,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.155';
+  static const String _appVersion = '1.0.156';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2314,6 +2314,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   bool _sniffDone = false;
   bool _sniffAbandoned = false;
 
+  /// 嗅探是否启用。默认 false：页面保持零 hook 纯净环境（对齐 NewBox
+  /// webview:// 纯网页播放策略，咪咕等带完整性检测的播放器才能工作）；
+  /// 仅当网页 8 秒未起播时才置 true 并整页重建 WebView 带嗅探重载一次
+  bool _sniffEnabled = false;
+
+  /// 嗅探重载只尝试一次，避免循环重载
+  bool _sniffRetried = false;
+
   static int _sniffKindPri(String kind) =>
       kind == 'hls' ? 3 : (kind == 'dash' ? 2 : 1);
 
@@ -2353,12 +2361,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     } catch (_) {}
   }
 
-  /// 网页自身播放器起播：正常页不立即显露网页，再给嗅探 6 秒确认
-  /// 是否存在可直连直播主流；确认不到就网页全屏（加密 MSE 页）。
-  /// 只安排一次。
+  /// 网页自身播放器起播：默认无嗅探时立即推前台网页全屏；
+  /// 仅兜底重载带嗅探时才再给 6 秒确认是否存在可直连直播主流，
+  /// 确认不到就网页全屏（加密 MSE 页）。只安排一次。
   void _markWebPlayReady() {
     if (_webPlayReady || _sniffDone) return;
     _webPlayReady = true;
+    // 默认无嗅探：网页起播即推前台（没有接管候选的来源，不必黑屏
+    // 等宽限）；仅兜底重载带嗅探时才给 6 秒确认直连主流
+    if (!_sniffEnabled) {
+      _finishWithWeb();
+      return;
+    }
     _webReadyGraceTimer ??= Timer(const Duration(seconds: 6), () {
       if (mounted && !_sniffDone) _autoPick(force: true);
     });
@@ -3011,12 +3025,29 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     cleanWebView2Cache();
     // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
-    // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播
-    //（站点需手动点播放/卡住），提前推网页避免长时间黑屏；
-    // 网页已起播则继续等嗅探决策
+    // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播，
+    // 先带嗅探脚本整页重建重载一次（唯一兜底机会），给重载页 12 秒
+    // 决策窗口；已重载过仍未起播才提前推网页避免长时间黑屏
     _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
       if (!mounted || widget.foreground) return;
-      if (_sniffAbandoned || !_webPlayReady) widget.onForeground();
+      if (_sniffAbandoned) {
+        widget.onForeground();
+        return;
+      }
+      if (!_webPlayReady) {
+        if (!_sniffRetried) {
+          _sniffRetried = true;
+          _decisionTimer?.cancel();
+          _decisionTimer =
+              Timer(const Duration(seconds: 12), _finishWithWeb);
+          setState(() {
+            _sniffEnabled = true;
+            _webPlayReady = false;
+          });
+          return;
+        }
+        widget.onForeground();
+      }
     });
     // 最终决策窗口：15 秒仍无可直连主流 → 加密/无流，直接网页全屏
     _decisionTimer = Timer(const Duration(seconds: 15), _finishWithWeb);
@@ -3052,7 +3083,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       await c.evaluateJavascript(source: _noContextMenuJs);
       await c.evaluateJavascript(source: _cssJs);
       await c.evaluateJavascript(source: _bootJs);
-      await c.evaluateJavascript(source: _sniffJs);
+      // 嗅探脚本只在兜底重载后注入；默认页面保持零 hook 纯净环境
+      if (_sniffEnabled) await c.evaluateJavascript(source: _sniffJs);
     } catch (_) {
       // 页面尚未就绪时注入可能失败，轮询探测会在后续重试
     }
@@ -3073,8 +3105,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           // 已知放弃页：起播即推网页
           widget.onForeground();
         } else {
-          // 正常页：先记录起播，由嗅探决策决定内置接管还是网页全屏，
-          // 不提前显露网页，避免「先网页再跳内置」的多余切换
+          // 正常页：记录起播。默认无嗅探直接推前台；兜底重载带
+          // 嗅探时由决策逻辑决定内置接管还是网页全屏
           _markWebPlayReady();
         }
       }
@@ -3096,17 +3128,21 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       fit: StackFit.expand,
       children: [
         InAppWebView(
+          // 兜底重载时换 key 整棵重建：initialUserScripts 只在
+          // WebView 首次创建时生效
+          key: ValueKey('web_${widget.url}_$_sniffEnabled'),
           webViewEnvironment: webViewEnvironment,
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
-          // 深度嗅探脚本必须在页面其他 JS 之前注入，否则页面已持有
-          // 原始 fetch/JSON.parse 引用，hook 无效；运行时 _inject()
-          // 重注入作为不支持 document-start 平台的兜底（哨兵防重）
+          // 默认零 hook 纯净环境（对齐 NewBox webview:// 纯网页播放
+          // 策略）；仅 8 秒未起播的兜底重载才注入轻嗅探（document-start
+          // 保证先于页面 JS），运行时 _inject() 重注入是兜底
           initialUserScripts: UnmodifiableListView<UserScript>([
-            UserScript(
-              source: _sniffJs,
-              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-              forMainFrameOnly: false,
-            ),
+            if (_sniffEnabled)
+              UserScript(
+                source: _sniffJs,
+                injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                forMainFrameOnly: false,
+              ),
             // 右键菜单屏蔽也提前到 document-start：页面加载失败/
             // 未完成时 onLoadStop 不触发，运行时注入会漏掉，
             // WebView2 默认菜单（返回/刷新/另存为/打印）就会冒出来
