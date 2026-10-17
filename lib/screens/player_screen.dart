@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
@@ -120,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.152';
+  static const String _appVersion = '1.0.153';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2479,13 +2480,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 })();
 ''';
 
-  /// CSS：把页面里的 <video> 伪全屏铺满窗口
+  /// CSS：把页面里的 <video> 伪全屏铺满窗口；隐藏主流网页播放器的
+  /// 控制条/信息浮层（借鉴 TVBox 系 live.webview.js 的选择器表），
+  /// 让网页兜底播放看起来接近原生全屏。注意不隐藏大播放按钮/海报，
+  /// 否则自动开播逻辑（getBoundingClientRect 尺寸判定）会失效。
   static const String _cssJs = r'''
 (function(){
   var CSS_TEXT = 'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important;height:100%!important;width:100%!important}'
       + '*{-webkit-user-select:none!important;user-select:none!important}'
       + 'input,textarea{-webkit-user-select:text!important;user-select:text!important}'
       + 'video{position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;object-fit:contain!important;z-index:2147483647!important;background:#000!important;outline:none!important}'
+      + '.xg-controls,.xgplayer-controls,.prism-controlbar,.prism-detect-info,.prism-info-display,'
+      + '.vjs-control-bar,.dplayer-controller,.dplayer-bezel,.dplayer-menu,#control_bar_player,#pic_in_pic_player{display:none!important}'
       + 'html.__om_hide_cursor,html.__om_hide_cursor *{cursor:none!important}'
       + '#__om_web_layer{position:fixed!important;inset:0!important;background:#000!important;z-index:2147483646!important}';
   function inject(d){
@@ -2650,11 +2656,28 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
   }
 
+  // 收集页面全部 <video>：含 Shadow DOM（部分播放器封装在 shadow root）
+  // 与同源 iframe（央视频等播放器在内层框架），递归遍历
   function allVideos(root){
-    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
-    eachFrameDoc(document, function(d){
-      out = out.concat(Array.prototype.slice.call(d.querySelectorAll('video')));
-    });
+    var out = [];
+    function collect(r){
+      if (!r || !r.querySelectorAll) return;
+      var i, vs, all, fs;
+      try { vs = r.querySelectorAll('video'); for (i=0;i<vs.length;i++) out.push(vs[i]); } catch(e){}
+      try {
+        all = r.querySelectorAll('*');
+        for (i=0;i<all.length;i++){
+          try { if (all[i].shadowRoot) collect(all[i].shadowRoot); } catch(e){}
+        }
+      } catch(e){}
+      try {
+        fs = r.querySelectorAll('iframe');
+        for (i=0;i<fs.length;i++){
+          try { var d = fs[i].contentDocument; if (d) collect(d); } catch(e){}
+        }
+      } catch(e){}
+    }
+    collect(root || document);
     return out;
   }
   var clickCooldown = 0;
@@ -2771,15 +2794,27 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 会导致"主视频没播却被判定已起播"）；返回数字 1/0，规避字符串编解码差异。
   static const String _probeJs = r'''
 (function(){
+  // 与 _bootJs 相同的递归收集：Shadow DOM + 同源 iframe
   function allVideos(root){
-    var out = Array.prototype.slice.call(root.querySelectorAll('video'));
-    var frames = root.querySelectorAll('iframe');
-    for (var i=0;i<frames.length;i++){
+    var out = [];
+    function collect(r){
+      if (!r || !r.querySelectorAll) return;
+      var i, vs, all, fs;
+      try { vs = r.querySelectorAll('video'); for (i=0;i<vs.length;i++) out.push(vs[i]); } catch(e){}
       try {
-        var d = frames[i].contentDocument;
-        if (d) out = out.concat(allVideos(d));
-      } catch(e) {}
+        all = r.querySelectorAll('*');
+        for (i=0;i<all.length;i++){
+          try { if (all[i].shadowRoot) collect(all[i].shadowRoot); } catch(e){}
+        }
+      } catch(e){}
+      try {
+        fs = r.querySelectorAll('iframe');
+        for (i=0;i<fs.length;i++){
+          try { var d = fs[i].contentDocument; if (d) collect(d); } catch(e){}
+        }
+      } catch(e){}
     }
+    collect(root || document);
     return out;
   }
   var vs = allVideos(document);
@@ -2799,38 +2834,50 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 })();
 ''';
 
-  /// 媒体流嗅探：劫持 XHR/fetch + 轮询 performance 资源计时 + 扫描
-  /// video[src]，捕获芒果TV/网页直播页内部拉取的真实流地址
-  /// （m3u8/mpd/http-flv），上报 omStream，由 Dart 侧浮层提供
-  /// 「切到内置播放器全屏播放」。
-  /// 同源 iframe（部分站点播放器在内层框架）递归安装；跨域框架
-  /// 访问会抛异常，静默跳过。
+  /// 媒体流深度嗅探（借鉴 TVBox 系 live.parse.js 方案）：
+  /// 除劫持 XHR/fetch 请求地址外，还扫描响应体（JSON/清单文本）、
+  /// WebSocket 帧、URL.createObjectURL(Blob) 合成清单、TextDecoder、
+  /// String.fromCharCode / Array.join / indexOf / atob 拼装、
+  /// HTMLMediaElement.src / setAttribute('src')、Shadow DOM 轮询、
+  /// 内联 <script> 硬编码地址，并劫持 Worker 构造函数把嗅探器前置
+  /// 注入 worker 线程（清单解析/解密在 worker 里做的播放器）。
+  /// 捕获到的真实流地址（m3u8/mpd/http-flv）统一走既有 omStream
+  /// JSON 协议上报，Dart 侧聚合决策自动切内置播放器全屏播放。
+  /// 必须在页面其他 JS 之前注入（AT_DOCUMENT_START UserScript），
+  /// 否则页面已持有原始 fetch/JSON.parse 引用，hook 无效；
+  /// __omSniffed 哨兵保证只安装一次，运行时 _inject() 重注入是兜底。
   static const String _sniffJs = r'''
 (function(){
+  if (window.__omSniffed) return;
+  window.__omSniffed = true;
+
   var MEDIA = /\.(m3u8|m3u|mpd|flv)(?:$|[?#/])/i;
   // 明显是广告/统计/日志的地址不采用
   var NOISE = /\/(ad|ads|advert|dsp|stat|stats|track|tracking|log|logs|report|metrics)(?:\/|$)/i;
-  var seen = {};
-  function report(u, via, win){
+  var MAX_SCAN = 512 * 1024;
+
+  // ---- 主文档上报出口：保持 omStream 既有 JSON 协议 {u,k,via,ua,r} ----
+  var lastEmit = Object.create(null);
+  var emitCount = 0;
+  function report(u, via, base){
     try {
       if (!u || typeof u !== 'string') return;
       if (/^(blob:|data:|about:|javascript:|chrome-extension:)/i.test(u)) return;
-      var base = (win && win.location) ? win.location.href : location.href;
+      base = base || location.href;
       var abs;
-      try { abs = new win.URL(u, base).href; } catch(e) { abs = new URL(u, base).href; }
+      try { abs = new URL(u, base).href; } catch(e) { return; }
+      if (!/^https?:\/\//i.test(abs)) return;
       var p = abs.split('#')[0].split('?')[0];
       if (!MEDIA.test(p) || NOISE.test(p)) return;
-      var m = p.match(/\.(m3u8|m3u|mpd|flv)(?:$|[?#/])/i);
+      var m = p.match(/\.(m3u8|m3u|mpd|flv)$/i);
       var ext = (m && m[1] || '').toLowerCase();
       var kind = (ext === 'mpd') ? 'dash' : (ext === 'flv' ? 'flv' : 'hls');
-      // xhr/fetch 每次真实请求都上报（直播 m3u8 会被持续轮询，
-      // Dart 侧据此识别当前真正播放的主流）；perf/video 补捞
-      // 只报一次，否则历史资源在计时表里长期存在会刷出假计数
-      if (seen[abs]) {
-        if (via !== 'xhr' && via !== 'fetch') return;
-      } else {
-        seen[abs] = kind;
-      }
+      var now = Date.now();
+      // 直播清单会被持续轮询：3 秒节流去重（不永久去重，
+      // Dart 侧靠重复计数识别当前正在播放的主流，一次性噪声沉底）
+      if (now - (lastEmit[abs] || 0) < 3000) return;
+      lastEmit[abs] = now;
+      if (++emitCount > 4096) { lastEmit = Object.create(null); emitCount = 0; }
       var payload = JSON.stringify({
         u: abs, k: kind, via: via || '',
         ua: navigator.userAgent || '',
@@ -2844,73 +2891,549 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       }
     } catch(e) {}
   }
-  function install(win){
-    var w = win;
-    try {
-      if (!w || w.__omSniffed) return;
-      // 跨域 frame：访问其属性即抛异常，下面标记也写不进去，直接跳过
-      var doc = w.document;
-      w.__omSniffed = true;
 
-      var XO = w.XMLHttpRequest && w.XMLHttpRequest.prototype.open;
+  // ==================== 深度嗅探安装器（主文档与 Worker 复用） ====================
+  // reportFn(u, via) 由调用方按上下文注入：
+  //   主文档 → omStream 桥；Worker → self.postMessage 回主线程转发
+  //   （worker 作用域没有 flutter_inappwebview 桥）。
+  // installSource 为本函数源码字符串，供（嵌套）Worker 复制安装。
+  // origBase 仅 Worker 场景传入：本 worker 原始脚本的绝对 URL，
+  // 用于修复 blob 重建后相对地址（fetch/XHR/importScripts）的解析基准。
+  function installDeep(reportFn, installSource, origBase) {
+    var scope = (typeof self !== 'undefined') ? self : this;
+    if (scope.__omDeepInstalled) return;
+    scope.__omDeepInstalled = true;
+
+    // 捕获原始引用（务必在覆盖前，内部一律用这些引用，避免 hook 自触发递归）
+    var _JSONparse = JSON.parse;
+    var _atob = (typeof scope.atob === 'function') ? scope.atob : null;
+    var _fromCharCode = String.fromCharCode;
+    var _arrJoin = Array.prototype.join;
+    var _strIndexOf = String.prototype.indexOf;
+
+    var RE_URL = /(?:https?:)?\/\/[^\s"'<>\\]+\.(?:m3u8|m3u|mpd|flv)(?:[?#][^\s"'<>\\]*)?/gi;
+    var reHasScheme = /^[a-z][a-z0-9+.\-]*:/i;
+
+    function isUrl(s){ return typeof s === 'string' && /^https?:\/\/.+/i.test(s); }
+    function toAbs(u){
+      // worker 场景把相对 url 修回绝对（origBase 为空则原样，主文档不受影响）
+      if (!origBase || typeof u !== 'string' || u === '' || reHasScheme.test(u)) return u;
+      try { return new URL(u, origBase).href; } catch(e) { return u; }
+    }
+    // 文本里的绝对/协议相对媒体地址全部捞出上报
+    function extractUrls(text, via){
+      if (!text || typeof text !== 'string') return;
+      var m;
+      RE_URL.lastIndex = 0;
+      while ((m = RE_URL.exec(text)) !== null) {
+        var u = m[0];
+        if (u.substring(0, 2) === '//') {
+          var proto = 'https:';
+          try { proto = (scope.location && scope.location.protocol) || 'https:'; } catch(e) {}
+          u = proto + u;
+        }
+        reportFn(u, via || 'scan');
+      }
+    }
+    function scanText(text, method, srcUrl){
+      if (!text || typeof text !== 'string') return;
+      if (text.length > MAX_SCAN) text = text.substring(0, MAX_SCAN);
+      // GET 响应本身是清单：直接上报来源地址（播放器按来源解析相对分片，最稳）
+      if (srcUrl && (method === undefined || method === 'GET')) {
+        if (text.substring(0, 7) === '#EXTM3U' ||
+            text.toLowerCase().indexOf('urn:mpeg:dash:schema:mpd') >= 0) {
+          reportFn(srcUrl, 'resp');
+          return;
+        }
+      }
+      extractUrls(text, 'scan');
+      if (text.charAt(0) === '{' || text.charAt(0) === '[') {
+        var j = null;
+        try { j = _JSONparse(text); } catch(e) {}
+        if (j) walkJson(j, 0);
+      }
+    }
+    function walkJson(data, depth){
+      if (!data || typeof data !== 'object' || depth > 12) return;
+      for (var key in data) {
+        var v;
+        try { v = data[key]; } catch(e) { continue; }
+        if (typeof v === 'object' && v !== null) { walkJson(v, depth + 1); continue; }
+        if (typeof v === 'string') {
+          if (isUrl(v) || v.substring(0, 2) === '//') { reportFn(v, 'json'); continue; }
+          if (v.indexOf('#EXTM3U') >= 0 ||
+              v.toLowerCase().indexOf('urn:mpeg:dash:schema:mpd') >= 0) {
+            extractUrls(v, 'json');
+          }
+        }
+      }
+    }
+    // 廉价二进制前缀判定：快速淘汰媒体分片（TS 同步字节 0x47 不在白名单）
+    function looksTextual(ab){
+      try {
+        var n = ab.byteLength < 64 ? ab.byteLength : 64;
+        var head = new Uint8Array(ab, 0, n);
+        var c = -1;
+        for (var i = 0; i < head.length; i++) {
+          var b = head[i];
+          if (b === 9 || b === 10 || b === 13 || b === 32 || b === 0xEF || b === 0xBB || b === 0xBF) continue;
+          c = b; break;
+        }
+        if (c < 0) return false;
+        return c === 35 || c === 123 || c === 91 || c === 60 ||
+               c === 104 || c === 72 || c === 100 || c === 68 || c === 117 || c === 85;
+      } catch(e) { return false; }
+    }
+    function scanArrayBuffer(ab, method, srcUrl){
+      try {
+        if (!ab || typeof ab.byteLength !== 'number') return;
+        if (ab.byteLength === 0 || ab.byteLength > MAX_SCAN || !looksTextual(ab)) return;
+        scanText(new TextDecoder().decode(ab), method, srcUrl);
+      } catch(e) {}
+    }
+    function readBlob(blob, method, srcUrl){
+      try {
+        if (blob && typeof blob.arrayBuffer === 'function') {
+          var b = (blob.size && blob.size > MAX_SCAN && typeof blob.slice === 'function')
+              ? blob.slice(0, MAX_SCAN) : blob;
+          b.arrayBuffer().then(function(ab){ scanArrayBuffer(ab, method, srcUrl); }).catch(function(){});
+        }
+      } catch(e) {}
+    }
+    function spoof(fn, original){
+      try { fn.toString = function(){ return original.toString(); }; } catch(e) {}
+    }
+
+    // ==================== hook: JSON.parse ====================
+    JSON.parse = function(){
+      var data = _JSONparse.apply(this, arguments);
+      try { walkJson(data, 0); } catch(e) {}
+      return data;
+    };
+    spoof(JSON.parse, _JSONparse);
+
+    // ==================== hook: XMLHttpRequest ====================
+    if (typeof XMLHttpRequest !== 'undefined') {
+      var _xhrOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url){
+        try {
+          if (typeof url === 'string') reportFn(toAbs(url), 'xhr');
+          var upMethod = (method || 'GET').toUpperCase();
+          this.addEventListener('readystatechange', function(){
+            try {
+              if (this.readyState !== 4 || this.status !== 200) return;
+              var src = this.responseURL || undefined;
+              var rt = this.responseType;
+              if (rt === 'arraybuffer' && this.response) { scanArrayBuffer(this.response, upMethod, src); return; }
+              if (rt === 'blob' && this.response) { readBlob(this.response, upMethod, src); return; }
+              if (typeof this.response === 'string' && this.response !== '') {
+                scanText(this.response, upMethod, src);
+              }
+            } catch(e) {}
+          });
+        } catch(e) {}
+        if (origBase && arguments.length >= 2) arguments[1] = toAbs(url);
+        return _xhrOpen.apply(this, arguments);
+      };
+      spoof(XMLHttpRequest.prototype.open, _xhrOpen);
+    }
+
+    // ==================== hook: fetch ====================
+    function worthReading(response){
+      try {
+        var h = response.headers;
+        if (!h || typeof h.get !== 'function') return true;
+        var ct = (h.get('content-type') || '').toLowerCase();
+        if (ct) {
+          if (ct.indexOf('mpegurl') >= 0 || ct.indexOf('dash') >= 0 ||
+              ct.indexOf('json') >= 0 || ct.indexOf('text') >= 0 ||
+              ct.indexOf('octet-stream') >= 0) return true;
+          if (ct.indexOf('video/') >= 0 || ct.indexOf('audio/') >= 0 ||
+              ct.indexOf('image/') >= 0 || ct.indexOf('font') >= 0 ||
+              ct.indexOf('mp2t') >= 0) return false;
+        }
+        var cl = parseInt(h.get('content-length') || '0', 10);
+        if (cl && cl > MAX_SCAN) return false;
+        return true;
+      } catch(e) { return true; }
+    }
+    var _fetch = scope.fetch;
+    if (typeof _fetch === 'function') {
+      scope.fetch = function(input, init){
+        try {
+          var u = (typeof input === 'string') ? input : (input && input.url) ? input.url : null;
+          if (u) reportFn(toAbs(u), 'fetch');
+          if (origBase && typeof input === 'string') {
+            var abs = toAbs(input);
+            if (abs !== input) { input = abs; arguments[0] = abs; }
+          }
+        } catch(e) {}
+        var p = _fetch.apply(this, arguments);
+        try {
+          p.then(function(response){
+            try {
+              if (!worthReading(response)) return;
+              var src = response.url || (typeof input === 'object' ? input.url : input);
+              var method = (init && init.method) ? init.method.toUpperCase() : 'GET';
+              response.clone().arrayBuffer().then(function(ab){ scanArrayBuffer(ab, method, src); }).catch(function(){});
+            } catch(e) {}
+          }).catch(function(){});
+        } catch(e) {}
+        return p;
+      };
+      spoof(scope.fetch, _fetch);
+    }
+
+    // ==================== hook: WebSocket（部分站点用 WS 下发清单）====================
+    try {
+      var _WS = scope.WebSocket;
+      if (_WS && !_WS.__omDeepHooked) {
+        var handleWsData = function(d){
+          try {
+            if (typeof d === 'string') scanText(d, 'GET');
+            else if (d instanceof ArrayBuffer) scanArrayBuffer(d, 'GET');
+            else if (typeof Blob !== 'undefined' && d instanceof Blob) readBlob(d, 'GET');
+          } catch(e) {}
+        };
+        var NewWS = function(url, protocols){
+          var ws = arguments.length > 1 ? new _WS(url, protocols) : new _WS(url);
+          try { ws.addEventListener('message', function(ev){ handleWsData(ev.data); }); } catch(e) {}
+          return ws;
+        };
+        NewWS.prototype = _WS.prototype;
+        NewWS.__omDeepHooked = true;
+        ['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k){
+          try { NewWS[k] = _WS[k]; } catch(e) {}
+        });
+        scope.WebSocket = NewWS;
+        spoof(NewWS, _WS);
+      }
+    } catch(e) {}
+
+    // ==================== hook: URL.createObjectURL(Blob) 前端合成清单 ====================
+    try {
+      if (typeof URL !== 'undefined' && URL.createObjectURL && !URL.createObjectURL.__omDeepHooked) {
+        var _createObjURL = URL.createObjectURL;
+        var wrapCreate = function(obj){
+          try {
+            if (typeof Blob !== 'undefined' && obj instanceof Blob) {
+              var t = (obj.type || '').toLowerCase();
+              if (t === '' || t.indexOf('mpegurl') >= 0 || t.indexOf('dash') >= 0 ||
+                  t.indexOf('octet-stream') >= 0 || t.indexOf('video') >= 0 ||
+                  t.indexOf('mp2t') >= 0) {
+                readBlob(obj, 'GET');
+              }
+            }
+          } catch(e) {}
+          return _createObjURL.apply(this, arguments);
+        };
+        wrapCreate.__omDeepHooked = true;
+        URL.createObjectURL = wrapCreate;
+        spoof(wrapCreate, _createObjURL);
+      }
+    } catch(e) {}
+
+    // ==================== hook: HTMLMediaElement.src / setAttribute（仅主文档有 DOM）====================
+    function handleMediaSrc(v){
+      if (!v || typeof v !== 'string') return;
+      if (v.substring(0, 5) === 'blob:' || v.substring(0, 11) === 'javascript:') return;
+      reportFn(v, 'video');
+    }
+    try {
+      if (typeof HTMLMediaElement !== 'undefined') {
+        var proto = HTMLMediaElement.prototype;
+        var desc = Object.getOwnPropertyDescriptor(proto, 'src');
+        if (desc && desc.set && !proto.__omDeepSrcHooked) {
+          Object.defineProperty(proto, 'src', {
+            configurable: true, enumerable: desc.enumerable, get: desc.get,
+            set: function(v){ try { handleMediaSrc(v); } catch(e) {} return desc.set.call(this, v); }
+          });
+          proto.__omDeepSrcHooked = true;
+        }
+      }
+      if (typeof Element !== 'undefined' && Element.prototype.setAttribute && !Element.prototype.__omDeepSetAttrHooked) {
+        var _setAttr = Element.prototype.setAttribute;
+        Element.prototype.setAttribute = function(name, value){
+          try {
+            if (name && name.toLowerCase() === 'src') {
+              var tag = this.tagName;
+              if (tag === 'VIDEO' || tag === 'SOURCE' || tag === 'AUDIO') handleMediaSrc(value);
+            }
+          } catch(e) {}
+          return _setAttr.apply(this, arguments);
+        };
+        Element.prototype.__omDeepSetAttrHooked = true;
+        spoof(Element.prototype.setAttribute, _setAttr);
+      }
+    } catch(e) {}
+
+    // ==================== hook: TextDecoder.decode（清单流式解码）====================
+    try {
+      if (typeof TextDecoder !== 'undefined' && !TextDecoder.prototype.__omDeepHooked) {
+        var _decode = TextDecoder.prototype.decode;
+        TextDecoder.prototype.decode = function(){
+          var result = _decode.apply(this, arguments);
+          try {
+            if (typeof result === 'string' && result.substring(0, 7) === '#EXTM3U') {
+              extractUrls(result, 'decode');
+            }
+          } catch(e) {}
+          return result;
+        };
+        TextDecoder.prototype.__omDeepHooked = true;
+        spoof(TextDecoder.prototype.decode, _decode);
+      }
+    } catch(e) {}
+
+    // ==================== hook: String.fromCharCode（逐字符拼清单）====================
+    try {
+      var m3u8Buf = '';
+      String.fromCharCode = function(){
+        var data = _fromCharCode.apply(null, arguments);
+        var L = data.length;
+        if (L >= 7) {
+          var isM3u = (data.charCodeAt(0) === 35 && data.substring(0, 7) === '#EXTM3U')
+              || data.indexOf('#EXTINF:') >= 0;
+          if (isM3u) {
+            try {
+              m3u8Buf += data;
+              if (m3u8Buf.indexOf('#EXT-X-ENDLIST') >= 0) {
+                extractUrls(m3u8Buf.split('#EXT-X-ENDLIST')[0], 'fcc');
+                m3u8Buf = '';
+              } else if (m3u8Buf.length > 2 * 1024 * 1024) {
+                // 直播清单无 ENDLIST：达上限发一次再清空，防内存泄漏
+                extractUrls(m3u8Buf, 'fcc');
+                m3u8Buf = '';
+              }
+            } catch(e) {}
+          }
+        }
+        return data;
+      };
+      spoof(String.fromCharCode, _fromCharCode);
+    } catch(e) {}
+
+    // ==================== hook: Array.prototype.join（拼装清单）====================
+    try {
+      Array.prototype.join = function(sep){
+        var data = _arrJoin.call(this, sep);
+        if (data.length >= 7 && data.charCodeAt(0) === 35 && data.substring(0, 7) === '#EXTM3U') {
+          try { extractUrls(data, 'join'); } catch(e) {}
+        }
+        return data;
+      };
+      spoof(Array.prototype.join, _arrJoin);
+    } catch(e) {}
+
+    // ==================== hook: String.prototype.indexOf（页面自查 '#EXTM3U'）====================
+    try {
+      String.prototype.indexOf = function(searchValue, fromIndex){
+        var out = _strIndexOf.call(this, searchValue, fromIndex);
+        if (out !== -1 && searchValue === '#EXTM3U') {
+          try { extractUrls(this.substring(out), 'idx'); } catch(e) {}
+        }
+        return out;
+      };
+      spoof(String.prototype.indexOf, _strIndexOf);
+    } catch(e) {}
+
+    // ==================== hook: atob（base64 解码出清单/地址）====================
+    try {
+      if (_atob) {
+        scope.atob = function(){
+          var data = _atob.apply(this, arguments);
+          try {
+            if (typeof data === 'string' && data.length < MAX_SCAN &&
+                (data.indexOf('#EXTM3U') >= 0 || data.indexOf('//') >= 0)) {
+              extractUrls(data, 'atob');
+            }
+          } catch(e) {}
+          return data;
+        };
+        spoof(scope.atob, _atob);
+      }
+    } catch(e) {}
+
+    // ==================== hook: Worker（清单解析/解密在 worker 线程的播放器）====================
+    try {
+      if (typeof scope.Worker === 'function' && !scope.Worker.__omDeepHooked && installSource) {
+        var _Worker = scope.Worker;
+        var resolveBase = origBase || (scope.location && scope.location.href) || undefined;
+        var absOf = function(u){
+          try { return new URL(u, resolveBase).href; } catch(e) { return '' + u; }
+        };
+        var reporterSrc = "function(u,v){try{self.postMessage({__omDeepMsg:1,u:u,via:v});}catch(_){}}";
+        // importScripts 修复 shim：blob 重建后 self.location 变 blob:，
+        // 相对 importScripts 会 404，按原始脚本目录解析成绝对地址
+        var buildPrelude = function(absUrl){
+          var shim = "(function(){try{var _i=self.importScripts;" +
+            "if(typeof _i==='function'&&!self.importScripts.__omFixed){" +
+            "var B=" + JSON.stringify(absUrl) + ";" +
+            "var f=function(){var a=[];for(var i=0;i<arguments.length;i++){" +
+            "try{a.push(new URL(arguments[i],B).href);}catch(e){a.push(arguments[i]);}}" +
+            "return _i.apply(self,a);};f.__omFixed=1;self.importScripts=f;}}catch(e){}})();";
+          return shim + "(" + installSource + ")(" + reporterSrc + "," +
+            JSON.stringify(installSource) + "," + JSON.stringify(absUrl) + ");\n";
+        };
+        var forward = function(worker){
+          try {
+            worker.addEventListener('message', function(ev){
+              var m = ev && ev.data;
+              if (m && m.__omDeepMsg === 1) {
+                try { reportFn(m.u, m.via); } catch(_) {}
+              }
+            });
+          } catch(e) {}
+        };
+        var NewWorker = function(scriptURL, options){
+          // module worker 无法用 blob 重建保留导入说明符 → 回退原生（不注入）
+          if (options && options.type === 'module') {
+            return arguments.length > 1 ? new _Worker(scriptURL, options) : new _Worker(scriptURL);
+          }
+          try {
+            var absUrl = absOf(scriptURL);
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', absUrl, false);
+            xhr.send();
+            if (xhr.status === 200 || xhr.status === 0) {
+              var blob = new Blob([buildPrelude(absUrl), xhr.responseText || xhr.response || ''],
+                  {type: 'text/javascript'});
+              var w = new _Worker(URL.createObjectURL(blob), options);
+              forward(w);
+              return w;
+            }
+          } catch(e) {}
+          // 跨域/同步取脚本失败：回退原生 Worker（不注入，仅挂转发监听，无副作用）
+          var raw = arguments.length > 1 ? new _Worker(scriptURL, options) : new _Worker(scriptURL);
+          forward(raw);
+          return raw;
+        };
+        try { NewWorker.prototype = _Worker.prototype; } catch(e) {}
+        NewWorker.__omDeepHooked = true;
+        scope.Worker = NewWorker;
+        spoof(NewWorker, _Worker);
+      }
+    } catch(e) {}
+
+    // ==================== 扫内联 <script> 里的硬编码地址（仅主文档）====================
+    try {
+      if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+        var scanInlineScripts = function(){
+          try {
+            var scripts = document.querySelectorAll('script:not([src])');
+            for (var i = 0; i < scripts.length; i++) {
+              var txt = scripts[i].textContent;
+              if (txt) extractUrls(txt, 'inline');
+            }
+          } catch(e) {}
+        };
+        if (document.readyState === 'interactive' || document.readyState === 'complete') {
+          scanInlineScripts();
+        } else if (typeof document.addEventListener === 'function') {
+          document.addEventListener('DOMContentLoaded', scanInlineScripts);
+        }
+      }
+    } catch(e) {}
+  }
+
+  // 主文档安装：注入 omStream 上报出口 + 安装器自身源码（供 Worker 复制）
+  installDeep(function(u, via){ report(u, via); }, installDeep.toString(), null);
+
+  // ==================== 主文档补充：Shadow DOM video / 资源计时 / iframe 兜底 ====================
+  function collectMediaEl(el){
+    try {
+      var s = el.currentSrc || el.src;
+      if (s) report(s, 'video');
+      if (!el.querySelectorAll) return;
+      var sources = el.querySelectorAll('source');
+      for (var i = 0; i < sources.length; i++) {
+        report(sources[i].src || sources[i].getAttribute('src'), 'video');
+      }
+    } catch(e) {}
+  }
+  function walkShadow(root){
+    if (!root || !root.querySelectorAll) return;
+    try {
+      var media = root.querySelectorAll('video, audio');
+      for (var i = 0; i < media.length; i++) collectMediaEl(media[i]);
+      var all = root.querySelectorAll('*');
+      for (var j = 0; j < all.length; j++) {
+        if (all[j].shadowRoot) walkShadow(all[j].shadowRoot);
+      }
+    } catch(e) {}
+  }
+  function scanDom(){ try { walkShadow(document); } catch(e) {} }
+  // 嗅探脚本安装之前页面已发出的媒体请求：从资源计时补捞
+  function scanPerf(){
+    try {
+      var es = performance.getEntriesByType('resource');
+      for (var i = 0; i < es.length; i++) report(es[i].name, 'perf');
+    } catch(e) {}
+  }
+  if (document.readyState === 'interactive' || document.readyState === 'complete') {
+    scanDom();
+  } else {
+    document.addEventListener('DOMContentLoaded', scanDom);
+  }
+  scanPerf();
+  setInterval(scanPerf, 1500);
+  // <video> 可能晚于本脚本创建（含 Shadow DOM），周期补扫
+  var domScans = 0;
+  var domTimer = setInterval(function(){
+    domScans++;
+    scanDom();
+    if (domScans >= 120) { try { clearInterval(domTimer); } catch(e) {} }
+  }, 1000);
+  try {
+    if (typeof MutationObserver === 'function' && document.documentElement) {
+      var moPending = false;
+      var mo = new MutationObserver(function(){
+        if (moPending) return;
+        moPending = true;
+        setTimeout(function(){ moPending = false; scanDom(); }, 300);
+      });
+      mo.observe(document.documentElement,
+          {childList: true, subtree: true, attributes: true, attributeFilter: ['src']});
+    }
+  } catch(e) {}
+
+  // 同源 iframe 兜底：document-start 注入在不支持的平台上可能只进主框架，
+  // 从父侧给子框架补装轻量 XHR/fetch 钩子（完整安装由各框架自身的
+  // document-start 注入完成，__omSniffed 哨兵防重；跨域访问即抛异常，静默跳过）
+  function installFrame(iw){
+    try {
+      if (!iw || iw.__omSniffed) return;
+      iw.__omSniffed = true;
+      var XO = iw.XMLHttpRequest && iw.XMLHttpRequest.prototype.open;
       if (XO) {
-        w.XMLHttpRequest.prototype.open = function(method, url){
-          try { report(url, 'xhr', w); } catch(e) {}
+        iw.XMLHttpRequest.prototype.open = function(method, url){
+          try { report(url, 'xhr', iw.location.href); } catch(e) {}
           return XO.apply(this, arguments);
         };
       }
-      var of = w.fetch;
+      var of = iw.fetch;
       if (of) {
-        w.fetch = function(input, init){
+        iw.fetch = function(input, init){
           try {
             var u = (typeof input === 'string') ? input
                 : (input && input.url) ? input.url : null;
-            if (u) report(u, 'fetch', w);
+            if (u) report(u, 'fetch', iw.location.href);
           } catch(e) {}
           return of.apply(this, arguments);
         };
       }
-      // 嗅探脚本安装之前页面已经发出的媒体请求：从资源计时补捞
-      function scanPerf(){
-        try {
-          var es = w.performance.getEntriesByType('resource');
-          for (var i=0;i<es.length;i++) report(es[i].name, 'perf', w);
-        } catch(e) {}
-      }
-      scanPerf();
-      w.setInterval(scanPerf, 1500);
-
-      // 直接挂在 <video src>/currentSrc 上的非 MSE 直链
-      function scanVideos(){
-        try {
-          var vs = doc ? doc.querySelectorAll('video') : [];
-          for (var i=0;i<vs.length;i++){
-            try {
-              var s = vs[i].src || vs[i].currentSrc;
-              if (s) report(s, 'video', w);
-            } catch(e){}
-          }
-        } catch(e) {}
-      }
-      w.setInterval(scanVideos, 2000);
-      scanVideos();
     } catch(e) {}
   }
-  function walk(){
-    install(window);
+  function walkFrames(){
     try {
       var fs = document.querySelectorAll('iframe,frame');
-      for (var i=0;i<fs.length;i++){
-        try {
-          var iw = fs[i].contentWindow;
-          if (iw) { install(iw); }
-        } catch(e) {}
+      for (var i = 0; i < fs.length; i++) {
+        try { var iw = fs[i].contentWindow; if (iw) installFrame(iw); } catch(e) {}
       }
     } catch(e) {}
   }
-  walk();
-  // 播放器 iframe 可能晚于本脚本创建，周期补装
-  setInterval(walk, 2000);
+  walkFrames();
+  setInterval(walkFrames, 2000);
 })();
 ''';
 
@@ -3009,6 +3532,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         InAppWebView(
           webViewEnvironment: webViewEnvironment,
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+          // 深度嗅探脚本必须在页面其他 JS 之前注入，否则页面已持有
+          // 原始 fetch/JSON.parse 引用，hook 无效；运行时 _inject()
+          // 重注入作为不支持 document-start 平台的兜底（哨兵防重）
+          initialUserScripts: UnmodifiableListView<UserScript>([
+            UserScript(
+              source: _sniffJs,
+              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+              forMainFrameOnly: false,
+            ),
+          ]),
           initialSettings: InAppWebViewSettings(
             // 网页播放器（如央视频）自动开播，无需用户先点击网页
             mediaPlaybackRequiresUserGesture: false,
