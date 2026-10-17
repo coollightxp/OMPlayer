@@ -680,7 +680,7 @@ class _ChannelTile extends StatelessWidget {
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
         decoration: BoxDecoration(
           color: isSelected
               ? Colors.blueAccent.withOpacity(0.2)
@@ -697,9 +697,10 @@ class _ChannelTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // 频道序号（与数字选台）。强制单行等比缩小，避免折行
+            // 频道序号（与数字选台）。窄抽屉下压缩列宽，名称最多两行，
+            // 避免被挤成一字一行的竖排
             SizedBox(
-              width: 42,
+              width: 32,
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
@@ -709,15 +710,15 @@ class _ChannelTile extends StatelessWidget {
                   softWrap: false,
                   style: TextStyle(
                     color: isSelected ? Colors.blueAccent : Colors.white38,
-                    fontSize: 13,
+                    fontSize: 12,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
             ),
             Container(
-              width: 40,
-              height: 40,
+              width: 34,
+              height: 34,
               decoration: BoxDecoration(
                 color: isSelected ? Colors.blueAccent : Colors.white10,
                 borderRadius: BorderRadius.circular(8),
@@ -725,16 +726,19 @@ class _ChannelTile extends StatelessWidget {
               child: Icon(
                 Icons.tv,
                 color: isSelected ? Colors.white : Colors.white70,
-                size: 20,
+                size: 18,
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 8),
             Expanded(
               child: Text(
                 channel.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: isSelected ? Colors.blueAccent : Colors.white,
                   fontSize: 14,
+                  height: 1.15,
                   fontWeight:
                       isSelected ? FontWeight.bold : FontWeight.normal,
                 ),
@@ -745,7 +749,7 @@ class _ChannelTile extends StatelessWidget {
               GestureDetector(
                 onTap: onToggleFavorite,
                 child: Padding(
-                  padding: const EdgeInsets.all(6),
+                  padding: const EdgeInsets.all(2),
                   child: Icon(
                     isFav ? Icons.star : Icons.star_border,
                     color: isFav ? Colors.amber : Colors.white38,
@@ -757,7 +761,7 @@ class _ChannelTile extends StatelessWidget {
               const Icon(Icons.star, color: Colors.amber, size: 16),
             if (isSelected)
               const Padding(
-                padding: EdgeInsets.only(left: 8),
+                padding: EdgeInsets.only(left: 4),
                 child:
                     Icon(Icons.play_arrow, color: Colors.blueAccent, size: 18),
               ),

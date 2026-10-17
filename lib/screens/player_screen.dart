@@ -3542,6 +3542,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
               forMainFrameOnly: false,
             ),
+            // 右键菜单屏蔽也提前到 document-start：页面加载失败/
+            // 未完成时 onLoadStop 不触发，运行时注入会漏掉，
+            // WebView2 默认菜单（返回/刷新/另存为/打印）就会冒出来
+            UserScript(
+              source: _noContextMenuJs,
+              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+              forMainFrameOnly: false,
+            ),
           ]),
           initialSettings: InAppWebViewSettings(
             // 网页播放器（如央视频）自动开播，无需用户先点击网页
