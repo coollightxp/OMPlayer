@@ -374,8 +374,11 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    final scale = panelScaleOf(context);
-    final drawerW = _designWidth * scale;
+    // 小屏只收窄宽度，不再整体等比缩放——整体缩放会让抽屉高度也缩到
+    // 72% 并垂直居中，上下各空出一块，无法充满屏幕高度
+    final shortest = MediaQuery.of(context).size.shortestSide;
+    final wScale = shortest < 600 ? 0.78 : (shortest < 700 ? 0.9 : 1.0);
+    final drawerW = _designWidth * wScale;
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,
@@ -391,9 +394,8 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           duration: const Duration(milliseconds: 200),
           opacity: widget.isOpen ? 1.0 : 0.0,
           child: ScaledPanel(
-            designWidth: _designWidth,
             alignment: Alignment.centerLeft,
-            scale: scale,
+            scale: 1.0,
             child: Material(
               color: Colors.black87,
               elevation: 16,

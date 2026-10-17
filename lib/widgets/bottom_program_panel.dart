@@ -24,6 +24,9 @@ class BottomProgramPanel extends StatefulWidget {
   /// 调出手机扫码管理页（地址为空时传 null，按钮不显示）
   final VoidCallback? onOpenRemoteAdmin;
 
+  /// 网页/内置播放器来回切换（无可切流时置灰不可点）
+  final VoidCallback? onSwitchWebNative;
+
   /// 遥控器激活「跳转类」按钮（频道/EPG/设置/扫码）后通知播放页关闭面板
   final VoidCallback? onDismissRemote;
 
@@ -41,6 +44,7 @@ class BottomProgramPanel extends StatefulWidget {
     required this.onOpenSettings,
     required this.onScreenshot,
     required this.onToggleRecord,
+    this.onSwitchWebNative,
     this.onOpenRemoteAdmin,
     this.onDismissRemote,
     this.onHoverEnter,
@@ -131,7 +135,10 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
     // 宽屏（电视/桌面）：面板做成居中悬浮卡片，两侧留白、底边抬升；
     // 窄屏贴近两侧，避免内容被挤
     final screenW = MediaQuery.of(context).size.width;
-    final scale = panelScaleOf(context);
+    // scale 只用于内部尺寸（台标/内边距/字号）分支；面板本身不再
+    // 整体缩放——0.72 的等比缩放会让面板视觉宽度只剩 72%，两侧大留白，
+    // 按钮行有 FittedBox 自适应压缩，直接按真实宽度铺满即可
+    final scale = panelScaleOf(context) < 1.0 ? 0.72 : 1.0;
     // 用户多次反馈手机面板要尽量宽：窄屏完全贴边（0 边距）
     final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 0.0);
     return AnimatedPositioned(
@@ -149,7 +156,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           opacity: widget.isVisible ? 1.0 : 0.0,
           child: ScaledPanel(
             alignment: Alignment.bottomCenter,
-            scale: scale,
+            scale: 1.0,
             child: Container(
               decoration: BoxDecoration(
                 // 悬浮卡片：深色半透明 + 圆角 + 细边框 + 上方渐隐衔接视频
@@ -352,6 +359,15 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           Icons.screen_rotation,
           c.videoRotation.value == 0 ? '旋转画面' : '恢复原始方向',
           hasVideo ? c.cycleVideoRotation : null),
+      // 网页/内置切换：仅网页频道（含已接管为内置的）出现；
+      // 加密页/未嗅探到直连流时置灰不可点
+      if (c.webPageActive || c.isNativeSniffPlayback)
+        _KbAction(
+          'webnative',
+          c.webPageActive ? Icons.smart_display : Icons.language,
+          c.webPageActive ? '内置播放器播放' : '网页播放器播放',
+          c.canSwitchWebNative ? widget.onSwitchWebNative : null,
+        ),
       _KbAction('channels', Icons.list, '频道列表', widget.onOpenChannels,
           dismiss: true),
       _KbAction('epg', Icons.menu_book, '节目单', widget.onOpenEpg,
@@ -393,6 +409,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
       if (i >= 0) children.add(_btn(actions[i]));
     }
 
+    addById('webnative');
     addById('channels');
     addById('epg');
     addById('remoteAdmin');

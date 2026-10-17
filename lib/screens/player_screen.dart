@@ -120,7 +120,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.151';
+  static const String _appVersion = '1.0.152';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -530,7 +530,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                                               color: Colors.blueAccent),
                                           const SizedBox(height: 12),
                                           const Text(
-                                              '网页频道缓冲中，起播后自动切换...',
+                                              '正在打开网页频道，请稍候...',
                                               style: TextStyle(
                                                   color: Colors.white70,
                                                   fontSize: 14)),
@@ -571,8 +571,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       ),
                     ),
 
-                  // 左右边缘点击区（移动端；桌面端用 hover 自动弹出）
-                  if (!controller.isDesktop) _buildEdgeTapZones(),
+                  // 移动端：屏幕分三区，单击左/中/右分别呼出频道菜单/
+                  // 控制面板/EPG（见 _buildGestureLayer），不再使用贴边
+                  // 窄热区；桌面端保留 hover 边缘自动弹出
 
                   // 桌面端 hover 边缘自动弹出
                   if (controller.isDesktop) ...[
@@ -642,6 +643,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onOpenSettings: _toggleSettings,
                     onScreenshot: _takeScreenshot,
                     onToggleRecord: () => _toggleRecording(controller),
+                    onSwitchWebNative: () =>
+                        controller.switchWebNativePlayback(),
                     onOpenRemoteAdmin:
                         controller.remoteAdminUrl.isEmpty
                             ? null
@@ -1637,48 +1640,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     );
   }
 
-  // ==================== 边缘点击区 ====================
-
-  Widget _buildEdgeTapZones() {
-    // 移动端边缘热区：左右竖条点击开抽屉，底部横条点击呼出信息面板
-    //（网页播放等面板自动隐藏后，底部始终有一个可以呼出的入口）
-    return Positioned.fill(
-      child: Stack(
-        children: [
-          Positioned(
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: _edgeWidth.toDouble(),
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTap: () => _openDrawer(left: true),
-            ),
-          ),
-          Positioned(
-            right: 0,
-            top: 0,
-            bottom: 0,
-            width: _edgeWidth.toDouble(),
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTap: () => _openDrawer(left: false),
-            ),
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            height: 28,
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTap: _showBottomPanel,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // ==================== 抽屉控制 ====================
 
   void _openDrawer({required bool left}) {
     setState(() {
@@ -1815,11 +1777,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         final width = constraints.maxWidth;
         return Row(
           children: [
-            // 左侧：亮度调节 + 左边缘滑出抽屉
-            //（与 v1.0.98 一致：不设 onTap，避免与底部面板的按钮
-            // 在手势竞技场竞争，导致面板上的按钮点不动）
+            // 左侧：上下滑动调亮度、左边缘右滑/单击开频道菜单
             Expanded(
               child: GestureDetector(
+                // 移动端左三分之一：单击开/关频道菜单（不必贴左边缘）
+                onTap: controller.isDesktop
+                    ? null
+                    : () => _toggleDrawer(left: true),
                 onVerticalDragStart: (details) {
                   _isHorizontalDrag = false;
                   _dragStartY = details.globalPosition.dy;
@@ -1868,9 +1832,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                               : null,
                     ),
             ),
-            // 右侧：音量调节 + 右边缘滑出 EPG（与 v1.0.98 一致：不设 onTap）
+            // 右侧：音量调节 + 右边缘滑出 EPG；移动端右三分之一
+            // 单击开/关 EPG 菜单（不必贴右边缘）
             Expanded(
               child: GestureDetector(
+                onTap: controller.isDesktop
+                    ? null
+                    : () => _toggleDrawer(left: false),
                 onVerticalDragStart: (details) {
                   _isHorizontalDrag = false;
                   _dragStartY = details.globalPosition.dy;
@@ -2316,9 +2284,21 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   Timer? _probeTimer;
 
   /// 超时兜底：网站不允许自动播放（需用户手动点播放按钮）时，
-  /// 不能永远黑屏把用户卡死——8 秒后强制把网页推到前台，
-  /// JS 会继续尝试自动播放，用户也可手动点击页面播放器
+  /// 不能永远黑屏把用户卡死——8 秒后若网页自身也没起播，
+  /// 直接把网页推到前台（网页已起播则等嗅探决策出结论）
   Timer? _forceForegroundTimer;
+
+  /// 最终决策窗口（15 秒）：期间没识别出可直连直播主流，
+  /// 判定加密/无流，直接网页全屏播放（不提示、不跳内置）
+  Timer? _decisionTimer;
+
+  /// 网页自身起播后的宽限定时器：再给嗅探 6 秒确认直播主流，
+  /// 仍无结论则立刻网页全屏（加密页用户不用黑屏等满总窗口）
+  Timer? _webReadyGraceTimer;
+
+  /// 页面 <video> 是否已报告起播（决定兜底窗口结束时
+  /// 一次性嗅探候选是否值得接管）
+  bool _webPlayReady = false;
 
   /// 15 秒内 WebView 毫无加载进度：判定为缺少 WebView2 运行时
   Timer? _runtimeTimer;
@@ -2357,9 +2337,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       c.last = now;
       // 更高优先级类型可升级标注
       if (_sniffKindPri(kind) > _sniffKindPri(c.kind)) c.kind = kind;
-      // 25 秒兜底窗口：到时间强制执行最后一轮选择，之后不再尝试，
-      // 加密流就安心留在网页全屏播放
-      _sniffDeadline ??= Timer(const Duration(seconds: 25), () {
+      // 首个候选出现后 15 秒兜底：强制执行最后一轮选择，仍不可接管
+      // 就留在网页全屏播放（_decisionTimer 是无候选时的总兜底）
+      _sniffDeadline ??= Timer(const Duration(seconds: 15), () {
         if (!_sniffDone) _autoPick(force: true);
       });
       // 请求持续到达期间反复安排聚合选择；正在预检时不重入
@@ -2370,6 +2350,29 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         });
       }
     } catch (_) {}
+  }
+
+  /// 网页自身播放器起播：正常页不立即显露网页，再给嗅探 6 秒确认
+  /// 是否存在可直连直播主流；确认不到就网页全屏（加密 MSE 页）。
+  /// 只安排一次。
+  void _markWebPlayReady() {
+    if (_webPlayReady || _sniffDone) return;
+    _webPlayReady = true;
+    _webReadyGraceTimer ??= Timer(const Duration(seconds: 6), () {
+      if (mounted && !_sniffDone) _autoPick(force: true);
+    });
+  }
+
+  /// 决策结束：不再尝试接管，直接让网页全屏播放（加密/DRM/无流，
+  /// 或网页自身已在播而嗅探候选只是侧栏推荐）。全程不弹提示。
+  void _finishWithWeb() {
+    if (_sniffDone) return;
+    _sniffDone = true;
+    _sniffDeadline?.cancel();
+    _sniffAggTimer?.cancel();
+    _forceForegroundTimer?.cancel();
+    _webReadyGraceTimer?.cancel();
+    if (mounted && !widget.foreground) widget.onForeground();
   }
 
   Future<void> _autoPick({required bool force}) async {
@@ -2385,7 +2388,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       alive = list;
     }
     if (alive.isEmpty) {
-      if (force) _sniffDone = true;
+      if (force) _finishWithWeb();
       return;
     }
     alive.sort((a, b) {
@@ -2396,6 +2399,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _sniffChecking = true;
     final pc = context.read<PlayerController>();
     for (final c in alive.take(3)) {
+      // 非强制轮次：只认被持续轮询（count>=2）的直播清单主流，
+      // 页面刚打开时一次性请求的广告/侧栏推荐流不接管；
+      // 强制兜底时：若网页自身已经在播（MSE/blob 加密流），一次性
+      // 候选也不接管——正片显然已由网页播放器处理，安心留网页；
+      // 网页没起播时才允许用唯一候选尝试内置接管
+      if (c.count < 2 && (!force || _webPlayReady)) continue;
       final ok = await pc.checkSniffedStreamPlayable(
         url: c.url,
         kind: c.kind,
@@ -2409,9 +2418,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         _sniffDone = true;
         _sniffChecking = false;
         _sniffDeadline?.cancel();
-        // 短暂提示（OSD 数秒自动消失），随后内置播放器全屏接管
-        OsdBus.show('检测到可直连直播流，正在切换内置播放器',
-            icon: Icons.switch_video);
+        _decisionTimer?.cancel();
+        _forceForegroundTimer?.cancel();
+        _webReadyGraceTimer?.cancel();
+        // 后台静默接管：网页从未显露，直接内置播放器全屏，
+        // 左上角切台 OSD 会照常显示，不额外弹提示
         await pc.playSniffedWebStream(
           url: c.url,
           referer: c.referer ?? widget.url,
@@ -2421,9 +2432,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       }
     }
     _sniffChecking = false;
-    // 预检全部不通过：兜底窗口结束则放弃（加密/DRM，网页继续全屏播）；
+    // 预检全部不通过：兜底窗口结束则留网页全屏（加密/DRM，不提示）；
     // 未到点则等页面后续请求触发下一轮
-    if (force) _sniffDone = true;
+    if (force) _finishWithWeb();
   }
 
   /// 禁用网页右键菜单（<video> 默认的“循环/复制视频地址/另存”等菜单
@@ -2909,12 +2920,17 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 每次打开网页频道前清理 WebView2 缓存，避免旧频道的 Service Worker
     // 或残留状态导致新频道黑屏/长时间不播放
     cleanWebView2Cache();
-    // 后台缓冲期间持续探测，起播即推前台
+    // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
-    // 8 秒仍未自动起播：强制推前台，避免永久黑屏
+    // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播
+    //（站点需手动点播放/卡住），提前推网页避免长时间黑屏；
+    // 网页已起播则继续等嗅探决策
     _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
-      if (mounted && !widget.foreground) widget.onForeground();
+      if (!mounted || widget.foreground) return;
+      if (_sniffAbandoned || !_webPlayReady) widget.onForeground();
     });
+    // 最终决策窗口：15 秒仍无可直连主流 → 加密/无流，直接网页全屏
+    _decisionTimer = Timer(const Duration(seconds: 15), _finishWithWeb);
     // 运行时缺失判定（乐观策略）：注册表/版本查询在不同系统上都不可靠
     // （实测已装 WebView2 的家庭版也会误报）。只要 WebView 能报告任何
     // 加载进度，就证明运行时正常；25 秒内毫无进展才提示安装。
@@ -2932,6 +2948,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     widget.onBridgeDetached();
     _probeTimer?.cancel();
     _forceForegroundTimer?.cancel();
+    _decisionTimer?.cancel();
+    _webReadyGraceTimer?.cancel();
     _runtimeTimer?.cancel();
     _sniffAggTimer?.cancel();
     _sniffDeadline?.cancel();
@@ -2962,7 +2980,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       // WebView2 JSON 解码后通常是 int 1，兼容字符串 "1"
       final playing = r == 1 || r?.toString() == '1';
       if (playing && mounted && !widget.foreground) {
-        widget.onForeground();
+        if (_sniffAbandoned) {
+          // 已知放弃页：起播即推网页
+          widget.onForeground();
+        } else {
+          // 正常页：先记录起播，由嗅探决策决定内置接管还是网页全屏，
+          // 不提前显露网页，避免「先网页再跳内置」的多余切换
+          _markWebPlayReady();
+        }
       }
     } catch (_) {}
   }
@@ -3000,17 +3025,23 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           ),
           onWebViewCreated: (controller) async {
             _webController = controller;
-            // 内置播放失败回退过的网页，本次运行不再尝试自动接管
+            // 内置播放失败回退过、或用户手动选择网页观看的页面，
+            // 本次运行不再尝试自动接管（起播即推网页前台）
             _sniffAbandoned = context
                 .read<PlayerController>()
-                .isSniffAbandonedFor(widget.url);
+                .shouldSkipAutoSniff(widget.url);
             // 把 controller 存到 PlayerController，供 Dart 侧调用网页 JS
             context.read<PlayerController>().webController = controller;
             // JS bridge 通道
             controller.addJavaScriptHandler(
               handlerName: 'omPlaying',
               callback: (_) {
-                if (mounted && !widget.foreground) widget.onForeground();
+                if (!mounted || widget.foreground) return;
+                if (_sniffAbandoned) {
+                  widget.onForeground();
+                } else {
+                  _markWebPlayReady();
+                }
               },
             );
             controller.addJavaScriptHandler(

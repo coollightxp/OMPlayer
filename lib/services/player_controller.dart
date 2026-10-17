@@ -850,6 +850,15 @@ class PlayerController extends ChangeNotifier {
       // 30 秒内仍无网络，保持等待状态，后台继续检测
       return;
     }
+    // 切到与「网页→内置接管」无关的频道（普通换台/启动恢复）：
+    // 清空网页<->内置联动状态，控制面板切换按钮随之复位
+    if (_lastWebChannel == null || channel.id != _lastWebChannel!.id) {
+      _lastWebChannel = null;
+      _sniffTarget = null;
+      _sniffNativeActive = false;
+      _abandonedSniffWebUrl = null;
+      _userWebChoiceUrl = null;
+    }
     // 网页频道（webview:// 包装的网站）：停掉视频，切到内嵌网页控件，
     // 由网站自身的播放器播放；节目单/信息面板浮层继续显示在其上
     if (channel.isWebPage) {
@@ -1091,8 +1100,54 @@ class PlayerController extends ChangeNotifier {
   /// 已判定无法内置播放、放弃自动切换的网页地址（内置播放失败回退
   /// 网页后，同一页面本次运行内不再重复嗅探切换，避免循环）
   String? _abandonedSniffWebUrl;
-  bool isSniffAbandonedFor(String webUrl) =>
-      _abandonedSniffWebUrl == webUrl;
+
+  /// 用户通过控制面板手动切回网页播放的网页地址：该页本次运行内
+  /// 不再自动接管为内置（尊重用户选择，避免切回去又被自动切回来）
+  String? _userWebChoiceUrl;
+
+  /// overlay 是否应跳过自动嗅探接管：内置播放失败放弃的页面、
+  /// 或用户手动选择网页观看的页面
+  bool shouldSkipAutoSniff(String webUrl) =>
+      _abandonedSniffWebUrl == webUrl || _userWebChoiceUrl == webUrl;
+
+  /// 最近一次预检通过的嗅探目标（控制面板网页/内置来回切换用）
+  _SniffTarget? _sniffTarget;
+
+  /// 当前是否处于「网页频道→内置播放器」接管状态
+  bool _sniffNativeActive = false;
+
+  /// 控制面板「网页/内置切换」按钮是否可用：必须是网页频道且拿到过
+  /// 可直连的嗅探流（加密页/普通频道为 false，按钮置灰）
+  bool get canSwitchWebNative =>
+      _lastWebChannel != null && _sniffTarget != null;
+
+  /// 当前是否正在内置播放器中播放接管的网页流
+  bool get isNativeSniffPlayback => _sniffNativeActive && !_webPageActive;
+
+  /// 网页播放器与内置播放器之间来回切换（控制面板切换按钮）。
+  /// 仅在 [canSwitchWebNative] 为真时可调用，切换时给一条短暂提示。
+  Future<void> switchWebNativePlayback() async {
+    final web = _lastWebChannel;
+    final t = _sniffTarget;
+    if (web == null || t == null) return;
+    if (_webPageActive) {
+      // 网页 → 内置
+      _userWebChoiceUrl = null;
+      OsdBus.show('正在切换到内置播放器全屏播放',
+          icon: Icons.switch_video);
+      await playSniffedWebStream(
+        url: t.url,
+        referer: t.referer,
+        userAgent: t.ua,
+      );
+    } else {
+      // 内置 → 网页：标记用户选择，overlay 重建后不再自动接管
+      OsdBus.show('正在切换到网页播放器全屏播放', icon: Icons.language);
+      _sniffNativeActive = false;
+      _userWebChoiceUrl = web.webPageUrl;
+      await _openWebPageChannel(web);
+    }
+  }
 
   /// 预检嗅探到的媒体流能否被内置播放器（ffmpeg 内核）直接播放。
   /// 带 Referer/UA 模拟网页环境；HLS/DASH 下载清单文本判断是否
@@ -1167,6 +1222,13 @@ class PlayerController extends ChangeNotifier {
             ? _currentChannel
             : null;
     _lastWebChannel = web;
+    // 记住最近一个可直连嗅探目标：控制面板可在网页/内置间来回切换
+    _sniffTarget = _SniffTarget(
+      url: url,
+      referer: referer,
+      ua: (userAgent ?? '').trim(),
+    );
+    _sniffNativeActive = true;
     exitWebPage();
     const desktopUa =
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -1202,9 +1264,13 @@ class PlayerController extends ChangeNotifier {
   void _sniffPlaybackFailed() {
     if (!_sniffedFromWeb) return;
     _sniffedFromWeb = false;
+    _sniffNativeActive = false;
+    // 预检放行但原生仍解不了（自定义加密/鉴权失败）：切换按钮置灰，
+    // 回退网页后本页不再自动接管
+    _sniffTarget = null;
     final web = _lastWebChannel;
     if (web != null) _abandonedSniffWebUrl = web.webPageUrl;
-    OsdBus.show('该直播流为加密格式，已切换网页播放器全屏观看',
+    OsdBus.show('内置播放器无法播放该流，已切回网页播放',
         icon: Icons.language);
     if (web != null) {
       Future(() => _openWebPageChannel(web));
@@ -2647,4 +2713,17 @@ class PlayerController extends ChangeNotifier {
     clockVisible.dispose();
     super.dispose();
   }
+}
+
+/// 预检通过的网页嗅探媒体流（控制面板网页/内置来回切换时复用，
+/// 避免重新嗅探）
+class _SniffTarget {
+  final String url;
+  final String referer;
+  final String ua;
+  _SniffTarget({
+    required this.url,
+    required this.referer,
+    required this.ua,
+  });
 }
