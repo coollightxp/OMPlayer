@@ -121,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.157';
+  static const String _appVersion = '1.0.158';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -478,6 +478,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       child: _WebChannelOverlay(
                         key: ValueKey(webUrl),
                         url: webUrl,
+                        title: controller.currentChannel?.title ?? '',
                         foreground: controller.webPageForeground,
                         onForeground: () =>
                             controller.setWebForeground(true),
@@ -2232,6 +2233,9 @@ class _WebDoubleTapFullScreenState extends State<_WebDoubleTapFullScreen> {
 class _WebChannelOverlay extends StatefulWidget {
   final String url;
 
+  /// 频道名：站点脚本页内切台时按名称匹配（芒果TV 点频道、央视频找节目单）
+  final String title;
+
   /// 网页是否已处于前台播放（false=后台缓冲，被黑屏占位覆盖）
   final bool foreground;
 
@@ -2260,6 +2264,7 @@ class _WebChannelOverlay extends StatefulWidget {
   const _WebChannelOverlay({
     super.key,
     required this.url,
+    required this.title,
     required this.foreground,
     required this.onForeground,
     required this.onWebKey,
@@ -2824,24 +2829,27 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
     // 固定铺满：可见面积最大的主视频（inline 样式对 shadow DOM 内
     // video 同样生效）；没有可达 video 时（跨域 iframe 播放器，
-    // 如芒果TV）铺满占视口 40% 以上的最大 iframe
-    var bestV = null, bestVA = 0;
-    for (var k = 0; k < vs.length; k++) {
-      var rr;
-      try { rr = vs[k].getBoundingClientRect(); } catch(e) { continue; }
-      var aa = (rr.width >= 80 && rr.height >= 60) ? rr.width * rr.height : 0;
-      if (aa > bestVA) { bestVA = aa; bestV = vs[k]; }
-    }
-    if (bestV) pinEl(bestV);
-    else {
-      var fi = largestIframe();
-      if (fi) {
-        pinEl(fi);
-        // 播放器在跨域 iframe（内容不可达，如芒果TV）：iframe 铺满
-        // 即视为网页起播推前台，不必走 8 秒重载/20 秒兜底链黑屏干等
-        if (!window.__omPlayingFired) {
-          window.__omPlayingFired = true;
-          fire('omPlaying');
+    // 如芒果TV）铺满占视口 40% 以上的最大 iframe。
+    // 站点专用脚本（芒果TV 等）置 __omSkipPin 自行接管铺满，让位
+    if (!window.__omSkipPin) {
+      var bestV = null, bestVA = 0;
+      for (var k = 0; k < vs.length; k++) {
+        var rr;
+        try { rr = vs[k].getBoundingClientRect(); } catch(e) { continue; }
+        var aa = (rr.width >= 80 && rr.height >= 60) ? rr.width * rr.height : 0;
+        if (aa > bestVA) { bestVA = aa; bestV = vs[k]; }
+      }
+      if (bestV) pinEl(bestV);
+      else {
+        var fi = largestIframe();
+        if (fi) {
+          pinEl(fi);
+          // 播放器在跨域 iframe（内容不可达，如芒果TV）：iframe 铺满
+          // 即视为网页起播推前台，不必走 8 秒重载/20 秒兜底链黑屏干等
+          if (!window.__omPlayingFired) {
+            window.__omPlayingFired = true;
+            fire('omPlaying');
+          }
         }
       }
     }
@@ -2869,6 +2877,1137 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
   setInterval(kick, 700);
   kick();
+})();
+''';
+
+  /// ===== 站点专用脚本（移植自 NewBox 2.0.7 站点脚本库，零 hook 纯 DOM）=====
+  /// 命中站点时自行接管铺满/点台/起播确认：首行置 __omSkipPin 让 _bootJs
+  /// 的通用铺满让位，起播就绪统一走 omPlaying 桥（与 _bootJs 同一通道，
+  /// __omPlayingFired 哨兵保证只上报一次）。频道名经 __omSiteGo(url, name)
+  /// 传入，同 URL 页内切台无需重载 WebView。
+
+  /// 芒果TV：直播大厅单页，按 cameraId/频道名点台（含"热门/卫视台/地方台/
+  /// 特色频道"标签页轮点展开），切台后按 src 变化/进度回跳确认新流
+  static const String _mgtvJs = r'''
+(function () {
+  window.__omSkipPin = 1;
+  // 通用 _bootJs 可能已抢先铺满：清掉让站点脚本重新接管
+  try {
+    var pinned = document.querySelectorAll('[data-om-pin]');
+    for (var pi = 0; pi < pinned.length; pi++) {
+      pinned[pi].removeAttribute('data-om-pin');
+      pinned[pi].style.cssText = '';
+    }
+  } catch (e) {}
+
+  var needNew = 0;
+  var prevSrc = "";
+  var prevTime = 0;
+  var seenGap = 0;
+  var didSwitch = 0;
+
+  function fireReady() {
+    if (window.__omPlayingFired) return;
+    window.__omPlayingFired = true;
+    try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
+  }
+
+  function cssOnce() {
+    if (document.getElementById("om-mgtv-css")) return;
+    var parent = document.head || document.documentElement;
+    if (!parent) return;
+    var s = document.createElement("style");
+    s.id = "om-mgtv-css";
+    s.textContent =
+      "html,body,#__nuxt,#__layout,#mgtv-default-layout,.content,.channel-page,.channel-page-wrapper{" +
+      "margin:0!important;padding:0!important;overflow:hidden!important;background:#000!important;" +
+      "width:100%!important;height:100%!important}" +
+      "#m-topheader,header,footer,.channel-left-nav,.channel-left-list,.channel-left-skeleton," +
+      ".m-topheader-channel,.channel-top-bg-header,.side-float,.side-float-bar," +
+      ".mango-control-bar,.ControlBar,[class*=\"ControlBar\"]," +
+      ".vjs-control-bar,.vjs-big-play-button,.vjs-poster" +
+      "{display:none!important;visibility:hidden!important;pointer-events:none!important}" +
+      "video,.live-player-tv-module video{" +
+      "object-fit:contain!important;object-position:center center!important;" +
+      "transform:none!important;zoom:1!important}" +
+      "video::-webkit-media-controls{display:none!important}";
+    parent.appendChild(s);
+  }
+
+  function vp() {
+    var v = window.visualViewport;
+    if (v && v.width > 0 && v.height > 0) {
+      return { x: v.offsetLeft || 0, y: v.offsetTop || 0, w: v.width, h: v.height };
+    }
+    return { x: 0, y: 0, w: window.innerWidth || 0, h: window.innerHeight || 0 };
+  }
+
+  function playerBox() {
+    return document.querySelector(".live-player-tv-module")
+      || document.querySelector(".player-container .player")
+      || document.querySelector("[class*='live-player']")
+      || document.querySelector("[class*='LivePlayer']")
+      || document.querySelector(".mango-player")
+      || document.querySelector("video");
+  }
+
+  function videoEl() {
+    var box = playerBox();
+    if (box && box.tagName === "VIDEO") return box;
+    return (box && box.querySelector("video")) || document.querySelector("video");
+  }
+
+  function hideSiblings(el) {
+    if (!el) return;
+    var n = el;
+    while (n && n !== document.body && n !== document.documentElement) {
+      var p = n.parentElement;
+      if (!p) break;
+      var kids = p.children;
+      for (var i = 0; i < kids.length; i++) {
+        var c = kids[i];
+        if (c === n) continue;
+        var tag = c.tagName;
+        if (tag === "SCRIPT" || tag === "STYLE" || tag === "LINK" || tag === "META") continue;
+        c.style.setProperty("display", "none", "important");
+        c.style.setProperty("visibility", "hidden", "important");
+      }
+      n = p;
+    }
+  }
+
+  function unclip(el) {
+    var n = el;
+    while (n && n !== document.documentElement) {
+      if (n.getAttribute && n.getAttribute("data-om-site-box")) {
+        n = n.parentElement;
+        continue;
+      }
+      if (n.style) {
+        n.style.setProperty("overflow", "visible", "important");
+        n.style.setProperty("transform", "none", "important");
+        n.style.setProperty("filter", "none", "important");
+        n.style.setProperty("clip-path", "none", "important");
+        n.style.setProperty("zoom", "1", "important");
+        n.style.setProperty("background", "#000", "important");
+      }
+      n = n.parentElement;
+    }
+  }
+
+  function pinBox(el, s, z) {
+    if (!el || !el.style || s.w < 8 || s.h < 8) return;
+    var key = s.x + "," + s.y + "," + s.w + "," + s.h + "," + z;
+    if (el.getAttribute("data-om-site-box") === key && (el.offsetWidth || 0) >= s.w - 8) return;
+    el.setAttribute("data-om-site-box", key);
+    el.style.cssText =
+      "display:block!important;position:fixed!important;" +
+      "left:" + s.x + "px!important;top:" + s.y + "px!important;" +
+      "width:" + s.w + "px!important;height:" + s.h + "px!important;" +
+      "max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;" +
+      "margin:0!important;padding:0!important;border:none!important;" +
+      "z-index:" + z + "!important;background:#000!important;overflow:hidden!important;" +
+      "transform:none!important;zoom:1!important";
+  }
+
+  function fillMedia(el) {
+    if (!el || !el.style) return;
+    var tf = (el.style.transform || "").replace(/\s/g, "");
+    if (el.getAttribute("data-om-site-m") === "1" && (!tf || tf === "none")) return;
+    el.setAttribute("data-om-site-m", "1");
+    el.style.cssText =
+      "display:block!important;position:absolute!important;" +
+      "left:0!important;top:0!important;right:0!important;bottom:0!important;" +
+      "width:100%!important;height:100%!important;" +
+      "max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;" +
+      "margin:0!important;padding:0!important;border:none!important;" +
+      "object-fit:contain!important;object-position:center center!important;" +
+      "transform:none!important;zoom:1!important;background:#000!important";
+  }
+
+  var laying = 0;
+
+  function layout() {
+    if (laying) return !!window.__omMgtvLayoutReady;
+    laying = 1;
+    try {
+      return layoutWork();
+    } finally {
+      laying = 0;
+    }
+  }
+
+  function layoutWork() {
+    cssOnce();
+    var s = vp();
+    if (s.w < 8 || s.h < 8) return false;
+    var box = playerBox();
+    var v = videoEl();
+    if (box) {
+      hideSiblings(box);
+      pinBox(box, s, 9998);
+    }
+    if (v) {
+      unclip(v);
+      try {
+        v.controls = false;
+        v.removeAttribute("x5-video-player-fullscreen");
+        v.setAttribute("playsinline", "");
+        v.setAttribute("webkit-playsinline", "true");
+      } catch (e) {}
+      if (box && v !== box) fillMedia(v);
+      else pinBox(v, s, 10000);
+    }
+    var ok = !!(v && s.w > 8 && s.h > 8);
+    window.__omMgtvLayoutReady = ok && !needNew;
+    return ok;
+  }
+
+  function unmute() {
+    if (window.__omUserPaused) return;
+    var v = videoEl();
+    if (!v) return;
+    try {
+      v.controls = false;
+      v.muted = false;
+      v.volume = (typeof window.__omVol === "number") ? window.__omVol : 1;
+      if (v.paused) v.play();
+    } catch (e) {}
+  }
+
+  function srcOf(v) {
+    if (!v) return "";
+    try {
+      return v.currentSrc || v.src || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function markSwitch() {
+    var v = videoEl();
+    prevSrc = srcOf(v);
+    prevTime = v ? v.currentTime || 0 : 0;
+    seenGap = 0;
+    needNew = 1;
+    window.__omMgtvLayoutReady = 0;
+  }
+
+  function pictureReady() {
+    var v = videoEl();
+    if (!v || v.videoWidth * v.videoHeight === 0 || v.readyState < 2) {
+      if (needNew) seenGap = 1;
+      return false;
+    }
+    if (!layout()) return false;
+    if (!needNew) return true;
+    var src = srcOf(v);
+    if (prevSrc && src && src !== prevSrc) return true;
+    if (v.currentTime + 0.35 < prevTime) return true;
+    return !!seenGap;
+  }
+
+  function bindVideo(gen) {
+    var v = videoEl();
+    if (!v || v.getAttribute("data-om-site-g") === String(gen)) return;
+    v.setAttribute("data-om-site-g", String(gen));
+    function onEv() {
+      if (gen !== window.__omMgtvPickGen) return;
+      if (v.readyState < 2 || v.videoWidth * v.videoHeight === 0) seenGap = 1;
+      if (pictureReady()) tellReady(gen);
+    }
+    v.addEventListener("emptied", onEv);
+    v.addEventListener("loadstart", onEv);
+    v.addEventListener("loadeddata", onEv);
+    v.addEventListener("playing", onEv);
+    v.addEventListener("canplay", onEv);
+  }
+
+  function tellReady(gen) {
+    if (gen !== window.__omMgtvPickGen) return;
+    if (!pictureReady()) return;
+    needNew = 0;
+    unmute();
+    window.__omMgtvLayoutReady = 1;
+    fireReady();
+  }
+
+  function cameraIdFrom(url) {
+    var m = String(url || "").match(/[?&#]cameraId=(\d+)/i);
+    if (m) return m[1];
+    try {
+      return new URL(url || location.href, location.href).searchParams.get("cameraId") || "";
+    } catch (e) {}
+    return "";
+  }
+
+  function compact(s) {
+    return String(s || "").replace(/\s+/g, "");
+  }
+
+  function channelLabel(el) {
+    return el.getAttribute("title")
+      || el.getAttribute("data-title")
+      || el.getAttribute("aria-label")
+      || el.textContent
+      || "";
+  }
+
+  function idOf(el) {
+    return el.getAttribute("data-channel-sid")
+      || el.getAttribute("data-sid")
+      || cameraIdFrom(el.getAttribute("href") || "");
+  }
+
+  function channelNodes() {
+    return document.querySelectorAll(
+      "a.channel,[data-channel-sid],[data-sid],a[href*='cameraId='],.channels a"
+    );
+  }
+
+  function isSelected(el) {
+    var c = " " + (el.className || "") + " ";
+    return c.indexOf(" selected ") >= 0 || c.indexOf(" active ") >= 0
+      || el.getAttribute("aria-current") === "true";
+  }
+
+  function clickEl(el) {
+    if (!el) return false;
+    if (isSelected(el)) return true;
+    didSwitch = 1;
+    try {
+      el.click();
+    } catch (e) {}
+    return true;
+  }
+
+  function clickById(id) {
+    if (!id) return false;
+    var links = channelNodes();
+    var i;
+    for (i = 0; i < links.length; i++) {
+      if (idOf(links[i]) === id) return clickEl(links[i]);
+    }
+    return false;
+  }
+
+  function clickByName(name) {
+    var want = compact(name);
+    if (!want) return false;
+    var links = channelNodes();
+    var i;
+    var label;
+    for (i = 0; i < links.length; i++) {
+      if (compact(channelLabel(links[i])) === want) return clickEl(links[i]);
+    }
+    links = document.querySelectorAll("a");
+    for (i = 0; i < links.length; i++) {
+      label = compact(channelLabel(links[i]));
+      if (label === want) return clickEl(links[i]);
+    }
+    return false;
+  }
+
+  function clickTab() {
+    var tabs = document.querySelectorAll(".channels .tabs .item");
+    if (!tabs.length) {
+      var names = { "热门": 1, "卫视台": 1, "卫视": 1, "地方台": 1, "特色频道": 1 };
+      var all = document.querySelectorAll("a,button");
+      var found = [];
+      var i;
+      for (i = 0; i < all.length; i++) {
+        if (names[compact(channelLabel(all[i]))]) found.push(all[i]);
+      }
+      tabs = found;
+    }
+    if (!tabs.length) return false;
+    var i = window.__omMgtvTab || 0;
+    if (i >= tabs.length) {
+      window.__omMgtvTab = 0;
+      return false;
+    }
+    var tab = tabs[i];
+    window.__omMgtvTab = i + 1;
+    if (!isSelected(tab)) {
+      try {
+        tab.click();
+      } catch (e) {}
+    }
+    return false;
+  }
+
+  function clickWant(id, liveName) {
+    if (id && clickById(id)) {
+      window.__omMgtvTab = 0;
+      return true;
+    }
+    if (liveName && clickByName(liveName)) {
+      window.__omMgtvTab = 0;
+      return true;
+    }
+    if (!id && !liveName) return !!playerBox();
+    return clickTab();
+  }
+
+  function waitFrame(gen) {
+    var n = 0;
+    function tick() {
+      if (gen !== window.__omMgtvPickGen) return;
+      try {
+        layout();
+        bindVideo(gen);
+        if (pictureReady()) {
+          tellReady(gen);
+          return;
+        }
+      } catch (e) {}
+      if (++n < 72) setTimeout(tick, n < 12 ? 80 : 150);
+    }
+    tick();
+  }
+
+  window.__omSiteGo = function (url, liveName) {
+    var id = cameraIdFrom(url || location.href);
+    var name = compact(liveName);
+    var want = id ? ("id:" + id) : (name ? ("nm:" + name) : "");
+    if (want && want === window.__omMgtvWant) {
+      if (pictureReady()) tellReady(window.__omMgtvPickGen);
+      else layout();
+      return;
+    }
+    window.__omMgtvWant = want;
+    window.__omMgtvTab = 0;
+    window.__omMgtvPickGen = (window.__omMgtvPickGen || 0) + 1;
+    var gen = window.__omMgtvPickGen;
+    if (window.__omMgtvTimer) {
+      clearTimeout(window.__omMgtvTimer);
+      window.__omMgtvTimer = 0;
+    }
+    var n = 0;
+    function tryClick() {
+      if (gen !== window.__omMgtvPickGen) return;
+      window.__omMgtvTimer = 0;
+      cssOnce();
+      didSwitch = 0;
+      if (clickWant(id, name)) {
+        if (didSwitch) markSwitch();
+        waitFrame(gen);
+        return;
+      }
+      if (++n < 24) window.__omMgtvTimer = setTimeout(tryClick, 150);
+      else waitFrame(gen);
+    }
+    tryClick();
+  };
+
+  window.__omMgtvRelayout = function () {
+    var el = playerBox();
+    if (el) el.removeAttribute("data-om-site-box");
+    var v = videoEl();
+    if (v) v.removeAttribute("data-om-site-m");
+    layout();
+  };
+
+  cssOnce();
+  if (!window.__omMgtvResize) {
+    window.__omMgtvResize = 1;
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", window.__omMgtvRelayout);
+      window.visualViewport.addEventListener("scroll", window.__omMgtvRelayout);
+    }
+    window.addEventListener("resize", window.__omMgtvRelayout);
+  }
+
+  if (!window.__omMgtvBoot) {
+    window.__omMgtvBoot = 1;
+    setTimeout(function () {
+      if (window.__omMgtvPickGen) return;
+      window.__omMgtvPickGen = 1;
+      waitFrame(1);
+    }, 0);
+  }
+})();
+''';
+
+  /// 央视频：电视墙单页，优先读页面 Vue VM 节目单（pid/频道名模糊匹配
+  /// "综合"后缀变体）调 changeTV 切台，失败退回 DOM 点右侧频道列表
+  static const String _yangshipinJs = r'''
+(function () {
+  window.__omSkipPin = 1;
+  try {
+    var pinned = document.querySelectorAll('[data-om-pin]');
+    for (var pi = 0; pi < pinned.length; pi++) {
+      pinned[pi].removeAttribute('data-om-pin');
+      pinned[pi].style.cssText = '';
+    }
+  } catch (e) {}
+
+  var pickGen = 0;
+  var wantKey = "";
+  var timer = 0;
+  var laying = 0;
+  var boot = 0;
+  var needNew = 0;
+  var prevSrc = "";
+  var prevTime = 0;
+  var seenGap = 0;
+
+  function fireReady() {
+    if (window.__omPlayingFired) return;
+    window.__omPlayingFired = true;
+    try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
+  }
+
+  function cssOnce() {
+    var head = document.head || document.documentElement;
+    if (!head || document.getElementById("om-ysp-css")) return;
+    if (!document.getElementById("om-ysp-vp")) {
+      var meta = document.createElement("meta");
+      meta.id = "om-ysp-vp";
+      meta.name = "viewport";
+      meta.content = "width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no";
+      head.insertBefore(meta, head.firstChild);
+    }
+    var s = document.createElement("style");
+    s.id = "om-ysp-css";
+    s.textContent =
+      "html,body{margin:0!important;padding:0!important;overflow:hidden!important;" +
+      "background:#000!important;width:100%!important;height:100%!important}" +
+      ".play-div{height:auto!important;padding:0!important}" +
+      "header,.header,.max-footer,.footer,.tv-zhan,.tv-main-con-r," +
+      ".y-full-control,.y-control-outside,.y-progress-wrapper,.y-full-bg," +
+      ".volume-muted-tip,.volume-muted-tip-container,.voice-control-cont,.video-status-tip," +
+      ".tv-main-con-l-vid .con,.tv-main-con-l-vid .black-bg," +
+      ".tv-main-con-l-vid .trans-black-bg,.tv-main-con-l-vid .loading," +
+      ".tv-main-con-l-vid .loading-main,.tv-main-con-l-vid .loading1," +
+      ".tv-main-con-l-vid .pic-loading,.tv-main-con-l-vid .poster-con," +
+      ".tv-main-con-l-vid .poster-con-cover,.tv-main-con-l-vid .playBtn," +
+      ".tv-main-con-l-vid .play-btn" +
+      "{display:none!important;visibility:hidden!important;pointer-events:none!important}" +
+      "video{object-fit:contain!important;object-position:center center!important;" +
+      "transform:none!important;zoom:1!important}" +
+      "video::-webkit-media-controls{display:none!important}";
+    head.appendChild(s);
+  }
+
+  function vp() {
+    var v = window.visualViewport;
+    if (v && v.width > 0 && v.height > 0) {
+      return { x: v.offsetLeft || 0, y: v.offsetTop || 0, w: v.width, h: v.height };
+    }
+    return { x: 0, y: 0, w: window.innerWidth || 0, h: window.innerHeight || 0 };
+  }
+
+  function playerBox() {
+    return document.querySelector(".tv-main-con-l-vid");
+  }
+
+  function videoEl() {
+    var box = playerBox();
+    return box ? box.querySelector("video") : null;
+  }
+
+  function hideSiblings(el) {
+    var n = el;
+    while (n && n !== document.body && n !== document.documentElement) {
+      var p = n.parentElement;
+      if (!p) break;
+      var kids = p.children;
+      for (var i = 0; i < kids.length; i++) {
+        var c = kids[i];
+        if (c === n) continue;
+        var tag = c.tagName;
+        if (tag === "SCRIPT" || tag === "STYLE" || tag === "LINK" || tag === "META") continue;
+        c.style.setProperty("display", "none", "important");
+        c.style.setProperty("visibility", "hidden", "important");
+      }
+      n = p;
+    }
+  }
+
+  function unclip(el) {
+    var n = el;
+    while (n && n !== document.documentElement) {
+      if (n.getAttribute && n.getAttribute("data-om-site-box")) {
+        n = n.parentElement;
+        continue;
+      }
+      if (n.style) {
+        n.style.setProperty("overflow", "visible", "important");
+        n.style.setProperty("transform", "none", "important");
+        n.style.setProperty("filter", "none", "important");
+        n.style.setProperty("clip-path", "none", "important");
+        n.style.setProperty("zoom", "1", "important");
+        n.style.setProperty("background", "#000", "important");
+      }
+      n = n.parentElement;
+    }
+  }
+
+  function pinBox(el, s) {
+    if (!el || !el.style || s.w < 8 || s.h < 8) return;
+    var key = s.x + "," + s.y + "," + s.w + "," + s.h;
+    if (el.getAttribute("data-om-site-box") === key && (el.offsetWidth || 0) >= s.w - 8) return;
+    el.setAttribute("data-om-site-box", key);
+    el.style.cssText =
+      "display:block!important;position:fixed!important;" +
+      "left:" + s.x + "px!important;top:" + s.y + "px!important;" +
+      "width:" + s.w + "px!important;height:" + s.h + "px!important;" +
+      "max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;" +
+      "margin:0!important;padding:0!important;border:none!important;" +
+      "z-index:9998!important;background:#000!important;overflow:hidden!important;" +
+      "transform:none!important;zoom:1!important";
+  }
+
+  function fillInner(el) {
+    if (!el || !el.style || el.getAttribute("data-om-site-box")) return;
+    el.style.cssText =
+      "display:block!important;position:absolute!important;" +
+      "left:0!important;top:0!important;right:0!important;bottom:0!important;" +
+      "width:100%!important;height:100%!important;" +
+      "max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;" +
+      "margin:0!important;padding:0!important;border:none!important;" +
+      "background:transparent!important;overflow:hidden!important;" +
+      "transform:none!important;zoom:1!important";
+  }
+
+  function fillVideo(el) {
+    if (!el || !el.style) return;
+    try {
+      el.removeAttribute("width");
+      el.removeAttribute("height");
+      el.controls = false;
+      el.removeAttribute("x5-video-player-fullscreen");
+      el.removeAttribute("x5-video-orientation");
+      el.setAttribute("playsinline", "");
+      el.setAttribute("webkit-playsinline", "true");
+    } catch (e) {}
+    el.style.cssText =
+      "display:block!important;position:absolute!important;" +
+      "left:0!important;top:0!important;right:0!important;bottom:0!important;" +
+      "width:100%!important;height:100%!important;" +
+      "max-width:100%!important;max-height:100%!important;min-width:0!important;min-height:0!important;" +
+      "margin:0!important;padding:0!important;border:none!important;" +
+      "object-fit:contain!important;object-position:center center!important;" +
+      "transform:none!important;zoom:1!important;background:#000!important";
+  }
+
+  function flattenPlayer(box) {
+    var nodes = box.querySelectorAll("live-player,.play-div,.play-div-div,.c-container,.video-con");
+    for (var i = 0; i < nodes.length; i++) fillInner(nodes[i]);
+  }
+
+  function hideSiteChrome(box) {
+    var nodes = box.querySelectorAll(
+      ".con,.bg,.black-bg,.trans-black-bg,.loading,.loading-main,.loading1," +
+      ".pic-loading,.poster-con,.poster-con-cover,.playBtn,.play-btn"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || el.tagName === "VIDEO" || el.querySelector("video")) continue;
+      el.style.setProperty("display", "none", "important");
+      el.style.setProperty("visibility", "hidden", "important");
+      el.style.setProperty("pointer-events", "none", "important");
+    }
+  }
+
+  function layoutWork() {
+    cssOnce();
+    var s = vp();
+    if (s.w < 8 || s.h < 8) return false;
+    var box = playerBox();
+    var v = videoEl();
+    if (!box) return false;
+    hideSiblings(box);
+    unclip(box);
+    pinBox(box, s);
+    flattenPlayer(box);
+    hideSiteChrome(box);
+    if (v) {
+      unclip(v);
+      fillVideo(v);
+    }
+    var ok = !!(v && s.w > 8 && s.h > 8);
+    window.__omYspLayoutReady = ok && !needNew;
+    return ok;
+  }
+
+  function layout() {
+    if (laying) return !!window.__omYspLayoutReady;
+    laying = 1;
+    try {
+      return layoutWork();
+    } finally {
+      laying = 0;
+    }
+  }
+
+  function unmute() {
+    if (window.__omUserPaused) return;
+    var v = videoEl();
+    if (!v) return;
+    try {
+      v.controls = false;
+      v.muted = false;
+      v.volume = (typeof window.__omVol === "number") ? window.__omVol : 1;
+      if (v.paused) v.play();
+    } catch (e) {}
+  }
+
+  function srcOf(v) {
+    if (!v) return "";
+    try {
+      return v.currentSrc || v.src || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function markSwitch() {
+    var v = videoEl();
+    prevSrc = srcOf(v);
+    prevTime = v ? v.currentTime || 0 : 0;
+    seenGap = 0;
+    needNew = 1;
+    window.__omYspLayoutReady = 0;
+  }
+
+  function pictureReady() {
+    var v = videoEl();
+    if (!v || v.videoWidth * v.videoHeight === 0 || v.readyState < 2) {
+      if (needNew) seenGap = 1;
+      return false;
+    }
+    if (!layout()) return false;
+    if (!needNew) return true;
+    var src = srcOf(v);
+    if (prevSrc && src && src !== prevSrc) return true;
+    if (v.currentTime + 0.35 < prevTime) return true;
+    return !!seenGap;
+  }
+
+  function bindVideo(gen) {
+    var v = videoEl();
+    if (!v || v.getAttribute("data-om-site-g") === String(gen)) return;
+    v.setAttribute("data-om-site-g", String(gen));
+    function onEv() {
+      if (gen !== pickGen) return;
+      if (v.readyState < 2 || v.videoWidth * v.videoHeight === 0) seenGap = 1;
+      if (pictureReady()) tellReady(gen);
+    }
+    v.addEventListener("emptied", onEv);
+    v.addEventListener("loadstart", onEv);
+    v.addEventListener("loadeddata", onEv);
+    v.addEventListener("playing", onEv);
+    v.addEventListener("canplay", onEv);
+  }
+
+  function tellReady(gen) {
+    if (gen !== pickGen) return;
+    if (!pictureReady()) return;
+    needNew = 0;
+    unmute();
+    window.__omYspLayoutReady = 1;
+    fireReady();
+  }
+
+  function parsePid(url) {
+    try {
+      return new URL(url || location.href, location.href).searchParams.get("pid") || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function compact(s) {
+    return String(s || "").replace(/\s+/g, "");
+  }
+
+  function sameName(got, want) {
+    var a = compact(got);
+    var b = compact(want);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    return a === b + "综合" || a === b + "综合频道"
+      || b === a + "综合" || b === a + "综合频道";
+  }
+
+  function vmHasChange(vm) {
+    if (!vm) return null;
+    if (typeof vm.changeTV === "function") return vm;
+    var ch = vm.$children || [];
+    for (var i = 0; i < ch.length; i++) {
+      var hit = vmHasChange(ch[i]);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function hallVm() {
+    var n = document.querySelector(".tv-main-con-l-vid")
+      || document.querySelector(".tv-main-con")
+      || document.querySelector(".tv")
+      || document.getElementById("app")
+      || document.body;
+    while (n) {
+      var hit = vmHasChange(n.__vue__);
+      if (hit) return hit;
+      n = n.parentElement;
+    }
+    return vmHasChange(document.getElementById("app") && document.getElementById("app").__vue__);
+  }
+
+  function items(vm) {
+    var out = [];
+    var tabs = vm.tvTabs;
+    var i;
+    if (tabs) {
+      for (i = 0; i < tabs.length; i++) {
+        if (tabs[i] && tabs[i].length) out = out.concat(tabs[i]);
+      }
+    }
+    if (vm.tabA && vm.tabA.length) out = out.concat(vm.tabA);
+    if (vm.tabB && vm.tabB.length) out = out.concat(vm.tabB);
+    return out;
+  }
+
+  function findItem(vm, pid, name) {
+    var list = items(vm);
+    var i;
+    if (pid) {
+      for (i = 0; i < list.length; i++) {
+        if (list[i] && String(list[i].pid) === String(pid)) return list[i];
+      }
+    }
+    if (name) {
+      for (i = 0; i < list.length; i++) {
+        if (list[i] && sameName(list[i].channelName, name)) return list[i];
+      }
+    }
+    return null;
+  }
+
+  function currentPid(vm) {
+    return String((vm.tvIndex && vm.tvIndex.pid) || "");
+  }
+
+  function clickChannel(name) {
+    if (!name) return -1;
+    var nodes = document.querySelectorAll(".tv-main-con-r-list-left-imga");
+    for (var i = 0; i < nodes.length; i++) {
+      if (!sameName(nodes[i].textContent, name)) continue;
+      if ((" " + (nodes[i].className || "") + " ").indexOf(" tvSelect ") >= 0) return 0;
+      nodes[i].click();
+      return 1;
+    }
+    return -1;
+  }
+
+  function changeTo(pid, name) {
+    var vm = hallVm();
+    if (vm) {
+      if (pid && currentPid(vm) === String(pid)) return 0;
+      var item = findItem(vm, pid, name);
+      if (item) {
+        if (String(item.pid) === currentPid(vm)) return 0;
+        vm.changeTV(item);
+        return 1;
+      }
+    }
+    return clickChannel(name);
+  }
+
+  function waitFrame(gen) {
+    var n = 0;
+    function tick() {
+      if (gen !== pickGen) return;
+      try {
+        layout();
+        bindVideo(gen);
+        if (pictureReady()) {
+          tellReady(gen);
+          return;
+        }
+      } catch (e) {}
+      if (++n < 72) setTimeout(tick, n < 12 ? 80 : 150);
+    }
+    tick();
+  }
+
+  window.__omSiteGo = function (url, liveName) {
+    var pid = parsePid(url || location.href);
+    var name = compact(liveName);
+    var next = pid ? ("pid:" + pid) : (name ? ("nm:" + name) : "");
+    if (next && next === wantKey) {
+      if (pictureReady()) tellReady(pickGen);
+      else layout();
+      return;
+    }
+    wantKey = next;
+    pickGen += 1;
+    var gen = pickGen;
+    if (timer) {
+      clearTimeout(timer);
+      timer = 0;
+    }
+    var n = 0;
+    function tryGo() {
+      if (gen !== pickGen) return;
+      timer = 0;
+      cssOnce();
+      if (!pid && !name) {
+        waitFrame(gen);
+        return;
+      }
+      var hit = changeTo(pid, name);
+      if (hit >= 0) {
+        if (hit) markSwitch();
+        waitFrame(gen);
+        return;
+      }
+      if (++n < 24) timer = setTimeout(tryGo, 150);
+      else waitFrame(gen);
+    }
+    tryGo();
+  };
+
+  window.__omYspRelayout = function () {
+    var el = playerBox();
+    if (el) el.removeAttribute("data-om-site-box");
+    layout();
+  };
+
+  cssOnce();
+  if (!window.__omYspResize) {
+    window.__omYspResize = 1;
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", window.__omYspRelayout);
+      window.visualViewport.addEventListener("scroll", window.__omYspRelayout);
+    }
+    window.addEventListener("resize", window.__omYspRelayout);
+  }
+
+  if (!boot) {
+    boot = 1;
+    setTimeout(function () {
+      if (pickGen) return;
+      pickGen = 1;
+      waitFrame(1);
+    }, 0);
+  }
+})();
+''';
+
+  /// 咪咕：单频道页（无页内切台），点"请点击播放/继续观看/免费观看"
+  /// 开播按钮，过滤 iflyad/ggv 广告源，播放器盒 pin 满并解开祖先 transform
+  static const String _miguJs = r'''
+(function () {
+  window.__omSkipPin = 1;
+  try {
+    var pinned = document.querySelectorAll('[data-om-pin]');
+    for (var pi = 0; pi < pinned.length; pi++) {
+      pinned[pi].removeAttribute('data-om-pin');
+      pinned[pi].style.cssText = '';
+    }
+  } catch (e) {}
+
+  var readySent = 0;
+  var clicked = 0;
+  var uncontained = 0;
+  var n = 0;
+
+  function fireReady() {
+    if (window.__omPlayingFired) return;
+    window.__omPlayingFired = true;
+    try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
+  }
+
+  function vp() {
+    var v = window.visualViewport;
+    if (v && v.width > 0 && v.height > 0) {
+      return { x: v.offsetLeft || 0, y: v.offsetTop || 0, w: v.width, h: v.height };
+    }
+    return { x: 0, y: 0, w: window.innerWidth || 0, h: window.innerHeight || 0 };
+  }
+
+  function isPage(el) {
+    return !el || el === document.body || el === document.documentElement
+      || el.id === "app" || el.id === "app-shell";
+  }
+
+  function cssOnce() {
+    var parent = document.head || document.documentElement;
+    if (!parent) return;
+    var s = document.getElementById("om-migu-css");
+    if (!s) {
+      s = document.createElement("style");
+      s.id = "om-migu-css";
+    }
+    s.textContent =
+      "html,body,#app,#app-shell{margin:0!important;padding:0!important;overflow:hidden!important;" +
+      "background:#000!important;height:100%!important;width:100%!important}" +
+      ".skeleton-wraper,.skeleton-head,.skeleton-download,.skeleton-detail,.skeleton-adv," +
+      ".skeleton-programe-list,.skeleton-split,.skeleton-gray," +
+      "m-header,.m-header,header,.header,nav,.nav,.group-item,.loadFail," +
+      "go-back-top,.popWindown,.browser-share{display:none!important;pointer-events:none!important}" +
+      "#h5player_player,.h5player,.m-player,.content{margin:0!important;padding:0!important;" +
+      "background:#000!important;overflow:hidden!important}" +
+      "#h5player_player,.h5player,.m-player{" +
+      "position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;" +
+      "width:100%!important;height:100%!important;z-index:9999!important;" +
+      "border:0!important;border-radius:0!important;max-width:none!important;max-height:none!important;" +
+      "transform:none!important}" +
+      ".start-free,.h5player-control,.h5player-controls,.txp_controls,.txp_top,.txp_bottom," +
+      "video::-webkit-media-controls{display:none!important;pointer-events:none!important}";
+    parent.appendChild(s);
+  }
+
+  function compact(s) {
+    return (s || "").replace(/\s+/g, "");
+  }
+
+  function clickPlay() {
+    if (clicked) return;
+    var el = document.querySelector(".start-free");
+    if (!el) {
+      var nodes = document.querySelectorAll("p,span,div,a,button");
+      var i;
+      var t;
+      for (i = 0; i < nodes.length && i < 120; i++) {
+        t = compact(nodes[i].innerText || nodes[i].textContent);
+        if (t === "请点击播放" || t === "继续观看" || t === "免费观看") {
+          el = nodes[i];
+          break;
+        }
+      }
+    }
+    var v = document.querySelector("video");
+    try {
+      if (el) el.click();
+      if (v) {
+        v.click();
+        if (v.paused) v.play();
+      }
+    } catch (e) {
+      return;
+    }
+    if (el || v) clicked = 1;
+  }
+
+  function srcOf(v) {
+    return ((v.currentSrc || v.src || "") + "").toLowerCase();
+  }
+
+  function isPlayable(v) {
+    if (!v) return false;
+    var s = srcOf(v);
+    if (s.indexOf("iflyad") >= 0 || s.indexOf("ggv.") >= 0) return false;
+    if (v.videoWidth && v.videoHeight) return true;
+    return v.readyState >= 2 || v.currentTime > 0.05;
+  }
+
+  function playVideo() {
+    var list = document.querySelectorAll("video");
+    var i;
+    for (i = 0; i < list.length; i++) {
+      if (isPlayable(list[i])) return list[i];
+    }
+    return null;
+  }
+
+  function playerBox() {
+    return document.getElementById("h5player_player")
+      || document.querySelector(".h5player")
+      || document.querySelector(".m-player")
+      || document.querySelector(".common-player");
+  }
+
+  function uncontain(el) {
+    if (uncontained) return;
+    uncontained = 1;
+    var n = el.parentElement;
+    var i;
+    for (i = 0; n && !isPage(n) && i < 8; i++) {
+      if (n.style) n.style.setProperty("transform", "none", "important");
+      n = n.parentElement;
+    }
+  }
+
+  function fillBox() {
+    var el = playerBox();
+    if (!el || !el.style || isPage(el)) return false;
+    uncontain(el);
+    var s = vp();
+    if (!(s.w > 8 && s.h > 8)) return false;
+    var key = s.x + "," + s.y + "," + s.w + "," + s.h;
+    if (el.getAttribute("data-om-site-box") === key) return true;
+    el.setAttribute("data-om-site-box", key);
+    el.style.cssText =
+      "position:fixed!important;left:" + s.x + "px!important;top:" + s.y + "px!important;" +
+      "width:" + s.w + "px!important;height:" + s.h + "px!important;" +
+      "z-index:9999!important;margin:0!important;padding:0!important;" +
+      "background:#000!important;display:block!important;border:0!important;" +
+      "border-radius:0!important;overflow:hidden!important;transform:none!important";
+    return true;
+  }
+
+  function unmute(v) {
+    if (window.__omUserPaused || !v) return;
+    try {
+      v.controls = false;
+      v.muted = false;
+      v.volume = (typeof window.__omVol === "number") ? window.__omVol : 1;
+      if (v.paused) v.play();
+    } catch (e) {}
+  }
+
+  function bindVideo() {
+    var list = document.querySelectorAll("video");
+    var i;
+    var v;
+    for (i = 0; i < list.length; i++) {
+      v = list[i];
+      if (v.getAttribute("data-om-site-v")) continue;
+      v.setAttribute("data-om-site-v", "1");
+      v.addEventListener("loadeddata", tellReady);
+      v.addEventListener("playing", tellReady);
+    }
+  }
+
+  function tellReady() {
+    if (readySent) return;
+    cssOnce();
+    if (!fillBox()) return;
+    var v = playVideo();
+    if (!v) return;
+    readySent = 1;
+    unmute(v);
+    fireReady();
+  }
+
+  window.__omMiguRelayout = function () {
+    cssOnce();
+    fillBox();
+  };
+
+  cssOnce();
+  if (!window.__omMiguBoot) {
+    window.__omMiguBoot = 1;
+    window.addEventListener("resize", window.__omMiguRelayout);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", window.__omMiguRelayout);
+    }
+  }
+
+  function tick() {
+    clickPlay();
+    bindVideo();
+    fillBox();
+    tellReady();
+    if (readySent) return;
+    if (++n < 80) setTimeout(tick, 120);
+  }
+  tick();
 })();
 ''';
 
@@ -3178,6 +4317,23 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     super.dispose();
   }
 
+  /// 站点专用脚本（移植自 NewBox 站点脚本库）：命中域名时接管网页的
+  /// 铺满/点台/起播确认，通用 _bootJs 检测到 __omSkipPin 自动让位
+  static String? _siteJsFor(String url) {
+    if (url.contains('mgtv.com')) return _mgtvJs;
+    if (url.contains('yangshipin.cn')) return _yangshipinJs;
+    if (url.contains('miguvideo.com') || url.contains('migu.cn')) {
+      return _miguJs;
+    }
+    return null;
+  }
+
+  /// 调页面内 __omSiteGo(url, 频道名)：芒果TV/央视频同 URL 页内切台，
+  /// 未注入站点脚本的页面 __omSiteGo 不存在，短路与直接跳过
+  String _siteGoCall() =>
+      'window.__omSiteGo && window.__omSiteGo('
+      '${jsonEncode(widget.url)}, ${jsonEncode(widget.title)})';
+
   Future<void> _inject() async {
     final c = _webController;
     if (c == null) return;
@@ -3185,6 +4341,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       await c.evaluateJavascript(source: _noContextMenuJs);
       await c.evaluateJavascript(source: _cssJs);
       await c.evaluateJavascript(source: _bootJs);
+      // 站点脚本在 _bootJs 之后注入：置 __omSkipPin 让通用铺满让位，
+      // 并清掉 _bootJs 可能已抢先铺满的元素；随后立刻按当前频道点台
+      final siteJs = _siteJsFor(widget.url);
+      if (siteJs != null) {
+        await c.evaluateJavascript(source: siteJs);
+        await c.evaluateJavascript(source: _siteGoCall());
+      }
       // 嗅探脚本只在兜底重载后注入；默认页面保持零 hook 纯净环境
       if (_sniffEnabled) await c.evaluateJavascript(source: _sniffJs);
     } catch (_) {
@@ -3221,6 +4384,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 已推到前台（探测成功或超时兜底）后不再需要超时定时器
     if (widget.foreground && !oldWidget.foreground) {
       _forceForegroundTimer?.cancel();
+    }
+    // 同 URL 页内切台（芒果TV/央视频直播大厅）：频道名变化时让站点
+    // 脚本按新频道名重新点台，不重载 WebView
+    if (widget.title != oldWidget.title && _siteJsFor(widget.url) != null) {
+      _webController
+          ?.evaluateJavascript(source: _siteGoCall())
+          .catchError((_) => null);
     }
   }
 
