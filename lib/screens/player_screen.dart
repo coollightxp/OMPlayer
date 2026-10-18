@@ -121,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.160';
+  static const String _appVersion = '1.0.161';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2305,10 +2305,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 一次性嗅探候选是否值得接管）
   bool _webPlayReady = false;
 
-  /// _probeJs 连续上报"只有音频在走、画面未解码"（返回 2）的秒数，
-  /// 达到 3 即视为卡音频，提前推前台让 WebView2 恢复画面渲染
-  int _webAudioTicks = 0;
-
   /// 15 秒内 WebView 毫无加载进度：判定为缺少 WebView2 运行时
   Timer? _runtimeTimer;
 
@@ -2505,32 +2501,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       }).observe(document.documentElement, {childList:true, subtree:true});
     } catch(e) {}
   }
-})();
-''';
-
-  /// 页面可见性伪装：后台缓冲期间 WebView 被黑屏占位盖住，页面检测到
-  /// 自身不可见会只放音频不出图（起播确认永远等不到 videoWidth），所有
-  /// 网页台被迫走 8 秒重载+12 秒决策，拉起普遍慢 ~20 秒。伪装为可见后
-  /// 播放器正常解码视频，起播即推前台。document-start 注入，先于页面
-  /// 自身脚本注册事件
-  static const String _keepVisibleJs = r'''
-(function(){
-  if (window.__omKeepVis) return;
-  window.__omKeepVis = 1;
-  function vis() { return 'visible'; }
-  function no() { return false; }
-  function yes() { return true; }
-  try { Object.defineProperty(document, 'visibilityState', { get: vis, configurable: true }); } catch(e) {}
-  try { Object.defineProperty(document, 'hidden', { get: no, configurable: true }); } catch(e) {}
-  try { Object.defineProperty(document, 'webkitVisibilityState', { get: vis, configurable: true }); } catch(e) {}
-  try { Object.defineProperty(document, 'webkitHidden', { get: no, configurable: true }); } catch(e) {}
-  try { document.hasFocus = yes; } catch(e) {}
-  function block(e) { e.stopImmediatePropagation(); }
-  try { window.addEventListener('visibilitychange', block, true); } catch(e) {}
-  try { document.addEventListener('visibilitychange', block, true); } catch(e) {}
-  try { window.addEventListener('webkitvisibilitychange', block, true); } catch(e) {}
-  try { window.addEventListener('blur', block, true); } catch(e) {}
-  try { window.addEventListener('pagehide', block, true); } catch(e) {}
 })();
 ''';
 
@@ -4240,10 +4210,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 必须有视频画面尺寸：音频先行不算起播，避免黑屏推前台
     if (!best.paused && best.readyState >= 2 && best.currentTime > 0
         && (best.videoWidth || 0) * (best.videoHeight || 0) >= 8160) return 1;
-    // 音频在走但画面没解码：后台遮挡时 WebView2 只解码音频（videoWidth=0），
-    // 永远不满足上面的尺寸门槛——上报 2，Dart 连续确认后提前推前台，
-    // 可见性恢复后画面才会真正渲染出来
-    if (!best.paused && best.readyState >= 3 && best.currentTime > 1) return 2;
   } catch(e) {}
   return 0;
 })();
@@ -4452,21 +4418,28 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     cleanWebView2Cache();
     // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
-    // 8 秒兜底：已知放弃页直接推网页；正常页未起播时【不重载】——
-    // 芒果/央视频等重站本来就要 5~10 秒开播，整页重建会把一切推倒
-    // 重来拖成 ~20 秒（NewBox 从不重载，一次加载走完）。只运行时
-    // 补注轻嗅探：直播清单持续轮询，后续请求照样被捕获，内置接管
-    // 能力不受影响；页面加载与起播检测全部不被打断
+    // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播，
+    // 先带嗅探脚本整页重建重载一次（唯一兜底机会），给重载页 12 秒
+    // 决策窗口；已重载过仍未起播才提前推网页避免长时间黑屏
     _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
       if (!mounted || widget.foreground) return;
       if (_sniffAbandoned) {
         widget.onForeground();
         return;
       }
-      if (!_webPlayReady && !_sniffEnabled) {
-        _sniffEnabled = true;
-        _sniffRetried = true;
-        _inject();
+      if (!_webPlayReady) {
+        if (!_sniffRetried) {
+          _sniffRetried = true;
+          _decisionTimer?.cancel();
+          _decisionTimer =
+              Timer(const Duration(seconds: 12), _finishWithWeb);
+          setState(() {
+            _sniffEnabled = true;
+            _webPlayReady = false;
+          });
+          return;
+        }
+        widget.onForeground();
       }
     });
     // 最终决策窗口：15 秒仍无可直连主流 → 加密/无流，直接网页全屏
@@ -4518,7 +4491,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (c == null) return;
     try {
       await c.evaluateJavascript(source: _noContextMenuJs);
-      await c.evaluateJavascript(source: _keepVisibleJs);
       await c.evaluateJavascript(source: _cssJs);
       await c.evaluateJavascript(source: _bootJs);
       // 站点脚本在 _bootJs 之后注入：置 __omSkipPin 让通用铺满让位，
@@ -4545,13 +4517,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       final r = await c.evaluateJavascript(source: _probeJs);
       // WebView2 JSON 解码后通常是 int 1，兼容字符串 "1"
       final playing = r == 1 || r?.toString() == '1';
-      // 2 = 音频在走画面未解码（后台只解码音频）。连续 3 秒如此说明
-      // 不会自己出图，提前推前台让 WebView2 恢复渲染，不再傻等超时
-      final audioOnly = r == 2 || r?.toString() == '2';
-      _webAudioTicks = audioOnly ? _webAudioTicks + 1 : 0;
-      if ((playing || _webAudioTicks >= 3) &&
-          mounted &&
-          !widget.foreground) {
+      if (playing && mounted && !widget.foreground) {
         if (_sniffAbandoned) {
           // 已知放弃页：起播即推网页
           widget.onForeground();
@@ -4586,13 +4552,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       fit: StackFit.expand,
       children: [
         InAppWebView(
-          // key 只随 URL 变化：_sniffEnabled 后期翻转为 true 时绝不能
-          // 触发 WebView 重建（8 秒兜底已改为运行时补注，不再重载页面）
-          key: ValueKey('web_${widget.url}'),
+          // 兜底重载时换 key 整棵重建：initialUserScripts 只在
+          // WebView 首次创建时生效
+          key: ValueKey('web_${widget.url}_$_sniffEnabled'),
           webViewEnvironment: webViewEnvironment,
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           // 默认零 hook 纯净环境（对齐 NewBox webview:// 纯网页播放
-          // 策略）；8 秒未起播的兜底改为运行时补注轻嗅探，不再重载页面
+          // 策略）；仅 8 秒未起播的兜底重载才注入轻嗅探（document-start
+          // 保证先于页面 JS），运行时 _inject() 重注入是兜底
           initialUserScripts: UnmodifiableListView<UserScript>([
             if (_sniffEnabled)
               UserScript(
@@ -4605,13 +4572,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             // WebView2 默认菜单（返回/刷新/另存为/打印）就会冒出来
             UserScript(
               source: _noContextMenuJs,
-              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-              forMainFrameOnly: false,
-            ),
-            // 可见性伪装必须先于页面脚本：播放器检测到不可见会降级为
-            // 纯音频，起播确认等不到画面尺寸，全台拉起被迫走超时链
-            UserScript(
-              source: _keepVisibleJs,
               injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
               forMainFrameOnly: false,
             ),
