@@ -10,6 +10,7 @@ import '../models/player_settings.dart';
 import '../models/playlist_source.dart';
 import '../services/osd_bus.dart';
 import '../services/player_controller.dart';
+import '../services/web_diag.dart';
 import 'scaled_panel.dart';
 
 /// 选择本地文件。
@@ -1077,6 +1078,25 @@ class _SystemSettingsTab extends StatelessWidget {
                   ? null
                   : () => showRemoteAdminQrDialog(
                       context, controller.remoteAdminUrl),
+            ),
+            // 网页频道诊断：复现「打不开/黑屏/串台」后导出日志发给开发者
+            ListTile(
+              leading: const Icon(Icons.bug_report_outlined,
+                  color: Colors.white70),
+              title: const Text('导出网页诊断日志',
+                  style: TextStyle(color: Colors.white, fontSize: 15)),
+              subtitle: const Text(
+                  '网页频道故障时使用：先打开故障频道复现一遍，再点这里导出',
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              onTap: () async {
+                final p = await WebDiag.flush();
+                OsdBus.show(
+                  p.isEmpty
+                      ? '暂无诊断日志：请先打开一次网页频道复现故障'
+                      : '诊断日志已导出：$p',
+                  icon: Icons.bug_report_outlined,
+                );
+              },
             ),
             const SizedBox(height: 16),
           ],

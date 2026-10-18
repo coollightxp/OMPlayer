@@ -13,6 +13,7 @@ import 'package:window_manager/window_manager.dart';
 import '../services/osd_bus.dart';
 import '../services/player_controller.dart';
 import '../services/system_power.dart';
+import '../services/web_diag.dart';
 import '../services/web_env.dart';
 import '../services/web_launch.dart';
 import '../services/win_hotkeys.dart';
@@ -160,6 +161,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     HardwareKeyboard.instance.addHandler(_onGlobalKeyEvent);
     // 深层 widget（设置/EPG 面板）发来的中央 OSD 消息
     OsdBus.message.addListener(_onBusOsd);
+    // 网页诊断日志随导出带版本号，便于定位是哪一版产生的故障
+    WebDiag.appVersion = _appVersion;
     // Windows：低级键盘钩子转发数字键与动作键（网页 HWND 吞焦点时也有效）
     _winHotkeys.setDigitHandler(_onNumberKey);
     _winHotkeys.setActionHandler(_onNativeAction);
@@ -2283,6 +2286,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   bool _runtimeMissing = false;
   /// WebView 是否报告过任何加载进度（有进度即证明 WebView2 运行时正常）
   bool _sawProgress = false;
+
+  /// 诊断用：加载进度分桶（25/50/75/100）去重，避免每帧进度回调刷屏
+  int _progBucket = 0;
   InAppWebViewController? _webController;
 
   /// 后台缓冲期间每秒探测一次页面 <video> 的真实起播状态
@@ -2338,6 +2344,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       if (url.isEmpty || !mounted) return;
       final kind = (m['k'] as String?) ?? 'hls';
       final now = DateTime.now();
+      final isNew = !_sniffCandidates.containsKey(url);
       final c = _sniffCandidates.putIfAbsent(
           url,
           () => _SniffCandidate(
@@ -2348,6 +2355,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               ));
       c.count++;
       c.last = now;
+      WebDiag.log('sniff',
+          'k=$kind|cnt=${c.count}|new=${isNew ? 1 : 0}|u=$url');
       // 更高优先级类型可升级标注
       if (_sniffKindPri(kind) > _sniffKindPri(c.kind)) c.kind = kind;
       // 首个候选出现后 15 秒兜底：强制执行最后一轮选择，仍不可接管
@@ -2371,10 +2380,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   void _markWebPlayReady() {
     if (_webPlayReady || _sniffDone) return;
     _webPlayReady = true;
+    WebDiag.log('web_ready', 'sniff=$_sniffEnabled');
     // 默认无嗅探：网页起播即推前台（没有接管候选的来源，不必黑屏
     // 等宽限）；仅兜底重载带嗅探时才给 6 秒确认直连主流
     if (!_sniffEnabled) {
-      _finishWithWeb();
+      _finishWithWeb(via: 'web_ready');
       return;
     }
     _webReadyGraceTimer ??= Timer(const Duration(seconds: 6), () {
@@ -2384,20 +2394,27 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 
   /// 决策结束：不再尝试接管，直接让网页全屏播放（加密/DRM/无流，
   /// 或网页自身已在播而嗅探候选只是侧栏推荐）。全程不弹提示。
-  void _finishWithWeb() {
+  void _finishWithWeb({String via = '?'}) {
     if (_sniffDone) return;
     // 嗅探预检进行中：此时把网页推前台，会出现"网页先播放一会、预检
     // 完成后又切回内置"的闪切。推迟 3 秒再审，等预检出结果自行收尾
     if (_sniffChecking) {
-      _decisionTimer = Timer(const Duration(seconds: 3), _finishWithWeb);
+      WebDiag.log('finish_defer', 'via=$via');
+      _decisionTimer = Timer(const Duration(seconds: 3),
+          () => _finishWithWeb(via: 'defer3s'));
       return;
     }
+    WebDiag.log('finish_web',
+        'via=$via|cand=${_sniffCandidates.length}|ready=${_webPlayReady ? 1 : 0}');
     _sniffDone = true;
     _sniffDeadline?.cancel();
     _sniffAggTimer?.cancel();
     _forceForegroundTimer?.cancel();
     _webReadyGraceTimer?.cancel();
-    if (mounted && !widget.foreground) widget.onForeground();
+    if (mounted && !widget.foreground) {
+      WebDiag.log('push_fg', 'via=finish_web($via)');
+      widget.onForeground();
+    }
   }
 
   Future<void> _autoPick({required bool force}) async {
@@ -2412,8 +2429,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       if (!force) return; // 聚合太早，等后续真实请求或兜底窗口
       alive = list;
     }
+    WebDiag.log('autopick',
+        'force=${force ? 1 : 0}|cand=${list.length}|alive=${alive.length}');
     if (alive.isEmpty) {
-      if (force) _finishWithWeb();
+      if (force) _finishWithWeb(via: 'autopick_empty');
       return;
     }
     alive.sort((a, b) {
@@ -2438,8 +2457,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             ? c.ua!.trim()
             : '',
       );
+      WebDiag.log('precheck',
+          'ok=${ok ? 1 : 0}|cnt=${c.count}|k=${c.kind}|u=${c.url}');
       if (!mounted) return;
       if (ok) {
+        WebDiag.log('takeover', 'k=${c.kind}|u=${c.url}');
         _sniffDone = true;
         _sniffChecking = false;
         _sniffDeadline?.cancel();
@@ -2457,9 +2479,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       }
     }
     _sniffChecking = false;
+    WebDiag.log('autopick_fail', 'force=${force ? 1 : 0}');
     // 预检全部不通过：兜底窗口结束则留网页全屏（加密/DRM，不提示）；
     // 未到点则等页面后续请求触发下一轮
-    if (force) _finishWithWeb();
+    if (force) _finishWithWeb(via: 'autopick_fail');
   }
 
   /// 禁用网页右键菜单（<video> 默认的“循环/复制视频地址/另存”等菜单
@@ -2829,6 +2852,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           && v.currentTime > 0
           && (v.videoWidth || 0) * (v.videoHeight || 0) >= 8160) {
         window.__omPlayingFired = true;
+        fire('omDiag', 'playing|via=boot_video');
         fire('omPlaying');
       }
     }
@@ -2853,6 +2877,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           // 即视为网页起播推前台，不必走 8 秒重载/20 秒兜底链黑屏干等
           if (!window.__omPlayingFired) {
             window.__omPlayingFired = true;
+            fire('omDiag', 'playing|via=boot_iframe');
             fire('omPlaying');
           }
         }
@@ -2914,7 +2939,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function fireReady() {
     if (window.__omPlayingFired) return;
     window.__omPlayingFired = true;
+    try { window.flutter_inappwebview.callHandler('omDiag', 'playing|via=site_mgtv'); } catch (e) {}
     try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
+  }
+
+  function diag(m) {
+    try { window.flutter_inappwebview.callHandler('omDiag', m); } catch (e) {}
   }
 
   // 通用 _cssJs 会把页面所有 video 钉成全屏最高层（芒果切台后旧视频不
@@ -3227,6 +3257,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     needNew = 0;
     unmute();
     window.__omMgtvLayoutReady = 1;
+    diag('mgtv_ready');
     fireReady();
   }
 
@@ -3273,6 +3304,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (!el) return false;
     if (isSelected(el)) return true;
     didSwitch = 1;
+    diag('mgtv_click|label=' + compact(channelLabel(el)).slice(0, 24));
     try {
       el.click();
     } catch (e) {}
@@ -3367,6 +3399,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   window.__omSiteGo = function (url, liveName) {
     var id = cameraIdFrom(url || location.href);
     var name = compact(liveName);
+    diag('mgtv_go|id=' + (id || '-') + '|name=' + (name || '-'));
     var want = id ? ("id:" + id) : (name ? ("nm:" + name) : "");
     if (want && want === window.__omMgtvWant) {
       if (pictureReady()) tellReady(window.__omMgtvPickGen);
@@ -3461,6 +3494,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function fireReady() {
     if (window.__omPlayingFired) return;
     window.__omPlayingFired = true;
+    try { window.flutter_inappwebview.callHandler('omDiag', 'playing|via=site_ysp'); } catch (e) {}
     try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
   }
 
@@ -3863,6 +3897,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   window.__omSiteGo = function (url, liveName) {
     var pid = parsePid(url || location.href);
     var name = compact(liveName);
+    try { window.flutter_inappwebview.callHandler('omDiag', 'ysp_go|pid=' + (pid || '-') + '|name=' + (name || '-')); } catch (e) {}
     var next = pid ? ("pid:" + pid) : (name ? ("nm:" + name) : "");
     if (next && next === wantKey) {
       if (pictureReady()) tellReady(pickGen);
@@ -3950,6 +3985,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function fireReady() {
     if (window.__omPlayingFired) return;
     window.__omPlayingFired = true;
+    try { window.flutter_inappwebview.callHandler('omDiag', 'playing|via=site_migu'); } catch (e) {}
     try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
   }
 
@@ -4204,14 +4240,27 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var a = (r.width >= 80 && r.height >= 60) ? r.width * r.height : 0;
     if (a > bestA) { bestA = a; best = vs[i]; }
   }
-  if (!best) return 0;
+  // 诊断状态串：页面视频数 + 主视频的暂停/就绪/进度/画面/布局尺寸，
+  // 定位「黑屏有声」（videoWidth 不达标）与「拉起慢」（页面无 video）
+  var stat = 'n=' + vs.length;
+  if (best) {
+    try {
+      var br = best.getBoundingClientRect();
+      stat += '|paused=' + (best.paused ? 1 : 0)
+        + '|rs=' + best.readyState
+        + '|ct=' + (best.currentTime || 0).toFixed(1)
+        + '|vw=' + (best.videoWidth || 0) + '|vh=' + (best.videoHeight || 0)
+        + '|rw=' + (br.width | 0) + '|rh=' + (br.height | 0);
+    } catch(e) {}
+  }
+  if (!best) return [0, stat];
   try {
     if (best.paused && best.play) { var p = best.play(); if (p && p.catch) p.catch(function(){}); }
     // 必须有视频画面尺寸：音频先行不算起播，避免黑屏推前台
     if (!best.paused && best.readyState >= 2 && best.currentTime > 0
-        && (best.videoWidth || 0) * (best.videoHeight || 0) >= 8160) return 1;
+        && (best.videoWidth || 0) * (best.videoHeight || 0) >= 8160) return [1, stat];
   } catch(e) {}
-  return 0;
+  return [0, stat];
 })();
 ''';
 
@@ -4413,6 +4462,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   @override
   void initState() {
     super.initState();
+    // 开台打点：后续所有事件都以此为时间线（诊断缓冲仅在网页
+    // 频道激活期间记录，平时零开销不落盘）
+    WebDiag.begin(widget.url, widget.title);
     // 每次打开网页频道前清理 WebView2 缓存，避免旧频道的 Service Worker
     // 或残留状态导致新频道黑屏/长时间不播放
     cleanWebView2Cache();
@@ -4423,27 +4475,33 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 决策窗口；已重载过仍未起播才提前推网页避免长时间黑屏
     _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
       if (!mounted || widget.foreground) return;
+      WebDiag.log('force8',
+          'abandoned=${_sniffAbandoned ? 1 : 0}|ready=${_webPlayReady ? 1 : 0}|retried=${_sniffRetried ? 1 : 0}');
       if (_sniffAbandoned) {
+        WebDiag.log('push_fg', 'via=force8_abandoned');
         widget.onForeground();
         return;
       }
       if (!_webPlayReady) {
         if (!_sniffRetried) {
+          WebDiag.log('sniff_reload');
           _sniffRetried = true;
           _decisionTimer?.cancel();
-          _decisionTimer =
-              Timer(const Duration(seconds: 12), _finishWithWeb);
+          _decisionTimer = Timer(const Duration(seconds: 12),
+              () => _finishWithWeb(via: 'decision12'));
           setState(() {
             _sniffEnabled = true;
             _webPlayReady = false;
           });
           return;
         }
+        WebDiag.log('push_fg', 'via=force8_retried');
         widget.onForeground();
       }
     });
     // 最终决策窗口：15 秒仍无可直连主流 → 加密/无流，直接网页全屏
-    _decisionTimer = Timer(const Duration(seconds: 15), _finishWithWeb);
+    _decisionTimer = Timer(const Duration(seconds: 15),
+        () => _finishWithWeb(via: 'decision15'));
     // 运行时缺失判定（乐观策略）：注册表/版本查询在不同系统上都不可靠
     // （实测已装 WebView2 的家庭版也会误报）。只要 WebView 能报告任何
     // 加载进度，就证明运行时正常；25 秒内毫无进展才提示安装。
@@ -4451,6 +4509,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 状态不一致、退出时 WebView 未正确释放进而崩溃。
     _runtimeTimer = Timer(const Duration(seconds: 25), () {
       if (mounted && !_sawProgress && _error == null) {
+        WebDiag.log('runtime_missing');
         setState(() => _runtimeMissing = true);
       }
     });
@@ -4458,6 +4517,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 
   @override
   void dispose() {
+    WebDiag.end();
     widget.onBridgeDetached();
     _probeTimer?.cancel();
     _forceForegroundTimer?.cancel();
@@ -4499,11 +4559,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       if (siteJs != null) {
         await c.evaluateJavascript(source: siteJs);
         await c.evaluateJavascript(source: _siteGoCall());
+        WebDiag.log('sitego', 'via=inject|title=${widget.title}');
       }
       // 嗅探脚本只在兜底重载后注入；默认页面保持零 hook 纯净环境
       if (_sniffEnabled) await c.evaluateJavascript(source: _sniffJs);
+      WebDiag.log('inject_done',
+          'site=${siteJs != null ? 1 : 0}|sniff=$_sniffEnabled');
     } catch (_) {
       // 页面尚未就绪时注入可能失败，轮询探测会在后续重试
+      WebDiag.log('inject_fail');
     }
   }
 
@@ -4515,8 +4579,17 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     try {
       await c.evaluateJavascript(source: _cssJs);
       final r = await c.evaluateJavascript(source: _probeJs);
-      // WebView2 JSON 解码后通常是 int 1，兼容字符串 "1"
-      final playing = r == 1 || r?.toString() == '1';
+      // _probeJs 返回 [起播0/1, 页面视频状态串]；兼容旧版裸 0/1 返回
+      bool playing;
+      if (r is List) {
+        playing =
+            r.isNotEmpty && (r[0] == 1 || r[0]?.toString() == '1');
+        WebDiag.log('probe',
+            'p=${playing ? 1 : 0}${r.length > 1 ? '|${r[1]}' : ''}');
+      } else {
+        playing = r == 1 || r?.toString() == '1';
+        WebDiag.log('probe', 'p=${playing ? 1 : 0}');
+      }
       if (playing && mounted && !widget.foreground) {
         if (_sniffAbandoned) {
           // 已知放弃页：起播即推网页
@@ -4540,6 +4613,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 同 URL 页内切台（芒果TV/央视频直播大厅）：频道名变化时让站点
     // 脚本按新频道名重新点台，不重载 WebView
     if (widget.title != oldWidget.title && _siteJsFor(widget.url) != null) {
+      WebDiag.log('sitego', 'via=title|title=${widget.title}');
       _webController
           ?.evaluateJavascript(source: _siteGoCall())
           .catchError((_) => null);
@@ -4597,12 +4671,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             _sniffAbandoned = context
                 .read<PlayerController>()
                 .shouldSkipAutoSniff(widget.url);
+            WebDiag.log('wv_created',
+                'skip=${_sniffAbandoned ? 1 : 0}|sniff=$_sniffEnabled');
             // 把 controller 存到 PlayerController，供 Dart 侧调用网页 JS
             context.read<PlayerController>().webController = controller;
             // JS bridge 通道
             controller.addJavaScriptHandler(
               handlerName: 'omPlaying',
               callback: (_) {
+                WebDiag.log('om_playing',
+                    'abandoned=${_sniffAbandoned ? 1 : 0}|fg=${widget.foreground ? 1 : 0}');
                 if (!mounted || widget.foreground) return;
                 if (_sniffAbandoned) {
                   widget.onForeground();
@@ -4660,26 +4738,49 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
                 return null;
               },
             );
+            // 页面侧诊断回报：起播来源（bootJs/站点脚本）、站点脚本
+            // 点台动作与结果（串台定位），统一进 WebDiag 时间线
+            controller.addJavaScriptHandler(
+              handlerName: 'omDiag',
+              callback: (args) {
+                if (args.isNotEmpty) WebDiag.log('js', args.first.toString());
+                return null;
+              },
+            );
             // 注册控制桥：执行 JS（播放/暂停）与网页截图
             widget.onBridgeAttached(
               eval: (js) => controller.evaluateJavascript(source: js),
               screenshot: () async => await controller.takeScreenshot(),
             );
           },
+          onLoadStart: (controller, _) {
+            WebDiag.log('load_start', 'sniff=$_sniffEnabled');
+          },
           onLoadStop: (controller, _) async {
             _sawProgress = true;
+            WebDiag.log('load_stop');
             if (mounted) setState(() => _loaded = true);
             await _inject();
           },
           // 页面开始渲染时立即注入 CSS，避免白屏闪现
           onPageCommitVisible: (controller, _) async {
+            WebDiag.log('commit_visible');
             try {
               await controller.evaluateJavascript(source: _cssJs);
             } catch (_) {}
           },
           onProgressChanged: (controller, progress) {
             // 能收到任何进度都说明 WebView2 运行时工作正常
+            if (progress > 0 && !_sawProgress) {
+              WebDiag.log('progress_first', 'v=$progress');
+            }
             if (progress > 0) _sawProgress = true;
+            // 分桶记录加载进度（25/50/75/100），慢站定位卡在哪个阶段
+            final bucket = progress ~/ 25;
+            if (bucket > _progBucket) {
+              _progBucket = bucket;
+              WebDiag.log('progress', 'v=$progress');
+            }
             // 部分页面 onLoadStop 触发较晚，加载完成即收起等待层
             if (progress >= 100 && mounted && !_loaded) {
               setState(() => _loaded = true);
@@ -4688,6 +4789,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           onReceivedError: (controller, request, error) {
             // 主文档加载失败才提示（子资源失败不影响播放）
             if (request.isForMainFrame ?? false) {
+              WebDiag.log('load_error', 'desc=${error.description}');
               if (mounted) {
                 setState(() => _error = error.description);
               }
