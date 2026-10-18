@@ -121,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.158';
+  static const String _appVersion = '1.0.159';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2912,6 +2912,64 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
   }
 
+  // 通用 _cssJs 会把页面所有 video 钉成全屏最高层（芒果切台后旧视频不
+  // 销毁，会盖住站点脚本 pin 的真实直播画面，只剩声音）——就地剥除该
+  // 规则：元素保留，_probe 每秒重注检测到元素已存在会跳过，剥除持久生效
+  function cleanOmCss() {
+    function cleanDoc(d) {
+      try {
+        var s = d.getElementById('__om_fullscreen_style');
+        if (s && s.textContent.indexOf('video{position:fixed') >= 0) {
+          s.textContent = s.textContent.replace(/video\{position:fixed[^}]*\}/g, '');
+        }
+      } catch (e) {}
+    }
+    cleanDoc(document);
+    try {
+      var fs = document.querySelectorAll('iframe');
+      for (var i = 0; i < fs.length; i++) {
+        try { if (fs[i].contentDocument) cleanDoc(fs[i].contentDocument); } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  function allVids() {
+    var out = [];
+    try {
+      var list = document.querySelectorAll('video');
+      for (var i = 0; i < list.length; i++) out.push(list[i]);
+    } catch (e) {}
+    try {
+      var fs = document.querySelectorAll('iframe');
+      for (var j = 0; j < fs.length; j++) {
+        try {
+          var d = fs[j].contentDocument;
+          if (!d) continue;
+          var l2 = d.querySelectorAll('video');
+          for (var k = 0; k < l2.length; k++) out.push(l2[k]);
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  // 优先认真正在播放的视频：切台后旧 video 不销毁，选择器拿到的可能
+  // 是已停播的旧元素
+  function playingVid() {
+    var vs = allVids();
+    var best = null, bestA = 0;
+    for (var i = 0; i < vs.length; i++) {
+      var v = vs[i];
+      try {
+        if (v.paused || v.readyState < 2 || !(v.currentTime > 0)) continue;
+        var a = (v.videoWidth || 0) * (v.videoHeight || 0);
+        if (a < 8160) { var r = v.getBoundingClientRect(); a = r.width * r.height; }
+        if (a > bestA) { bestA = a; best = v; }
+      } catch (e) {}
+    }
+    return best;
+  }
+
   function cssOnce() {
     if (document.getElementById("om-mgtv-css")) return;
     var parent = document.head || document.documentElement;
@@ -2942,17 +3000,25 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return { x: 0, y: 0, w: window.innerWidth || 0, h: window.innerHeight || 0 };
   }
 
-  function playerBox() {
+  function playerBox(v) {
+    if (v) {
+      try {
+        var c = v.closest('.live-player-tv-module,.mango-player,.player-container,[class*="live-player"],[class*="LivePlayer"],[class*="player-box"],[class*="PlayerBox"]');
+        if (c) return c;
+      } catch (e) {}
+    }
     return document.querySelector(".live-player-tv-module")
       || document.querySelector(".player-container .player")
       || document.querySelector("[class*='live-player']")
       || document.querySelector("[class*='LivePlayer']")
       || document.querySelector(".mango-player")
-      || document.querySelector("video");
+      || null;
   }
 
   function videoEl() {
-    var box = playerBox();
+    var pv = playingVid();
+    if (pv) return pv;
+    var box = playerBox(null);
     if (box && box.tagName === "VIDEO") return box;
     return (box && box.querySelector("video")) || document.querySelector("video");
   }
@@ -3037,12 +3103,38 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     }
   }
 
+  // 隐藏视频附近不含 video 的画面类兄弟层：芒果切台后残留的画面快照
+  // canvas/海报会盖在直播 video 上（有声无图的另一来源）
+  function hideOverlays(v) {
+    var host = v.parentElement;
+    var depth = 0;
+    while (host && host !== document.body && depth < 3) {
+      if (host.getAttribute && host.getAttribute("data-om-site-box")) break;
+      var kids = host.children;
+      for (var i = 0; i < kids.length; i++) {
+        var k = kids[i];
+        if (k === v || (k.contains && k.contains(v))) continue;
+        var tag = k.tagName;
+        if (tag === "SCRIPT" || tag === "STYLE" || tag === "LINK" || tag === "META") continue;
+        if (tag === "CANVAS" || tag === "IMG"
+            || /poster|snapshot|cover|thumb/i.test(String(k.className || ""))
+            || k.querySelector("canvas")) {
+          k.style.setProperty("display", "none", "important");
+          k.style.setProperty("visibility", "hidden", "important");
+        }
+      }
+      host = host.parentElement;
+      depth++;
+    }
+  }
+
   function layoutWork() {
     cssOnce();
+    cleanOmCss();
     var s = vp();
     if (s.w < 8 || s.h < 8) return false;
-    var box = playerBox();
     var v = videoEl();
+    var box = playerBox(v);
     if (box) {
       hideSiblings(box);
       pinBox(box, s, 9998);
@@ -3055,8 +3147,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         v.setAttribute("playsinline", "");
         v.setAttribute("webkit-playsinline", "true");
       } catch (e) {}
-      if (box && v !== box) fillMedia(v);
+      if (box && v !== box && box.contains(v)) fillMedia(v);
       else pinBox(v, s, 10000);
+      hideOverlays(v);
     }
     var ok = !!(v && s.w > 8 && s.h > 8);
     window.__omMgtvLayoutReady = ok && !needNew;
@@ -3301,7 +3394,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   };
 
   window.__omMgtvRelayout = function () {
-    var el = playerBox();
+    var el = playerBox(videoEl());
     if (el) el.removeAttribute("data-om-site-box");
     var v = videoEl();
     if (v) v.removeAttribute("data-om-site-m");
@@ -3309,6 +3402,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   };
 
   cssOnce();
+  cleanOmCss();
   if (!window.__omMgtvResize) {
     window.__omMgtvResize = 1;
     if (window.visualViewport) {
@@ -3325,6 +3419,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       window.__omMgtvPickGen = 1;
       waitFrame(1);
     }, 0);
+    // 常驻兜底：播放器 DOM 重建/新视频出现后自动重新铺满并清理覆盖层
+    setInterval(function () {
+      try {
+        layout();
+        bindVideo(window.__omMgtvPickGen || 1);
+      } catch (e) {}
+    }, 1200);
   }
 })();
 ''';
@@ -3356,6 +3457,25 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (window.__omPlayingFired) return;
     window.__omPlayingFired = true;
     try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
+  }
+
+  // 剥除通用 _cssJs 的 video 全屏钉层规则（元素保留，_probe 重注会跳过）
+  function cleanOmCss() {
+    function cleanDoc(d) {
+      try {
+        var s = d.getElementById('__om_fullscreen_style');
+        if (s && s.textContent.indexOf('video{position:fixed') >= 0) {
+          s.textContent = s.textContent.replace(/video\{position:fixed[^}]*\}/g, '');
+        }
+      } catch (e) {}
+    }
+    cleanDoc(document);
+    try {
+      var fs = document.querySelectorAll('iframe');
+      for (var i = 0; i < fs.length; i++) {
+        try { if (fs[i].contentDocument) cleanDoc(fs[i].contentDocument); } catch (e) {}
+      }
+    } catch (e) {}
   }
 
   function cssOnce() {
@@ -3513,6 +3633,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 
   function layoutWork() {
     cssOnce();
+    cleanOmCss();
     var s = vp();
     if (s.w < 8 || s.h < 8) return false;
     var box = playerBox();
@@ -3778,6 +3899,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   };
 
   cssOnce();
+  cleanOmCss();
   if (!window.__omYspResize) {
     window.__omYspResize = 1;
     if (window.visualViewport) {
@@ -3794,6 +3916,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       pickGen = 1;
       waitFrame(1);
     }, 0);
+    // 常驻兜底：播放器重建后自动重新铺满
+    setInterval(function () {
+      try { layout(); bindVideo(pickGen || 1); } catch (e) {}
+    }, 1200);
   }
 })();
 ''';
@@ -3820,6 +3946,26 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (window.__omPlayingFired) return;
     window.__omPlayingFired = true;
     try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
+  }
+
+  // 剥除通用 _cssJs 的 video 全屏钉层规则（元素保留，_probe 重注会跳过）；
+  // 咪咕页面带广告 video，不剥会被钉到最高层盖住真实播放器
+  function cleanOmCss() {
+    function cleanDoc(d) {
+      try {
+        var s = d.getElementById('__om_fullscreen_style');
+        if (s && s.textContent.indexOf('video{position:fixed') >= 0) {
+          s.textContent = s.textContent.replace(/video\{position:fixed[^}]*\}/g, '');
+        }
+      } catch (e) {}
+    }
+    cleanDoc(document);
+    try {
+      var fs = document.querySelectorAll('iframe');
+      for (var i = 0; i < fs.length; i++) {
+        try { if (fs[i].contentDocument) cleanDoc(fs[i].contentDocument); } catch (e) {}
+      }
+    } catch (e) {}
   }
 
   function vp() {
@@ -4000,6 +4146,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
 
   function tick() {
+    cleanOmCss();
     clickPlay();
     bindVideo();
     fillBox();
