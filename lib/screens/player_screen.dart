@@ -2508,6 +2508,32 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 })();
 ''';
 
+  /// 页面可见性伪装：后台缓冲期间 WebView 被黑屏占位盖住，页面检测到
+  /// 自身不可见会只放音频不出图（起播确认永远等不到 videoWidth），所有
+  /// 网页台被迫走 8 秒重载+12 秒决策，拉起普遍慢 ~20 秒。伪装为可见后
+  /// 播放器正常解码视频，起播即推前台。document-start 注入，先于页面
+  /// 自身脚本注册事件
+  static const String _keepVisibleJs = r'''
+(function(){
+  if (window.__omKeepVis) return;
+  window.__omKeepVis = 1;
+  function vis() { return 'visible'; }
+  function no() { return false; }
+  function yes() { return true; }
+  try { Object.defineProperty(document, 'visibilityState', { get: vis, configurable: true }); } catch(e) {}
+  try { Object.defineProperty(document, 'hidden', { get: no, configurable: true }); } catch(e) {}
+  try { Object.defineProperty(document, 'webkitVisibilityState', { get: vis, configurable: true }); } catch(e) {}
+  try { Object.defineProperty(document, 'webkitHidden', { get: no, configurable: true }); } catch(e) {}
+  try { document.hasFocus = yes; } catch(e) {}
+  function block(e) { e.stopImmediatePropagation(); }
+  try { window.addEventListener('visibilitychange', block, true); } catch(e) {}
+  try { document.addEventListener('visibilitychange', block, true); } catch(e) {}
+  try { window.addEventListener('webkitvisibilitychange', block, true); } catch(e) {}
+  try { window.addEventListener('blur', block, true); } catch(e) {}
+  try { window.addEventListener('pagehide', block, true); } catch(e) {}
+})();
+''';
+
   /// CSS：把页面里的 <video> 伪全屏铺满窗口；隐藏主流网页播放器的
   /// 控制条/信息浮层（借鉴 TVBox 系 live.webview.js 的选择器表），
   /// 让网页兜底播放看起来接近原生全屏。注意不隐藏大播放按钮/海报，
@@ -4499,6 +4525,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (c == null) return;
     try {
       await c.evaluateJavascript(source: _noContextMenuJs);
+      await c.evaluateJavascript(source: _keepVisibleJs);
       await c.evaluateJavascript(source: _cssJs);
       await c.evaluateJavascript(source: _bootJs);
       // 站点脚本在 _bootJs 之后注入：置 __omSkipPin 让通用铺满让位，
@@ -4586,6 +4613,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             // WebView2 默认菜单（返回/刷新/另存为/打印）就会冒出来
             UserScript(
               source: _noContextMenuJs,
+              injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+              forMainFrameOnly: false,
+            ),
+            // 可见性伪装必须先于页面脚本：播放器检测到不可见会降级为
+            // 纯音频，起播确认等不到画面尺寸，全台拉起被迫走超时链
+            UserScript(
+              source: _keepVisibleJs,
               injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
               forMainFrameOnly: false,
             ),
