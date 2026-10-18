@@ -478,7 +478,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       child: _WebChannelOverlay(
                         key: ValueKey(webUrl),
                         url: webUrl,
-                        title: controller.currentChannel?.title ?? '',
+                        title: controller.currentChannel?.name ?? '',
                         foreground: controller.webPageForeground,
                         onForeground: () =>
                             controller.setWebForeground(true),
