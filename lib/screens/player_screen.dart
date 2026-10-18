@@ -121,7 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.159';
+  static const String _appVersion = '1.0.160';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -561,12 +561,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   _buildGestureLayer(controller,
                       webMode: controller.webPageActive),
 
-                  // 网页前台播放时的双击全屏：JS 侧已屏蔽网页自身 dblclick，
+                  // 网页模式的双击全屏：JS 侧已屏蔽网页自身 dblclick，
                   // 这里接管为 App 窗口全屏切换（双击手势不吞单击，网页播放器
-                  // 的单击暂停/播放不受影响）
-                  if (controller.webPageActive &&
-                      controller.webPageForeground &&
-                      controller.isDesktop)
+                  // 的单击暂停/播放不受影响）。后台缓冲（黑屏占位）期间同样
+                  // 需要——此时网页还没推前台，双击全屏不该失效
+                  if (controller.webPageActive && controller.isDesktop)
                     Positioned.fill(
                       child: _WebDoubleTapFullScreen(
                         onToggle: controller.toggleFullscreen,
@@ -2306,6 +2305,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 一次性嗅探候选是否值得接管）
   bool _webPlayReady = false;
 
+  /// _probeJs 连续上报"只有音频在走、画面未解码"（返回 2）的秒数，
+  /// 达到 3 即视为卡音频，提前推前台让 WebView2 恢复画面渲染
+  int _webAudioTicks = 0;
+
   /// 15 秒内 WebView 毫无加载进度：判定为缺少 WebView2 运行时
   Timer? _runtimeTimer;
 
@@ -2387,6 +2390,12 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 或网页自身已在播而嗅探候选只是侧栏推荐）。全程不弹提示。
   void _finishWithWeb() {
     if (_sniffDone) return;
+    // 嗅探预检进行中：此时把网页推前台，会出现"网页先播放一会、预检
+    // 完成后又切回内置"的闪切。推迟 3 秒再审，等预检出结果自行收尾
+    if (_sniffChecking) {
+      _decisionTimer = Timer(const Duration(seconds: 3), _finishWithWeb);
+      return;
+    }
     _sniffDone = true;
     _sniffDeadline?.cancel();
     _sniffAggTimer?.cancel();
@@ -4205,6 +4214,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 必须有视频画面尺寸：音频先行不算起播，避免黑屏推前台
     if (!best.paused && best.readyState >= 2 && best.currentTime > 0
         && (best.videoWidth || 0) * (best.videoHeight || 0) >= 8160) return 1;
+    // 音频在走但画面没解码：后台遮挡时 WebView2 只解码音频（videoWidth=0），
+    // 永远不满足上面的尺寸门槛——上报 2，Dart 连续确认后提前推前台，
+    // 可见性恢复后画面才会真正渲染出来
+    if (!best.paused && best.readyState >= 3 && best.currentTime > 1) return 2;
   } catch(e) {}
   return 0;
 })();
@@ -4512,7 +4525,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       final r = await c.evaluateJavascript(source: _probeJs);
       // WebView2 JSON 解码后通常是 int 1，兼容字符串 "1"
       final playing = r == 1 || r?.toString() == '1';
-      if (playing && mounted && !widget.foreground) {
+      // 2 = 音频在走画面未解码（后台只解码音频）。连续 3 秒如此说明
+      // 不会自己出图，提前推前台让 WebView2 恢复渲染，不再傻等超时
+      final audioOnly = r == 2 || r?.toString() == '2';
+      _webAudioTicks = audioOnly ? _webAudioTicks + 1 : 0;
+      if ((playing || _webAudioTicks >= 3) &&
+          mounted &&
+          !widget.foreground) {
         if (_sniffAbandoned) {
           // 已知放弃页：起播即推网页
           widget.onForeground();
@@ -4690,8 +4709,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           },
         ),
         // 等待层：仅后台缓冲期间显示（推到前台后即使页面慢也露出来，
-        // 避免「正在打开网页频道」永久转圈把用户锁死）
-        if (!_loaded && _error == null && !_runtimeMissing && !widget.foreground)
+        // 避免「正在打开网页频道」永久转圈把用户锁死）；嗅探接管内置后
+        // 本层必须消失，否则半透明提示会浮在内置播放器画面上
+        if (!_loaded &&
+            _error == null &&
+            !_runtimeMissing &&
+            !widget.foreground &&
+            !_sniffDone)
           const Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -4703,7 +4727,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               ],
             ),
           ),
-        if (_error != null && !_runtimeMissing)
+        if (_error != null && !_runtimeMissing && !_sniffDone)
           Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
