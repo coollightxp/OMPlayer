@@ -4452,28 +4452,21 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     cleanWebView2Cache();
     // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
-    // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播，
-    // 先带嗅探脚本整页重建重载一次（唯一兜底机会），给重载页 12 秒
-    // 决策窗口；已重载过仍未起播才提前推网页避免长时间黑屏
+    // 8 秒兜底：已知放弃页直接推网页；正常页未起播时【不重载】——
+    // 芒果/央视频等重站本来就要 5~10 秒开播，整页重建会把一切推倒
+    // 重来拖成 ~20 秒（NewBox 从不重载，一次加载走完）。只运行时
+    // 补注轻嗅探：直播清单持续轮询，后续请求照样被捕获，内置接管
+    // 能力不受影响；页面加载与起播检测全部不被打断
     _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
       if (!mounted || widget.foreground) return;
       if (_sniffAbandoned) {
         widget.onForeground();
         return;
       }
-      if (!_webPlayReady) {
-        if (!_sniffRetried) {
-          _sniffRetried = true;
-          _decisionTimer?.cancel();
-          _decisionTimer =
-              Timer(const Duration(seconds: 12), _finishWithWeb);
-          setState(() {
-            _sniffEnabled = true;
-            _webPlayReady = false;
-          });
-          return;
-        }
-        widget.onForeground();
+      if (!_webPlayReady && !_sniffEnabled) {
+        _sniffEnabled = true;
+        _sniffRetried = true;
+        _inject();
       }
     });
     // 最终决策窗口：15 秒仍无可直连主流 → 加密/无流，直接网页全屏
@@ -4593,14 +4586,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       fit: StackFit.expand,
       children: [
         InAppWebView(
-          // 兜底重载时换 key 整棵重建：initialUserScripts 只在
-          // WebView 首次创建时生效
-          key: ValueKey('web_${widget.url}_$_sniffEnabled'),
+          // key 只随 URL 变化：_sniffEnabled 后期翻转为 true 时绝不能
+          // 触发 WebView 重建（8 秒兜底已改为运行时补注，不再重载页面）
+          key: ValueKey('web_${widget.url}'),
           webViewEnvironment: webViewEnvironment,
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           // 默认零 hook 纯净环境（对齐 NewBox webview:// 纯网页播放
-          // 策略）；仅 8 秒未起播的兜底重载才注入轻嗅探（document-start
-          // 保证先于页面 JS），运行时 _inject() 重注入是兜底
+          // 策略）；8 秒未起播的兜底改为运行时补注轻嗅探，不再重载页面
           initialUserScripts: UnmodifiableListView<UserScript>([
             if (_sniffEnabled)
               UserScript(
