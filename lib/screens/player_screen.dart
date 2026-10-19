@@ -122,7 +122,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.161';
+  static const String _appVersion = '1.0.162';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -4465,10 +4465,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 开台打点：后续所有事件都以此为时间线（诊断缓冲仅在网页
     // 频道激活期间记录，平时零开销不落盘）
     WebDiag.begin(widget.url, widget.title);
-    // 每次打开网页频道前清理缓存类子目录（Service Worker 残留会让
-    // 新频道黑屏/长时间不播放）。轻量模式：不整目录递归删（数千个
-    // 小文件在慢盘上会卡 UI 数秒），整目录清理只在启动/退出做
-    cleanWebView2Cache(full: false);
+    // 注意：切频道不做任何缓存清理——删除缓存目录会与上一个频道
+    // WebView 的销毁赛跑（文件仍被占用），导致新频道创建卡死在等待
+    // 层。InPrivate 模式下数据本就不持久，整目录清理只在启动/退出做
     // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
     // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播，
@@ -4527,6 +4526,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     _runtimeTimer?.cancel();
     _sniffAggTimer?.cancel();
     _sniffDeadline?.cancel();
+    // 关键：显式释放原生 WebView2 控制器。只靠 widget 卸载时插件的隐式
+    // 回收在 Windows 上不可靠——实测切台后旧频道声音/画面继续播（原生
+    // 实例泄漏），且旧实例占着环境导致新频道 WebView 创建卡死、一直停
+    // 在等待层。显式 dispose 立即停播并让出环境，新频道才能正常创建。
+    final c = _webController;
+    _webController = null;
+    if (c != null) {
+      WebDiag.log('wv_dispose');
+      try {
+        c.dispose().ignore();
+      } catch (_) {}
+    }
     super.dispose();
   }
 
