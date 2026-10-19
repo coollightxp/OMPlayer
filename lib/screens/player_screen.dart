@@ -4535,7 +4535,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (c != null) {
       WebDiag.log('wv_dispose');
       try {
-        c.dispose().ignore();
+        c.dispose(); // 同步方法（返回 void），关闭原生 WebView2 实例
       } catch (_) {}
     }
     super.dispose();
