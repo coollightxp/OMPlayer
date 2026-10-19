@@ -4677,7 +4677,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         InAppWebView(
           // 兜底重载/自愈重试时换 key 整棵重建：initialUserScripts
           // 只在 WebView 首次创建时生效
-          key: ValueKey('web_${widget.url}_$_sniffEnabled_$_wvRetryNonce'),
+          key: ValueKey(
+              'web_${widget.url}_${_sniffEnabled}_$_wvRetryNonce'),
           webViewEnvironment: webViewEnvironment,
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           // 默认零 hook 纯净环境（对齐 NewBox webview:// 纯网页播放
