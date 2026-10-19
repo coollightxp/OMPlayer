@@ -22,8 +22,22 @@ void main() async {
   await initWebViewEnvironment();
 
   // 播放缓冲设置需在注册 MDK 后端前读取（仅启动时应用一次）
-  final prefs = await SharedPreferences.getInstance();
-  final bufferSeconds = prefs.getInt('settings_buffer_seconds') ?? 5;
+  // 注意：不能让 SharedPreferences 失败阻塞 runApp——平台通道一失败
+  // main 直接死掉就是永久白屏（安卓实测 NoSuchMethodError 时整机白屏
+  // 进不去）。失败时降级默认值，保证 App 一定能起来。
+  var bufferSeconds = 5;
+  var launchAtStartup = false;
+  var alwaysOnTop = true;
+  var prefsOk = false;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    bufferSeconds = prefs.getInt('settings_buffer_seconds') ?? 5;
+    launchAtStartup = prefs.getBool('settings_launch_at_startup') ?? false;
+    alwaysOnTop = prefs.getBool('settings_always_on_top') ?? true;
+    prefsOk = true;
+  } catch (e) {
+    debugPrint('SharedPreferences load failed, using defaults: $e');
+  }
   // Windows/Linux 注册 MDK 视频播放后端（video_player 官方不支持桌面端）
   registerFvp(bufferSeconds: bufferSeconds);
 
@@ -39,10 +53,11 @@ void main() async {
   if (desktop) {
     await windowManager.ensureInitialized();
 
-    final launchAtStartup =
-        prefs.getBool('settings_launch_at_startup') ?? false;
-    // 与系统开机启动项保持同步
-    await setAutoLaunchEnabled(launchAtStartup);
+    final launchAtStartupSynced = launchAtStartup;
+    if (prefsOk) {
+      // 与系统开机启动项保持同步（配置加载失败时跳过，避免误关用户的自启动）
+      await setAutoLaunchEnabled(launchAtStartupSynced);
+    }
     // 注意：「启动全屏」不在这里执行——在窗口显示瞬间调用 setFullScreen
     // 会导致窗口尺寸错误（白屏方块+黑边、有声音无画面）。
     // 改由播放器界面首帧布局稳定后延迟执行（applyStartupFullscreen）。
@@ -58,8 +73,8 @@ void main() async {
         await windowManager.focus();
         // 窗口置顶（默认开）：避免被其它窗口抢焦点导致快捷键失灵；
         // 设置面板里可关闭
-        final alwaysOnTop = prefs.getBool('settings_always_on_top') ?? true;
-        if (alwaysOnTop) {
+        final alwaysOnTopSynced = alwaysOnTop;
+        if (alwaysOnTopSynced) {
           await windowManager.setAlwaysOnTop(true);
         }
         // 注意：不要在这里切换系统/窗口输入法——
