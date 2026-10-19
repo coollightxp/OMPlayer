@@ -4465,9 +4465,10 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 开台打点：后续所有事件都以此为时间线（诊断缓冲仅在网页
     // 频道激活期间记录，平时零开销不落盘）
     WebDiag.begin(widget.url, widget.title);
-    // 每次打开网页频道前清理 WebView2 缓存，避免旧频道的 Service Worker
-    // 或残留状态导致新频道黑屏/长时间不播放
-    cleanWebView2Cache();
+    // 每次打开网页频道前清理缓存类子目录（Service Worker 残留会让
+    // 新频道黑屏/长时间不播放）。轻量模式：不整目录递归删（数千个
+    // 小文件在慢盘上会卡 UI 数秒），整目录清理只在启动/退出做
+    cleanWebView2Cache(full: false);
     // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
     // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播，

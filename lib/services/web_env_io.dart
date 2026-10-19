@@ -28,36 +28,21 @@ const _browserArgs =
 // ==================== 用户数据目录 ====================
 
 /// 解析 WebView2 用户数据目录：
-/// - exe 所在目录可写：沿用绿色版习惯的同级目录
-/// - Program Files 等受保护目录：改放当前用户 LocalAppData
-///   （这是"已装运行时却起不来"的常见根因：UDF 落在无写权限的位置）
+/// 固定放当前用户 LocalAppData——标准用户令牌 100% 可写，不碰 UAC 红线。
+/// exe 同目录在 Program Files 或 UAC 过滤令牌下会出现"目录建一半→
+/// 环境创建失败"（Win10 家庭版实测：顶层写测试文件能成功，建
+/// WebView2 目录树仍被卡），微软官方同样推荐 UDF 放 AppData。
 String _resolveUserDataFolder() {
-  final exeFile = File(Platform.resolvedExecutable);
-  final exeDir = exeFile.parent;
-  final exeName = exeFile.path
-      .split(Platform.pathSeparator)
-      .last
-      .replaceAll('.exe', '');
-  if (_dirWritable(exeDir)) {
-    return '${exeDir.path}${Platform.pathSeparator}$exeName.WebView2';
-  }
+  final sep = Platform.pathSeparator;
   final local = Platform.environment['LOCALAPPDATA'] ?? '';
   if (local.isNotEmpty) {
-    return '$local${Platform.pathSeparator}OMPlayer'
-        '${Platform.pathSeparator}WebView2';
+    return '$local${sep}OMPlayer${sep}WebView2';
   }
-  return '${exeDir.path}${Platform.pathSeparator}$exeName.WebView2';
-}
-
-bool _dirWritable(Directory d) {
-  try {
-    final t = File('${d.path}${Platform.pathSeparator}.om_w_$pid');
-    t.writeAsStringSync('1', flush: true);
-    t.deleteSync();
-    return true;
-  } catch (_) {
-    return false;
-  }
+  // LOCALAPPDATA 缺失（极少数精简系统）：退回 exe 同目录
+  final exeFile = File(Platform.resolvedExecutable);
+  final exeName =
+      exeFile.path.split(sep).last.replaceAll('.exe', '');
+  return '${exeFile.parent.path}$sep$exeName.WebView2';
 }
 
 // ==================== 运行时目录探测 ====================
@@ -316,10 +301,12 @@ Future<void> initWebViewEnvironment() async {
 ///
 /// InPrivate 模式下数据本应在退出时丢弃，但部分版本仍会在 UDF 留下
 /// 缓存/锁文件；播放网页视频久了目录膨胀会导致下次读入明显变慢。
-/// 策略（按场景调用，均在 WebView 未持有该目录或已销毁后）：
-/// 1. 优先整个删除 UDF 目录（启动时环境尚未创建，无锁定）；
-/// 2. 个别文件被残留进程锁定时退化为只删缓存类子目录。
-void cleanWebView2Cache() {
+///
+/// [full]=true 整目录删除——仅启动/退出时调用（WebView 未持有目录，
+/// 无锁定）；[full]=false 只删缓存类子目录——网页频道切换中调用，
+/// 轻量不卡 UI：整目录递归删除含数千个小文件，慢盘上会阻塞主线程
+/// 数秒（切网页频道卡顿的来源之一）。
+void cleanWebView2Cache({bool full = true}) {
   if (!Platform.isWindows) return;
   final sep = Platform.pathSeparator;
   final exeFile = File(Platform.resolvedExecutable);
@@ -339,12 +326,15 @@ void cleanWebView2Cache() {
   for (final path in folders) {
     final wvDir = Directory(path);
     if (!wvDir.existsSync()) continue;
-    // 先尝试整体删除（启动时调用，正常无锁）
-    try {
-      wvDir.deleteSync(recursive: true);
-      continue;
-    } catch (_) {}
-    // 退化：仅删缓存类子目录，锁定的单个文件跳过
+    // 轻量模式：跳过整删，只清缓存类子目录
+    if (full) {
+      // 先尝试整体删除（启动时调用，正常无锁）
+      try {
+        wvDir.deleteSync(recursive: true);
+        continue;
+      } catch (_) {}
+    }
+    // 退化（或轻量模式）：仅删缓存类子目录，锁定的单个文件跳过
     for (final name in cacheDirs) {
       final d = Directory('$path$sep$name');
       if (d.existsSync()) {
