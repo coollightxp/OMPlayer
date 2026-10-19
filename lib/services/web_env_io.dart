@@ -295,6 +295,20 @@ Future<void> initWebViewEnvironment() async {
   }
 }
 
+/// 重建 WebView2 环境：上一个网页频道的控制器销毁后，环境内的浏览器
+/// 进程可能已退出（InPrivate 无保活），对旧环境对象再建控制器会静默
+/// 挂死（onWebViewCreated 永不回调，新频道永远停在等待层）。销毁旧
+/// 环境并按原兜底链重建，下一个频道的 WebView 拿到全新浏览器进程。
+Future<void> resetWebViewEnvironment() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.windows) return;
+  try {
+    await webViewEnvironment?.dispose();
+  } catch (_) {}
+  webViewEnvironment = null;
+  webEnvLastError = '';
+  await initWebViewEnvironment();
+}
+
 // ==================== 缓存清理 ====================
 
 /// 清理 WebView2 用户数据目录。
