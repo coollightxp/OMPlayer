@@ -122,7 +122,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.163';
+  static const String _appVersion = '1.0.164';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2332,14 +2332,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 嗅探重载只尝试一次，避免循环重载
   bool _sniffRetried = false;
 
-  /// WebView 创建看门狗：上一个频道的控制器销毁后，WebView2 环境
-  /// 里的浏览器进程可能已退出，新频道的原生创建会静默挂死（实测
-  /// onWebViewCreated 永不回调、永远停在等待层）。3 秒没回调就重建
-  /// 环境并换 key 重试，最多 2 次，把永久卡等待层变成几秒内自愈
-  Timer? _wvWatchdog;
-  int _wvRetryNonce = 0;
-  int _wvRetries = 0;
-
   static int _sniffKindPri(String kind) =>
       kind == 'hls' ? 3 : (kind == 'dash' ? 2 : 1);
 
@@ -4478,8 +4470,6 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 层。InPrivate 模式下数据本就不持久，整目录清理只在启动/退出做
     // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
-    // WebView 创建看门狗：3 秒内 onWebViewCreated 没回调就自愈重试
-    _wvWatchdog = Timer(const Duration(seconds: 3), _checkWebViewCreated);
     // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播，
     // 先带嗅探脚本整页重建重载一次（唯一兜底机会），给重载页 12 秒
     // 决策窗口；已重载过仍未起播才提前推网页避免长时间黑屏
@@ -4525,29 +4515,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     });
   }
 
-  /// WebView 创建看门狗：超时未回调就重建环境 + 换 key 重试
-  void _checkWebViewCreated() {
-    if (!mounted) return;
-    if (_webController != null) return;
-    if (_wvRetries >= 2) {
-      WebDiag.log('wv_giveup', 'retries=$_wvRetries');
-      return;
-    }
-    _wvRetries++;
-    WebDiag.log('wv_retry', 'n=$_wvRetries');
-    () async {
-      // 旧环境的浏览器进程可能已随上一频道控制器销毁而退出，
-      // 重建环境拿到全新浏览器进程后再重试创建
-      await resetWebViewEnvironment();
-      if (!mounted) return;
-      setState(() => _wvRetryNonce++);
-      _wvWatchdog = Timer(const Duration(seconds: 3), _checkWebViewCreated);
-    }();
-  }
-
   @override
   void dispose() {
-    _wvWatchdog?.cancel();
     // 显式释放原生 WebView2 控制器，旧频道立即停播并让出环境；
     // 打点须在 WebDiag.end() 之前（end 后日志会话关闭不再记录）
     final c = _webController;
@@ -4677,8 +4646,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         InAppWebView(
           // 兜底重载/自愈重试时换 key 整棵重建：initialUserScripts
           // 只在 WebView 首次创建时生效
-          key: ValueKey(
-              'web_${widget.url}_${_sniffEnabled}_$_wvRetryNonce'),
+          key: ValueKey('web_${widget.url}_${_sniffEnabled}'),
           webViewEnvironment: webViewEnvironment,
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           // 默认零 hook 纯净环境（对齐 NewBox webview:// 纯网页播放

@@ -15,8 +15,5 @@ String? webEnvOfficialVersion;
 /// 初始化 WebView2 环境（Web 平台空操作）。
 Future<void> initWebViewEnvironment() async {}
 
-/// 重建 WebView2 环境（Web 平台空操作，接口与 web_env_io 一致）。
-Future<void> resetWebViewEnvironment() async {}
-
 /// 清理 WebView2 纯缓存目录（Web 平台空操作，参数与 web_env_io 一致）。
 void cleanWebView2Cache({bool full = true}) {}

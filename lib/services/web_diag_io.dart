@@ -15,6 +15,13 @@ class WebDiag {
   static int _t0 = 0;
   static bool _active = false;
 
+  /// 存活的网页频道覆盖层数量。切台时新旧覆盖层的生命周期在同一帧内
+  /// 交叠——新层 initState（begin）先于旧层 dispose（end）执行，若 end
+  /// 直接置 _active=false，会把刚开台的新频道会话一并关掉，导致新频道
+  /// 的 wv_created/probe 等关键事件全部丢失（日志只剩 open+close）。
+  /// 用计数保证只要还有一层存活就继续记录。
+  static int _sessions = 0;
+
   /// 应用版本（PlayerScreen 启动时写入，随日志导出便于定位版本）
   static String appVersion = '';
 
@@ -22,14 +29,16 @@ class WebDiag {
   /// （跨频道串台分析依赖它），并记开台事件
   static void begin(String url, String title) {
     if (_t0 == 0) _t0 = DateTime.now().millisecondsSinceEpoch;
+    _sessions++;
     _active = true;
     log('open', 'v=$appVersion|title=$title|url=$url');
   }
 
-  /// 网页频道关台：记关台事件后停止记录（缓冲保留待导出）
+  /// 网页频道关台：记关台事件；仍有其它覆盖层存活时继续记录
   static void end() {
     log('close');
-    _active = false;
+    if (_sessions > 0) _sessions--;
+    if (_sessions == 0) _active = false;
   }
 
   /// 追加一条事件（仅网页频道激活期间；自动加相对毫秒时间戳）
