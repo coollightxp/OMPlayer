@@ -122,7 +122,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.164';
+  static const String _appVersion = '1.0.165';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2326,11 +2326,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 
   /// 嗅探是否启用。默认 false：页面保持零 hook 纯净环境（对齐 NewBox
   /// webview:// 纯网页播放策略，咪咕等带完整性检测的播放器才能工作）；
-  /// 仅当网页 8 秒未起播时才置 true 并整页重建 WebView 带嗅探重载一次
+  /// 仅当 8 秒兜底时页面连 video 元素都还没有才置 true，由 _inject()
+  /// 运行时注入轻嗅探（不重建 WebView）
   bool _sniffEnabled = false;
 
-  /// 嗅探重载只尝试一次，避免循环重载
+  /// 轻嗅探只注入一次，避免反复注入
   bool _sniffRetried = false;
+  /// 最近一次探测到的页面 video 元素数量（0 = 页面还没挂出播放器）。
+  /// 8 秒兜底据此判断该不该注入嗅探：页面已有播放器时不做任何干预
+  int _pageVideoCount = 0;
 
   static int _sniffKindPri(String kind) =>
       kind == 'hls' ? 3 : (kind == 'dash' ? 2 : 1);
@@ -4269,8 +4273,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 自身播放器（咪咕/央视频 MSE 卡顿甚至不可用）。对齐 TVBox 系
   /// webview:// 纯网页播放策略：页面播放优先，轻量地址嗅探用于
   /// 自动/手动切内置。捕获 m3u8/mpd/http-flv 走 omStream JSON 协议。
-  /// document-start 注入保证 fetch/XHR 包装先于页面 JS；
-  /// __omSniffed 哨兵保证只安装一次，运行时 _inject() 重注入是兜底。
+  /// 包装的是 XMLHttpRequest.prototype.open / window.fetch 原型，8 秒
+  /// 兜底时运行时注入也能捕获后续请求（直播清单持续轮询）；
+  /// __omSniffed 哨兵保证只安装一次，重复 _inject() 不会叠加包装。
   static const String _sniffJs = r'''
 (function(){
   if (window.__omSniffed) return;
@@ -4470,34 +4475,30 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 层。InPrivate 模式下数据本就不持久，整目录清理只在启动/退出做
     // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
-    // 8 秒兜底：已知放弃页直接推网页；正常页若网页自身也没起播，
-    // 先带嗅探脚本整页重建重载一次（唯一兜底机会），给重载页 12 秒
-    // 决策窗口；已重载过仍未起播才提前推网页避免长时间黑屏
-    _forceForegroundTimer = Timer(const Duration(seconds: 8), () {
+    // 8 秒兜底：已知放弃页直接推网页；页面已挂出 video 元素（只在缓冲/
+    // 取流）时不做任何干预，交给 15 秒决策窗口收尾；页面连 video 都没有
+    // 才运行时注入轻嗅探（不重建 WebView、不打断正在进行的加载）找可
+    // 直连主流。
+    // 不做整页重建重载：日志实测重载会把已就绪的播放器摧毁并让整页
+    // 重新下载（更慢更黑），芒果 reload() 还会把页面打成永久空白
+    _forceForegroundTimer = Timer(const Duration(seconds: 8), () async {
       if (!mounted || widget.foreground) return;
       WebDiag.log('force8',
-          'abandoned=${_sniffAbandoned ? 1 : 0}|ready=${_webPlayReady ? 1 : 0}|retried=${_sniffRetried ? 1 : 0}');
+          'abandoned=${_sniffAbandoned ? 1 : 0}|ready=${_webPlayReady ? 1 : 0}|retried=${_sniffRetried ? 1 : 0}|v=$_pageVideoCount');
       if (_sniffAbandoned) {
         WebDiag.log('push_fg', 'via=force8_abandoned');
         widget.onForeground();
         return;
       }
-      if (!_webPlayReady) {
-        if (!_sniffRetried) {
-          WebDiag.log('sniff_reload');
-          _sniffRetried = true;
-          _decisionTimer?.cancel();
-          _decisionTimer = Timer(const Duration(seconds: 12),
-              () => _finishWithWeb(via: 'decision12'));
-          setState(() {
-            _sniffEnabled = true;
-            _webPlayReady = false;
-          });
-          return;
-        }
-        WebDiag.log('push_fg', 'via=force8_retried');
-        widget.onForeground();
-      }
+      if (_webPlayReady) return;
+      if (_pageVideoCount > 0 || _sniffRetried) return;
+      WebDiag.log('sniff_inject_runtime');
+      _sniffRetried = true;
+      _sniffEnabled = true;
+      _decisionTimer?.cancel();
+      _decisionTimer = Timer(const Duration(seconds: 12),
+          () => _finishWithWeb(via: 'decision12'));
+      await _inject();
     });
     // 最终决策窗口：15 秒仍无可直连主流 → 加密/无流，直接网页全屏
     _decisionTimer = Timer(const Duration(seconds: 15),
@@ -4594,6 +4595,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       if (r is List) {
         playing =
             r.isNotEmpty && (r[0] == 1 || r[0]?.toString() == '1');
+        if (r.length > 1) {
+          // 状态串首字段即页面 video 元素数（_probeJs 自产，格式固定）
+          final m = RegExp(r'n=(\d+)').firstMatch(r[1].toString());
+          if (m != null) _pageVideoCount = int.parse(m.group(1)!);
+        }
         WebDiag.log('probe',
             'p=${playing ? 1 : 0}${r.length > 1 ? '|${r[1]}' : ''}');
       } else {
@@ -4620,21 +4626,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (widget.foreground && !oldWidget.foreground) {
       _forceForegroundTimer?.cancel();
     }
-    // 同 URL 页内切台（央视频直播大厅）：频道名变化时让站点脚本按新
-    // 频道名重新点台，不重载 WebView。
-    // 例外——芒果TV：页内换流后 WebView2 只出声不出画面（合成器黑帧，
-    // 视频元素实际在播），改走整页重载：onLoadStop 重注入后 __omSiteGo
-    // 按新标题点台，与首次进入同一条已验证正常的路径
+    // 同 URL 页内切台（央视频直播大厅/芒果TV）：频道名变化时让站点脚本
+    // 按新频道名重新点台，不重载 WebView。
+    // 不做整页重载：实测 reload() 会在 progress 100% 后报
+    // "connection was stopped"，onLoadStop 再不触发 → _inject 不执行、
+    // 站点脚本未注入 → 页面永久空白
     if (widget.title != oldWidget.title && _siteJsFor(widget.url) != null) {
       WebDiag.log('sitego', 'via=title|title=${widget.title}');
-      if (widget.url.contains('mgtv.com')) {
-        WebDiag.log('sitego_reload');
-        _webController?.reload();
-      } else {
-        _webController
-            ?.evaluateJavascript(source: _siteGoCall())
-            .catchError((_) => null);
-      }
+      _webController
+          ?.evaluateJavascript(source: _siteGoCall())
+          .catchError((_) => null);
     }
   }
 
@@ -4644,22 +4645,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       fit: StackFit.expand,
       children: [
         InAppWebView(
-          // 兜底重载/自愈重试时换 key 整棵重建：initialUserScripts
-          // 只在 WebView 首次创建时生效
-          key: ValueKey('web_${widget.url}_${_sniffEnabled}'),
+          key: ValueKey('web_${widget.url}'),
           webViewEnvironment: webViewEnvironment,
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           // 默认零 hook 纯净环境（对齐 NewBox webview:// 纯网页播放
-          // 策略）；仅 8 秒未起播的兜底重载才注入轻嗅探（document-start
-          // 保证先于页面 JS），运行时 _inject() 重注入是兜底
+          // 策略）；轻嗅探不再随 WebView 创建注入，改为 8 秒兜底时运行时
+          // 由 _inject() 注入（换 key 重建 WebView 会摧毁已就绪的播放器）
           initialUserScripts: UnmodifiableListView<UserScript>([
-            if (_sniffEnabled)
-              UserScript(
-                source: _sniffJs,
-                injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                forMainFrameOnly: false,
-              ),
-            // 右键菜单屏蔽也提前到 document-start：页面加载失败/
+            // 右键菜单屏蔽提前到 document-start：页面加载失败/
             // 未完成时 onLoadStop 不触发，运行时注入会漏掉，
             // WebView2 默认菜单（返回/刷新/另存为/打印）就会冒出来
             UserScript(
