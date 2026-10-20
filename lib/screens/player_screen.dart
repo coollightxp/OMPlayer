@@ -122,7 +122,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.165';
+  static const String _appVersion = '1.0.166';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -2335,6 +2335,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 最近一次探测到的页面 video 元素数量（0 = 页面还没挂出播放器）。
   /// 8 秒兜底据此判断该不该注入嗅探：页面已有播放器时不做任何干预
   int _pageVideoCount = 0;
+  /// 站点脚本（芒果/央视频）提前注入定时器。
+  /// 日志实测根因：站点脚本只在 onLoadStop 注入，而芒果/央视频首屏很慢
+  /// （8 秒时进度仍只有 66%），onLoadStop 迟迟不来 → 站点脚本永不注入、
+  /// 永不点台 → 页面永远不挂 video（永久黑屏）。改为 2.5 秒提前注入一次
+  Timer? _siteInjectTimer;
+  /// 探针节拍计数（每 3 拍 = 3 秒触发一次点台重试）
+  int _siteRetryTick = 0;
+  /// 站点页无 video 时的点台重试次数，上限 8 次避免反复打扰页面
+  int _siteRetryCount = 0;
 
   static int _sniffKindPri(String kind) =>
       kind == 'hls' ? 3 : (kind == 'dash' ? 2 : 1);
@@ -3406,8 +3415,21 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     diag('mgtv_go|id=' + (id || '-') + '|name=' + (name || '-'));
     var want = id ? ("id:" + id) : (name ? ("nm:" + name) : "");
     if (want && want === window.__omMgtvWant) {
-      if (pictureReady()) tellReady(window.__omMgtvPickGen);
-      else layout();
+      if (pictureReady()) {
+        tellReady(window.__omMgtvPickGen);
+        return;
+      }
+      layout();
+      // 页面当前连一个 video 元素都没有（首屏频道列表渲染慢时首次
+      // 点台会找不到节点）：再走一轮点台重试，避免"点过了却没换台"
+      // 造成的永久黑屏。由 Dart 侧 _probe 每 3 秒重复调用本函数驱动
+      if (!videoEl()) {
+        didSwitch = 0;
+        if (clickWant(id, name)) {
+          if (didSwitch) markSwitch();
+          waitFrame(window.__omMgtvPickGen);
+        }
+      }
       return;
     }
     window.__omMgtvWant = want;
@@ -4475,6 +4497,17 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 层。InPrivate 模式下数据本就不持久，整目录清理只在启动/退出做
     // 后台缓冲期间持续探测；正常页起播后不立即推前台，等嗅探决策
     _probeTimer = Timer.periodic(const Duration(seconds: 1), (_) => _probe());
+    // 站点页提前注入：站点脚本（芒果/央视频）原来只在 onLoadStop 注入，
+    // 而慢站首屏 load_stop 迟迟不来（8 秒时进度仍 66%）导致脚本永不注入、
+    // 永不点台、页面永不挂 video。2.5 秒先注入一次，脚本自带点台重试轮询；
+    // onLoadStop 仍会再注入一次作保底（各脚本内部有幂等守卫）
+    if (_siteJsFor(widget.url) != null) {
+      _siteInjectTimer = Timer(const Duration(milliseconds: 2500), () {
+        if (!mounted || widget.foreground) return;
+        WebDiag.log('siteinject_early');
+        _inject();
+      });
+    }
     // 8 秒兜底：已知放弃页直接推网页；页面已挂出 video 元素（只在缓冲/
     // 取流）时不做任何干预，交给 15 秒决策窗口收尾；页面连 video 都没有
     // 才运行时注入轻嗅探（不重建 WebView、不打断正在进行的加载）找可
@@ -4492,6 +4525,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       }
       if (_webPlayReady) return;
       if (_pageVideoCount > 0 || _sniffRetried) return;
+      // 站点页（芒果/央视频/咪咕）有可见播放器、且自带站内脚本点台：
+      // 轻嗅探对其没有收益（候选实测均不可接管），hook XHR 反而可能
+      // 干扰站点播放器的完整性检测，因此不做嗅探注入，交给站点脚本
+      // 点台 + 15 秒决策窗口推前台
+      if (_siteJsFor(widget.url) != null) return;
       WebDiag.log('sniff_inject_runtime');
       _sniffRetried = true;
       _sniffEnabled = true;
@@ -4531,6 +4569,7 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     WebDiag.end();
     widget.onBridgeDetached();
     _probeTimer?.cancel();
+    _siteInjectTimer?.cancel();
     _forceForegroundTimer?.cancel();
     _decisionTimer?.cancel();
     _webReadyGraceTimer?.cancel();
@@ -4606,6 +4645,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         playing = r == 1 || r?.toString() == '1';
         WebDiag.log('probe', 'p=${playing ? 1 : 0}');
       }
+      // 站点页仍无 video：每 3 秒重新点台。慢站首屏频道列表渲染晚，
+      // 首次点台常找不到频道节点，只点一次就永久黑屏（日志实锤：
+      // load_stop 正常、mgtv_click 也执行，页面 25 秒仍 n=0）
+      if (!playing &&
+          _pageVideoCount == 0 &&
+          !_webPlayReady &&
+          _siteJsFor(widget.url) != null) {
+        if (++_siteRetryTick % 3 == 0) _retrySiteGo();
+      }
       if (playing && mounted && !widget.foreground) {
         if (_sniffAbandoned) {
           // 已知放弃页：起播即推网页
@@ -4619,6 +4667,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     } catch (_) {}
   }
 
+  /// 站点页（芒果/央视频）仍无 video 元素时重新点台。
+  /// 页内点台不重载页面、不打断正在进行的加载；站点脚本 __omSiteGo
+  /// 对相同频道会走"无 video 就再点一次"分支，因此可安全重复调用
+  void _retrySiteGo() {
+    if (_siteRetryCount >= 8) return;
+    _siteRetryCount++;
+    WebDiag.log('sitego_retry', 'n=$_siteRetryCount');
+    _webController
+        ?.evaluateJavascript(source: _siteGoCall())
+        .catchError((_) => null);
+  }
+
   @override
   void didUpdateWidget(covariant _WebChannelOverlay oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -4626,13 +4686,13 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (widget.foreground && !oldWidget.foreground) {
       _forceForegroundTimer?.cancel();
     }
-    // 同 URL 页内切台（央视频直播大厅/芒果TV）：频道名变化时让站点脚本
-    // 按新频道名重新点台，不重载 WebView。
-    // 不做整页重载：实测 reload() 会在 progress 100% 后报
-    // "connection was stopped"，onLoadStop 再不触发 → _inject 不执行、
-    // 站点脚本未注入 → 页面永久空白
+    // 同 URL 页内切台：频道名变化时让站点脚本按新频道名重新点台。
+    // 不整页重载——重载会把央视频已起播的播放器一并摧毁（日志实测
+    // 央视频 7 秒已起播，被 8 秒兜底重载拖到 29 秒），且芒果重载后
+    // 偶发永久空白。页内点台失败由 _probe 的每 3 秒重试兜底
     if (widget.title != oldWidget.title && _siteJsFor(widget.url) != null) {
       WebDiag.log('sitego', 'via=title|title=${widget.title}');
+      _siteRetryCount = 0;
       _webController
           ?.evaluateJavascript(source: _siteGoCall())
           .catchError((_) => null);
