@@ -73,6 +73,11 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
   final Map<int, GlobalKey> _channelKeys = <int, GlobalKey>{};
   final Map<int, GlobalKey> _categoryKeys = <int, GlobalKey>{};
 
+  /// 各频道「正在播」节目名缓存。EPG 匹配要遍历整张频道表，
+  /// 列表滚动会反复构建条目，缓存 60 秒复用一次结果即可
+  final Map<String, String> _nowTitleCache = <String, String>{};
+  DateTime _nowTitleCacheAt = DateTime.now();
+
   /// 设计稿宽度（面板内容按此尺寸设计，缩放交给 ScaledPanel）
   static const double _designWidth = 320;
 
@@ -118,11 +123,29 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
     );
   }
 
+  /// 频道正在播出的节目名。命中缓存直接返回；空结果不缓存，
+  /// 便于 EPG 异步加载完成后下一次构建即可显示
+  String _nowTitleFor(PlayerController controller, Channel channel) {
+    final now = DateTime.now();
+    if (now.difference(_nowTitleCacheAt) > const Duration(seconds: 60)) {
+      _nowTitleCache.clear();
+      _nowTitleCacheAt = now;
+    }
+    final cached = _nowTitleCache[channel.id];
+    if (cached != null) return cached;
+    final title = controller.currentProgramTitleFor(channel);
+    if (title.isNotEmpty) _nowTitleCache[channel.id] = title;
+    return title;
+  }
+
   @override
   void didUpdateWidget(covariant LeftChannelDrawer oldWidget) {
     super.didUpdateWidget(oldWidget);
     // 打开时直接定位到当前播放频道所在分类，并滚动到当前频道
     if (!oldWidget.isOpen && widget.isOpen) {
+      // 节目可能已切换，重新取「正在播」节目名
+      _nowTitleCache.clear();
+      _nowTitleCacheAt = DateTime.now();
       // 清空 GlobalKey 映射：切换分类/频道列表刷新后，
       // 旧索引的 key 可能已失效，需重建
       _channelKeys.clear();
@@ -306,9 +329,9 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
         );
         return;
       }
-      // 目标尚未构建：粗跳到目标附近（频道条目约 64px）
+      // 目标尚未构建：粗跳到目标附近（频道条目约 76px，含"正在播"小字）
       final pos = sc.position;
-      const estItemHeight = 64.0;
+      const estItemHeight = 76.0;
       final rough = (index * estItemHeight - pos.viewportDimension / 2)
           .clamp(0.0, pos.maxScrollExtent);
       pos.jumpTo(rough);
@@ -558,6 +581,7 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           isSelected: isCurrent,
           keyboardSelected: index == _kbChannelIndex,
           isFav: controller.isFavoriteChannel(channel.id),
+          nowTitle: _nowTitleFor(controller, channel),
           onToggleFavorite: () => _toggleFavorite(channel),
           onTap: () {
             _kbChannelIndex = index;
@@ -656,6 +680,9 @@ class _ChannelTile extends StatelessWidget {
   final bool isSelected;
   final VoidCallback onTap;
 
+  /// 正在播出的节目名（无 EPG 时为空，不占位）
+  final String nowTitle;
+
   /// 是否已收藏 + 切换回调（null=不显示收藏按钮）
   final bool isFav;
   final VoidCallback? onToggleFavorite;
@@ -669,6 +696,7 @@ class _ChannelTile extends StatelessWidget {
     required this.number,
     required this.isSelected,
     required this.onTap,
+    this.nowTitle = '',
     this.isFav = false,
     this.onToggleFavorite,
     this.keyboardSelected = false,
@@ -697,7 +725,7 @@ class _ChannelTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // 频道序号（与数字选台）。窄抽屉下压缩列宽，名称最多两行，
+            // 频道序号（与数字选台）。窄抽屉下压缩列宽，名称单行省略，
             // 避免被挤成一字一行的竖排
             SizedBox(
               width: 32,
@@ -731,17 +759,37 @@ class _ChannelTile extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(
-                channel.name,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: isSelected ? Colors.blueAccent : Colors.white,
-                  fontSize: 14,
-                  height: 1.15,
-                  fontWeight:
-                      isSelected ? FontWeight.bold : FontWeight.normal,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    channel.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: isSelected ? Colors.blueAccent : Colors.white,
+                      fontSize: 14,
+                      height: 1.15,
+                      fontWeight:
+                          isSelected ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                  // 正在播出的节目名（无 EPG 数据时整行不显示）
+                  if (nowTitle.isNotEmpty)
+                    Text(
+                      nowTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: isSelected
+                            ? Colors.blueAccent.withOpacity(0.85)
+                            : Colors.white38,
+                        fontSize: 11,
+                        height: 1.2,
+                      ),
+                    ),
+                ],
               ),
             ),
             // 收藏星标：鼠标点按切换收藏（阻断冒泡，不触发播放）

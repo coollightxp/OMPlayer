@@ -78,6 +78,12 @@ class RightEpgPanelState extends State<RightEpgPanel> {
       _kbSelectionKey = null;
       _okHeld = false;
     }
+    // 面板打开：重置定位标记，确保本次打开一定滚到正在直播的节目。
+    // 面板常驻树中（仅偏移隐藏），隐藏期间 EPG 也会构建，
+    // 若不清空标记，打开时会因"已定位过"而不再滚动
+    if (!oldWidget.isOpen && widget.isOpen) {
+      _lastScrolledKey = null;
+    }
   }
 
   /// 遥控器/键盘按键入口（由 PlayerScreen 统一分发）。
@@ -331,7 +337,9 @@ class RightEpgPanelState extends State<RightEpgPanel> {
             );
           },
         );
-        _maybeScrollToNow(epg);
+        // 只在面板打开时定位：隐藏状态下构建不得占用定位标记，
+        // 否则打开时会误判"已定位过"而不滚动
+        if (widget.isOpen) _maybeScrollToNow(epg);
         return list;
       },
     );

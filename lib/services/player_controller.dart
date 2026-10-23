@@ -1892,6 +1892,16 @@ class PlayerController extends ChangeNotifier {
     return null;
   }
 
+  /// 指定频道当前正在播出的节目名（无 EPG 数据时返回空串）。
+  /// 左侧频道列表用它显示每路的"正在播"小字
+  String currentProgramTitleFor(Channel channel) {
+    final now = DateTime.now();
+    for (final p in sourceManager.getProgramsForChannel(channel)) {
+      if (now.isAfter(p.startTime) && now.isBefore(p.endTime)) return p.title;
+    }
+    return '';
+  }
+
   /// 即将播放的下一个节目
   EpgProgram? get nextProgram {
     final now = DateTime.now();
