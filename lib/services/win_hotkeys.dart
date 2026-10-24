@@ -37,7 +37,8 @@ class WinHotkeys {
     _syncHandler();
   }
 
-  /// 注册动作键回调（space/left/right/up/down/esc/ok/menu/back/m/f/r/c/e/s）
+  /// 注册动作键回调
+  /// （space/left/right/up/down/esc/ok/menu/back/m/f/r/c/e/s/l/t）
   void setActionHandler(void Function(String action, bool isDown)? onAction) {
     _onAction = onAction;
     _syncHandler();

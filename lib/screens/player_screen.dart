@@ -266,6 +266,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   void _onNumberKey(int n) {
     // 设置面板打开时不拦截数字键（避免影响输入框）
     if (_settingsOpen) return;
+    // 锁定状态：屏蔽所有误触操作（数字键也走原生钩子，需在此兜住）
+    if (context.read<PlayerController>().locked) return;
     setState(() {
       _numBuffer += n.toString();
       _osdVisible = true;
@@ -286,6 +288,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 收不到键盘消息）：d0-d9 数字选台，fullscreen 切换全屏
   void _onWebKey(String key) {
     if (_settingsOpen) return;
+    if (context.read<PlayerController>().locked) return;
     if (key.startsWith('d')) {
       final n = int.tryParse(key.substring(1));
       if (n != null) _onNumberKey(n);
@@ -477,8 +480,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 最底层：网页频道控件。网页在后台缓冲时也存在于此，
                   // 被上方黑屏占位盖住；起播后黑屏移走，网页显露到全屏
                   if (webUrl.isNotEmpty)
-                    Positioned.fill(
-                      child: _WebChannelOverlay(
+                    _videoArea(
+                      controller,
+                      _WebChannelOverlay(
                         key: ValueKey(webUrl),
                         url: webUrl,
                         title: controller.currentChannel?.name ?? '',
@@ -498,8 +502,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // - 网页频道后台缓冲中：黑屏占位（网页在其下方缓冲）
                   // - 网页频道前台播放：空层（让下方网页全屏显露）
                   // - 等待网络：显示网络等待提示
-                  Positioned.fill(
-                    child: controller.state == PlayerState.waitingForNetwork
+                  _videoArea(
+                    controller,
+                    controller.state == PlayerState.waitingForNetwork
                         ? Container(
                             color: Colors.black,
                             child: Center(
@@ -641,18 +646,18 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverEnter: _cancelBottomHide,
                     onHoverExit: _scheduleBottomHide,
                     onHoverMove: _cancelBottomHide,
-                    onTogglePlayPause: controller.togglePlayPause,
                     onOpenChannels: () => _openDrawer(left: true),
                     onOpenEpg: () => _openDrawer(left: false),
                     onOpenSettings: _toggleSettings,
+                    onToggleFullMini: () {
+                      if (controller.isDesktop) {
+                        controller.toggleFullscreen();
+                      } else {
+                        controller.toggleMiniWindow();
+                      }
+                    },
                     onScreenshot: _takeScreenshot,
                     onToggleRecord: () => _toggleRecording(controller),
-                    onSwitchWebNative: () =>
-                        controller.switchWebNativePlayback(),
-                    onOpenRemoteAdmin:
-                        controller.remoteAdminUrl.isEmpty
-                            ? null
-                            : () => _showRemoteAdminQr(controller),
                     onDismissRemote: () {
                       if (_bottomPanelVisible) {
                         setState(() => _bottomPanelVisible = false);
@@ -791,6 +796,31 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                         }
                       },
                     ),
+
+                  // 锁定提示：仅视觉提示，返回键/L 键解锁
+                  if (controller.locked)
+                    const Positioned(
+                      left: 16,
+                      top: 48,
+                      child: IgnorePointer(child: _LockBadge()),
+                    ),
+
+                  // 听电视信息卡片（手机/平板，可在设置中关闭）
+                  if (controller.listenMode &&
+                      controller.settings.listenModeShowCard)
+                    _ListenCard(controller: controller),
+
+                  // 锁定层：吞掉全部触摸/鼠标操作（播放页/面板/听电视卡片
+                  // 均不响应，视觉提示仍在下方可见）；返回键 / Esc / L 键解锁
+                  if (controller.locked)
+                    const Positioned.fill(
+                      child: AbsorbPointer(child: SizedBox.expand()),
+                    ),
+
+                  // 启动画面：频道/EPG 初始化期间显示启动 logo，
+                  // 完成后淡出（盖在全部界面之上，避免露出空播放区）
+                  if (!controller.bootReady)
+                    _BootSplash(status: controller.bootStatus),
                 ],
               );
             },
@@ -809,6 +839,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     // 防止连按返回弹出两个路由、关闭时连带弹掉播放器（黑屏）
     if (_exitDialogOpen) return;
     final c = context.read<PlayerController>();
+    // 锁定状态：返回键只用于解锁（安卓系统返回走这里）
+    if (c.locked) {
+      c.unlock();
+      return;
+    }
     if (_settingsOpen) {
       setState(() => _settingsOpen = false);
       return;
@@ -884,7 +919,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
                         const Text(
-                          'OMPlayer',
+                          'OMTV',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 24,
@@ -1186,6 +1221,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     final isDown = event is KeyDownEvent;
     final isUp = event is KeyUpEvent;
 
+    // 锁定状态：屏蔽全部遥控器/键盘操作，仅返回键或 L 键解锁
+    final ctl = context.read<PlayerController>();
+    if (ctl.locked) {
+      if (isDown &&
+          (k == LogicalKeyboardKey.escape || k == LogicalKeyboardKey.keyL)) {
+        ctl.unlock();
+      }
+      return true;
+    }
+
     // 设置面板里有输入框（URL、数字等）：仅返回/菜单键负责关面板，
     // 其余按键放行给输入框
     if (_settingsOpen) {
@@ -1278,6 +1323,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       action = 'settings';
     } else if (k == LogicalKeyboardKey.keyR) {
       action = 'record';
+    } else if (k == LogicalKeyboardKey.keyL) {
+      action = 'lock';
+    } else if (k == LogicalKeyboardKey.keyT) {
+      action = 'listen';
     } else if (k == LogicalKeyboardKey.mediaPlayPause ||
         k == LogicalKeyboardKey.mediaPlay ||
         k == LogicalKeyboardKey.mediaPause) {
@@ -1647,6 +1696,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   // ==================== 抽屉控制 ====================
 
   void _openDrawer({required bool left}) {
+    if (context.read<PlayerController>().locked) return;
     setState(() {
       // 打开面板时隐藏悬停标题栏，避免遮挡面板顶部按钮
       _topBarVisible = false;
@@ -1663,6 +1713,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 快捷键用：再次按键时关闭对应面板
   void _toggleDrawer({required bool left}) {
+    if (context.read<PlayerController>().locked) return;
     setState(() {
       _topBarVisible = false;
       if (left) {
@@ -1900,6 +1951,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         c.state != PlayerState.paused) {
       return;
     }
+    if (c.locked) return;
     setState(() {
       _bottomPanelVisible = !_bottomPanelVisible;
       if (_bottomPanelVisible) {
@@ -1916,13 +1968,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     });
     // 设置面板有输入框：打开时放行数字键给输入框，关闭后恢复选台拦截
     _winHotkeys.setCapture(!_settingsOpen);
-  }
-
-  /// 底部控制面板「手机扫码管理」按钮：弹出二维码
-  void _showRemoteAdminQr(PlayerController controller) {
-    final url = controller.remoteAdminUrl;
-    if (url.isEmpty) return;
-    showRemoteAdminQrDialog(context, url);
   }
 
   /// 桌面端快捷键：空格 播放/暂停，F/F11 全屏，M 静音，
@@ -1945,6 +1990,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         controller.toggleFullscreen();
       case 'mute':
         controller.toggleMute();
+      case 'lock':
+        controller.toggleLock();
+      case 'listen':
+        controller.toggleListenMode();
       case 'screenshot':
         _takeScreenshot();
     }
@@ -1990,6 +2039,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       if (!_nativeHeld.add(action)) return; // 自动重复，忽略
     } else {
       _nativeHeld.remove(action);
+    }
+    // 锁定状态：原生钩子路径（网页前台时 HardwareKeyboard 收不到键）
+    // 同样屏蔽全部操作，仅返回键或 L 键解锁
+    final ctl = context.read<PlayerController>();
+    if (ctl.locked) {
+      if (isDown && (action == 'esc' || action == 'back' || action == 'l')) {
+        ctl.unlock();
+      }
+      return;
     }
     // 设置面板打开：仅返回键关面板，其余（字母键/空格等）忽略，
     // 此时钩子捕获本就由 setCapture(false) 关闭，这里是双保险
@@ -2089,6 +2147,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         _onShortcut('epg');
       case 's':
         _onShortcut('settings');
+      case 'l':
+        _onShortcut('lock');
+      case 't':
+        _onShortcut('listen');
     }
   }
 
@@ -2166,6 +2228,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 桌面端 hover 到底部边缘时显示面板
   void _showBottomPanel() {
+    if (context.read<PlayerController>().locked) return;
     setState(() => _bottomPanelVisible = true);
     _bottomHideTimer?.cancel();
   }
@@ -2182,6 +2245,274 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         _ensureShortcutFocus();
       }
     });
+  }
+
+  /// 视频画面区域：常规铺满全屏；移动端小窗时缩为右下角浮层。
+  /// 桌面端小窗由 window_manager 直接缩小真实窗口，无需改布局。
+  Widget _videoArea(PlayerController c, Widget child) {
+    final mini = c.miniWindow && !c.isDesktop;
+    if (!mini) return Positioned.fill(child: child);
+    final screenW = MediaQuery.of(context).size.width;
+    final boxW = screenW < 700 ? screenW * 0.52 : 420.0;
+    return Positioned(
+      right: 12,
+      bottom: 12,
+      width: boxW,
+      height: boxW * 9 / 16,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// 启动画面：初始化频道/EPG 期间覆盖全屏显示启动 logo
+class _BootSplash extends StatelessWidget {
+  final String status;
+  const _BootSplash({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: Image.asset(
+                  'branding/splash.jpg',
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 44,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      color: Colors.blueAccent,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    status.isEmpty ? '正在启动…' : status,
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 锁定提示徽标（不拦截触摸）
+class _LockBadge extends StatelessWidget {
+  const _LockBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.6),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.amber.withOpacity(0.5)),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.lock, color: Colors.amber, size: 16),
+          SizedBox(width: 6),
+          Text(
+            '已锁定 · 按返回键解锁',
+            style: TextStyle(color: Colors.white70, fontSize: 12.5),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 听电视信息卡片：上一台/下一台、暂停/继续、当前台名与节目，
+/// 点击卡片任意空白处返回播放界面
+class _ListenCard extends StatelessWidget {
+  final PlayerController controller;
+  const _ListenCard({required this.controller});
+
+  static final _hm = DateFormat('HH:mm');
+
+  @override
+  Widget build(BuildContext context) {
+    final ch = controller.currentChannel;
+    final program = controller.currentProgram;
+    final logo = controller.currentLogo;
+    return Positioned.fill(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: controller.exitListenMode,
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: RadialGradient(
+              center: Alignment.center,
+              radius: 1.0,
+              colors: [Color(0xFF16324F), Color(0xFF06090D)],
+            ),
+          ),
+          child: SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 460),
+                child: Container(
+                  margin: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.fromLTRB(24, 22, 24, 18),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.06),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          Icon(Icons.headphones,
+                              color: Colors.amber, size: 18),
+                          SizedBox(width: 6),
+                          Text('听电视中',
+                              style: TextStyle(
+                                  color: Colors.amber, fontSize: 13)),
+                        ],
+                      ),
+                      const SizedBox(height: 18),
+                      _logo(logo),
+                      const SizedBox(height: 16),
+                      Text(
+                        ch?.name ?? '未选择频道',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        program == null
+                            ? '暂无节目信息'
+                            : '${_hm.format(program.startTime)} - '
+                                '${_hm.format(program.endTime)}  ${program.title}',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13),
+                        maxLines: 2,
+                        textAlign: TextAlign.center,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 22),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          IconButton(
+                            iconSize: 30,
+                            color: Colors.white70,
+                            tooltip: '上一台',
+                            onPressed: ch == null
+                                ? null
+                                : controller.previousChannel,
+                            icon: const Icon(Icons.skip_previous),
+                          ),
+                          const SizedBox(width: 14),
+                          InkWell(
+                            onTap: controller.togglePlayPause,
+                            borderRadius: BorderRadius.circular(30),
+                            child: Container(
+                              width: 58,
+                              height: 58,
+                              decoration: const BoxDecoration(
+                                color: Colors.white,
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                controller.isPlaying
+                                    ? Icons.pause
+                                    : Icons.play_arrow,
+                                color: Colors.black,
+                                size: 32,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          IconButton(
+                            iconSize: 30,
+                            color: Colors.white70,
+                            tooltip: '下一台',
+                            onPressed:
+                                ch == null ? null : controller.nextChannel,
+                            icon: const Icon(Icons.skip_next),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        '点击卡片返回播放界面',
+                        style: TextStyle(color: Colors.white38, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _logo(String logo) {
+    const size = 84.0;
+    if (logo.isEmpty) {
+      return Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: Colors.white12,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: const Icon(Icons.live_tv, color: Colors.white54, size: 40),
+      );
+    }
+    final img = logo.startsWith('assets/')
+        ? Image.asset(logo,
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) =>
+                const Icon(Icons.live_tv, color: Colors.white54, size: 40))
+        : Image.network(logo,
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) =>
+                const Icon(Icons.live_tv, color: Colors.white54, size: 40));
+    return ClipRRect(borderRadius: BorderRadius.circular(14), child: img);
   }
 }
 
@@ -2662,6 +2993,56 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     window.__omUserPaused = false;
     kick();
   };
+  // ===== 清晰度切换（1080/720/540）=====
+  // 通过点击站点播放器清晰度菜单生效；同时把实际视频尺寸回传 Dart，
+  // 让控制栏文字优先显示真实分辨率。
+  window.__omSetRes = function(level){
+    var want = String(level);
+    if (window.__omWantRes !== want) window.__omWantResTries = 0;
+    window.__omWantRes = want;
+  };
+  function resText(el){
+    return ((el.innerText || el.textContent || '') + '').trim().toUpperCase();
+  }
+  function trySwitchRes(){
+    var want = window.__omWantRes;
+    if (!want) return;
+    window.__omWantResTries = (window.__omWantResTries || 0) + 1;
+    if (window.__omWantResTries > 8) { window.__omWantRes = null; return; }
+    var targetH = want === '1080' ? 1080 : (want === '720' ? 720 : 540);
+    // 已经是目标清晰度：直接结束
+    var vs0 = allVideos(document);
+    for (var i0=0;i0<vs0.length;i0++){
+      var vh = vs0[i0].videoHeight || 0;
+      if (vh > 0 && Math.abs(vh - targetH) < 180) {
+        window.__omWantRes = null;
+        return;
+      }
+    }
+    var labels = want === '1080' ? ['1080P','1080','高清']
+        : (want === '720' ? ['720P','720','准高清'] : ['540P','540','标清']);
+    var els = [];
+    collectAll(document, ['button','li','span','div','a'], els);
+    var hit = null;
+    for (var j=0;j<els.length;j++){
+      var t = resText(els[j]);
+      if (t.length === 0 || t.length > 14) continue;
+      for (var k=0;k<labels.length;k++){
+        if (t === labels[k] || t.indexOf(labels[k]) === 0) { hit = els[j]; break; }
+      }
+      if (hit) break;
+    }
+    if (!hit) return;
+    // 隐藏元素也能收到合成 click：命中清晰度入口时先点开菜单，
+    // 保留 __omWantRes 让下一轮点到已渲染出的选项
+    if (!hit.offsetParent) {
+      try { hit.click(); } catch(e){}
+      return;
+    }
+    try { hit.click(); } catch(e){}
+    window.__omWantRes = null;
+  }
+  setInterval(trySwitchRes, 1500);
   var lastMM = 0;
   function onMouseMove(){
     var n = Date.now();
@@ -2894,6 +3275,20 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
             fire('omPlaying');
           }
         }
+      }
+    }
+    // 回传实际视频尺寸（清晰度文字校正）：不受站点脚本接管铺满影响
+    var resV = null, resPx = 0;
+    for (var r = 0; r < vs.length; r++) {
+      var px = (vs[r].videoWidth || 0) * (vs[r].videoHeight || 0);
+      if (px > resPx) { resPx = px; resV = vs[r]; }
+    }
+    if (resV && (resV.videoWidth | 0) > 0 && (resV.videoHeight | 0) > 0) {
+      var rw = resV.videoWidth | 0, rh = resV.videoHeight | 0;
+      if (rw !== window.__omLastVW || rh !== window.__omLastVH) {
+        window.__omLastVW = rw;
+        window.__omLastVH = rh;
+        fire('omRes', rw + ',' + rh);
       }
     }
     var st = anyPlaying ? 1 : 0;
@@ -4780,6 +5175,21 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
                       args.first.toString() == '1' ||
                           args.first.toString() == '1.0');
                 }
+              },
+            );
+            // 网页实际视频尺寸：校正控制栏清晰度文字
+            controller.addJavaScriptHandler(
+              handlerName: 'omRes',
+              callback: (args) {
+                if (args.isEmpty) return null;
+                final parts = args.first.toString().split(',');
+                if (parts.length == 2) {
+                  context.read<PlayerController>().reportWebVideoSize(
+                        int.tryParse(parts[0]) ?? 0,
+                        int.tryParse(parts[1]) ?? 0,
+                      );
+                }
+                return null;
               },
             );
             // 网页录制：MediaRecorder 分块（base64）与结束通知

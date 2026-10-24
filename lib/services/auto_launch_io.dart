@@ -7,8 +7,8 @@ import 'dart:io';
 /// - Linux:   ~/.config/autostart 下的 .desktop 文件
 
 const _runKey = r'Software\Microsoft\Windows\CurrentVersion\Run';
-const _valueName = 'OMPlayer';
-const _label = 'com.omplayer.app';
+const _valueName = 'OMTV';
+const _label = 'com.omtv.app';
 
 /// 兼容旧调用，自实现无需初始化
 void setupAutoLaunch() {}
@@ -101,7 +101,7 @@ Future<void> _setMacOS(bool enabled) async {
 Future<String> _linuxDesktopPath() async {
   final home = Platform.environment['HOME'] ?? '';
   final config = Platform.environment['XDG_CONFIG_HOME'] ?? '$home/.config';
-  return '$config/autostart/omplayer.desktop';
+  return '$config/autostart/omtv.desktop';
 }
 
 Future<void> _setLinux(bool enabled) async {
@@ -111,7 +111,7 @@ Future<void> _setLinux(bool enabled) async {
     await file.parent.create(recursive: true);
     await file.writeAsString('''[Desktop Entry]
 Type=Application
-Name=OMPlayer
+Name=OMTV
 Exec=${Platform.resolvedExecutable}
 Terminal=false
 X-GNOME-Autostart-enabled=true

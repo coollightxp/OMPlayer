@@ -105,7 +105,7 @@ class DlnaService {
     _lastPushedState = null;
   }
 
-  /// 设备名称（OMPlayer + 机器标识）
+  /// 设备名称（OMTV + 机器标识）
   String get deviceName => _name;
 
   /// HTTP 服务地址（http://ip:port），用于排查连通性
@@ -221,11 +221,11 @@ class DlnaService {
         lower != 'localhost' &&
         !lower.startsWith('android-') &&
         RegExp(r'^[a-zA-Z0-9\-_]+$').hasMatch(host)) {
-      return 'OMPlayer-$host';
+      return 'OMTV-$host';
     }
     // hostname 不可靠（如安卓模拟器）时用 uuid 前缀
     final suffix = _uuid.length >= 6 ? _uuid.substring(0, 6) : _uuid;
-    return 'OMPlayer-${suffix.toUpperCase()}';
+    return 'OMTV-${suffix.toUpperCase()}';
   }
 
   /// 选择最可能被手机访问到的本机 IP：
@@ -344,7 +344,7 @@ class DlnaService {
           'CACHE-CONTROL: max-age=1800\r\n'
           'EXT:\r\n'
           'LOCATION: $location\r\n'
-          'SERVER: OMPlayer/1.0 UPnP/1.0\r\n'
+          'SERVER: OMTV/1.0 UPnP/1.0\r\n'
           'BOOTID.UPNP.ORG: 1\r\n'
           'CONFIGID.UPNP.ORG: 1\r\n'
           'ST: $stVal\r\n'
@@ -418,7 +418,7 @@ class DlnaService {
           'LOCATION: ${_location}\r\n'
           'NT: ${e[0]}\r\n'
           'NTS: ssdp:alive\r\n'
-          'SERVER: OMPlayer/1.0 UPnP/1.0\r\n'
+          'SERVER: OMTV/1.0 UPnP/1.0\r\n'
           'BOOTID.UPNP.ORG: 1\r\n'
           'CONFIGID.UPNP.ORG: 1\r\n'
           'USN: ${e[1]}\r\n\r\n';
@@ -552,7 +552,7 @@ class DlnaService {
 
     req.response.headers.set('SID', sid);
     req.response.headers.set('TIMEOUT', 'Second-${_subLifetime.inSeconds}');
-    req.response.headers.set('SERVER', 'OMPlayer/1.0 UPnP/1.0');
+    req.response.headers.set('SERVER', 'OMTV/1.0 UPnP/1.0');
     req.response.statusCode = 200;
     req.response.contentLength = 0;
     await req.response.close();
@@ -1088,7 +1088,7 @@ class DlnaService {
     req.response.headers
         .set(HttpHeaders.contentTypeHeader, 'text/xml; charset="utf-8"');
     // UPnP 设备惯例：所有 HTTP 响应带 SERVER 头
-    req.response.headers.set('SERVER', 'OMPlayer/1.0 UPnP/1.0');
+    req.response.headers.set('SERVER', 'OMTV/1.0 UPnP/1.0');
     req.response.contentLength = data.length;
     req.response.add(data);
     await req.response.close();
@@ -1097,7 +1097,7 @@ class DlnaService {
   Future<void> _respondBytes(
       HttpRequest req, List<int> data, String mime) async {
     req.response.headers.set(HttpHeaders.contentTypeHeader, mime);
-    req.response.headers.set('SERVER', 'OMPlayer/1.0 UPnP/1.0');
+    req.response.headers.set('SERVER', 'OMTV/1.0 UPnP/1.0');
     req.response.contentLength = data.length;
     req.response.add(data);
     await req.response.close();
@@ -1344,9 +1344,9 @@ class DlnaService {
       '<device>'
       '<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>'
       '<friendlyName>${_xmlEscape(_name)}</friendlyName>'
-      '<manufacturer>OMPlayer</manufacturer>'
-      '<modelDescription>OMPlayer DLNA Renderer</modelDescription>'
-      '<modelName>OMPlayer</modelName>'
+      '<manufacturer>OMTV</manufacturer>'
+      '<modelDescription>OMTV DLNA Renderer</modelDescription>'
+      '<modelName>OMTV</modelName>'
       '<modelNumber>1.0</modelNumber>'
       '<UDN>uuid:$_uuid</UDN>'
       // DLNA 互操作声明：标识为完整的 DMR-1.50 数字媒体渲染器。

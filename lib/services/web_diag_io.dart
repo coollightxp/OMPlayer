@@ -55,15 +55,15 @@ class WebDiag {
     } catch (_) {}
   }
 
-  /// 把当前缓冲写入应用支持目录 omplayer_web_diag.log（覆盖写），
+  /// 把当前缓冲写入应用支持目录 omtv_web_diag.log（覆盖写），
   /// 返回文件完整路径；无内容或不可写时返回空串
   static Future<String> flush() async {
     if (_entries.isEmpty) return '';
     try {
       final dir = await getApplicationSupportDirectory();
-      final p = '${dir.path}${Platform.pathSeparator}omplayer_web_diag.log';
+      final p = '${dir.path}${Platform.pathSeparator}omtv_web_diag.log';
       final sink = File(p).openWrite(mode: FileMode.write);
-      sink.writeln('# OMPlayer 网页诊断日志  ${DateTime.now().toIso8601String()}');
+      sink.writeln('# OMTV 网页诊断日志  ${DateTime.now().toIso8601String()}');
       sink.writeln('# app=$appVersion entries=${_entries.length}');
       for (final e in _entries) {
         sink.writeln(e);

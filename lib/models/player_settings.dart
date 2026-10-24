@@ -9,9 +9,6 @@ class PlayerSettings {
   /// 默认亮度 (0.0 - 1.0)
   final double defaultBrightness;
 
-  /// 视频质量偏好
-  final VideoQuality preferredQuality;
-
   /// 手势灵敏度 (0.5 - 2.0)
   final double gestureSensitivity;
 
@@ -33,11 +30,7 @@ class PlayerSettings {
   /// DLNA 投屏接收服务开关（默认开）
   final bool dlnaEnabled;
 
-  /// 单个播放源起播等待秒数：超时后自动切换下一个源（默认 5 秒，5 秒一档）
-  final int sourceTimeoutSeconds;
-
-  /// 播放缓冲秒数：网络抖动时的预读缓冲上限（5/10/20/30 秒，默认 5 秒）。
-  /// 由 MDK 后端在启动时应用，修改后重启程序生效
+  /// 网页缓冲秒数（仅展示用，修改后重启生效）
   final int bufferSeconds;
 
   /// 界面字体缩放（1.0 = 系统默认；4K/8K 大屏可调到 1.5~3.0）
@@ -46,14 +39,16 @@ class PlayerSettings {
   /// 字体缩放自动适配屏幕分辨率（开启后按屏幕宽度自动计算，忽略 uiScale）
   final bool uiScaleAuto;
 
-  /// 局域网 Web 管理服务开关（手机扫码管理直播源/EPG）
-  final bool remoteAdminEnabled;
+  /// 听电视（只放声音）时隐藏窗口（Windows 摸鱼模式）
+  final bool listenModeHideWindow;
+
+  /// 听电视时显示信息栏卡片（Android 手机/平板）
+  final bool listenModeShowCard;
 
   const PlayerSettings({
     this.autoPlayNext = true,
     this.defaultVolume = 0.8,
     this.defaultBrightness = 0.8,
-    this.preferredQuality = VideoQuality.auto,
     this.gestureSensitivity = 1.0,
     this.autoHideDelay = 3000,
     this.launchAtStartup = false,
@@ -61,18 +56,17 @@ class PlayerSettings {
     this.showClock = false,
     this.alwaysOnTop = true,
     this.dlnaEnabled = true,
-    this.sourceTimeoutSeconds = 5,
     this.bufferSeconds = 5,
     this.uiScale = 1.0,
     this.uiScaleAuto = true,
-    this.remoteAdminEnabled = true,
+    this.listenModeHideWindow = true,
+    this.listenModeShowCard = true,
   });
 
   PlayerSettings copyWith({
     bool? autoPlayNext,
     double? defaultVolume,
     double? defaultBrightness,
-    VideoQuality? preferredQuality,
     double? gestureSensitivity,
     int? autoHideDelay,
     bool? launchAtStartup,
@@ -80,17 +74,16 @@ class PlayerSettings {
     bool? showClock,
     bool? alwaysOnTop,
     bool? dlnaEnabled,
-    int? sourceTimeoutSeconds,
     int? bufferSeconds,
     double? uiScale,
     bool? uiScaleAuto,
-    bool? remoteAdminEnabled,
+    bool? listenModeHideWindow,
+    bool? listenModeShowCard,
   }) {
     return PlayerSettings(
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
       defaultVolume: defaultVolume ?? this.defaultVolume,
       defaultBrightness: defaultBrightness ?? this.defaultBrightness,
-      preferredQuality: preferredQuality ?? this.preferredQuality,
       gestureSensitivity: gestureSensitivity ?? this.gestureSensitivity,
       autoHideDelay: autoHideDelay ?? this.autoHideDelay,
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
@@ -98,23 +91,11 @@ class PlayerSettings {
       showClock: showClock ?? this.showClock,
       alwaysOnTop: alwaysOnTop ?? this.alwaysOnTop,
       dlnaEnabled: dlnaEnabled ?? this.dlnaEnabled,
-      sourceTimeoutSeconds:
-          sourceTimeoutSeconds ?? this.sourceTimeoutSeconds,
       bufferSeconds: bufferSeconds ?? this.bufferSeconds,
       uiScale: uiScale ?? this.uiScale,
       uiScaleAuto: uiScaleAuto ?? this.uiScaleAuto,
-      remoteAdminEnabled: remoteAdminEnabled ?? this.remoteAdminEnabled,
+      listenModeHideWindow: listenModeHideWindow ?? this.listenModeHideWindow,
+      listenModeShowCard: listenModeShowCard ?? this.listenModeShowCard,
     );
   }
-}
-
-enum VideoQuality {
-  auto('自动'),
-  low('标清 480p'),
-  medium('高清 720p'),
-  high('全高清 1080p'),
-  ultra('超清 4K');
-
-  final String label;
-  const VideoQuality(this.label);
 }

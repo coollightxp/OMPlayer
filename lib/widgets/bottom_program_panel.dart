@@ -7,30 +7,27 @@ import '../services/player_controller.dart';
 import 'scaled_panel.dart';
 
 /// 底部信息/控制面板
-/// 布局（参考电视播放器）：台标 | 当前节目(大字)+时段/频道/分辨率/线路 | 控制按钮
-/// 点播文件时顶部显示可拖动进度条，直播流不显示
+/// 布局：台标 | 当前节目(大字)+时段/频道/分辨率 | 控制按钮
+/// 按钮顺序固定：播放/暂停、全屏/小窗、静音/恢复、听电视、锁定、设置、分辨率
 ///
 /// 遥控器导航（TV 盒子无鼠标）：面板可见时，←/→ 在可用按钮间移动高亮，
 /// OK 激活当前按钮，返回键由播放页负责关闭面板。
 class BottomProgramPanel extends StatefulWidget {
   final bool isVisible;
-  final VoidCallback onTogglePlayPause;
+
+  /// 跳转类（频道/EPG/设置）由播放页关闭面板
   final VoidCallback onOpenChannels;
   final VoidCallback onOpenEpg;
   final VoidCallback onOpenSettings;
+
+  /// 全屏 ↔ 小窗（桌面全屏切换 / 移动端小窗播放）
+  final VoidCallback onToggleFullMini;
+
+  /// 截图 / 录像（仅桌面端提供按钮）
   final VoidCallback onScreenshot;
   final VoidCallback onToggleRecord;
 
-  /// 调出手机扫码管理页（地址为空时传 null，按钮不显示）
-  final VoidCallback? onOpenRemoteAdmin;
-
-  /// 网页/内置播放器来回切换（无可切流时置灰不可点）
-  final VoidCallback? onSwitchWebNative;
-
-  /// 遥控器激活「跳转类」按钮（频道/EPG/设置/扫码）后通知播放页关闭面板
   final VoidCallback? onDismissRemote;
-
-  /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
   final VoidCallback? onHoverEnter;
   final VoidCallback? onHoverExit;
   final VoidCallback? onHoverMove;
@@ -38,14 +35,12 @@ class BottomProgramPanel extends StatefulWidget {
   const BottomProgramPanel({
     super.key,
     required this.isVisible,
-    required this.onTogglePlayPause,
     required this.onOpenChannels,
     required this.onOpenEpg,
     required this.onOpenSettings,
+    required this.onToggleFullMini,
     required this.onScreenshot,
     required this.onToggleRecord,
-    this.onSwitchWebNative,
-    this.onOpenRemoteAdmin,
     this.onDismissRemote,
     this.onHoverEnter,
     this.onHoverExit,
@@ -59,7 +54,7 @@ class BottomProgramPanel extends StatefulWidget {
 /// 面板内一个可由遥控器激活的按钮
 class _KbAction {
   final String id;
-  final IconData icon;
+  final IconData? icon;
   final String tooltip;
   final VoidCallback? onPressed;
 
@@ -71,15 +66,12 @@ class _KbAction {
 }
 
 class BottomProgramPanelState extends State<BottomProgramPanel> {
-  /// 遥控器当前高亮的按钮 id（null = 无高亮）。
-  /// 用 id 而非索引：播放状态变化会让按钮顺序/可用性变化（如投屏按钮），
-  /// 高亮不会因此错位。
+  /// 遥控器当前高亮的按钮 id（null = 无高亮）
   String? _kbId;
 
   /// 最近一次构建出的动作列表（与按钮排列顺序一致）
   List<_KbAction> _actions = const [];
 
-  /// 当前可激活（未禁用）的动作
   List<_KbAction> get _enabledActions =>
       _actions.where((a) => a.onPressed != null).toList();
 
@@ -96,8 +88,8 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           return;
         }
         final play = enabled.where((a) => a.id == 'playpause');
-        setState(() =>
-            _kbId = play.isNotEmpty ? play.first.id : enabled.first.id);
+        setState(
+            () => _kbId = play.isNotEmpty ? play.first.id : enabled.first.id);
       });
     }
   }
@@ -132,14 +124,8 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
 
   @override
   Widget build(BuildContext context) {
-    // 宽屏（电视/桌面）：面板做成居中悬浮卡片，两侧留白、底边抬升；
-    // 窄屏贴近两侧，避免内容被挤
     final screenW = MediaQuery.of(context).size.width;
-    // scale 只用于内部尺寸（台标/内边距/字号）分支；面板本身不再
-    // 整体缩放——0.72 的等比缩放会让面板视觉宽度只剩 72%，两侧大留白，
-    // 按钮行有 FittedBox 自适应压缩，直接按真实宽度铺满即可
     final scale = panelScaleOf(context) < 1.0 ? 0.72 : 1.0;
-    // 用户多次反馈手机面板要尽量宽：窄屏完全贴边（0 边距）
     final hPad = screenW > 1200 ? 72.0 : (screenW > 900 ? 40.0 : 0.0);
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 250),
@@ -159,7 +145,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             scale: 1.0,
             child: Container(
               decoration: BoxDecoration(
-                // 悬浮卡片：深色半透明 + 圆角 + 细边框 + 上方渐隐衔接视频
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
@@ -181,7 +166,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
               child: SafeArea(
                 top: false,
                 child: Padding(
-                  // 贴近屏幕左右两端（横向拉长），上下略加高保持比例
                   padding: scale < 1
                       ? const EdgeInsets.fromLTRB(6, 16, 4, 14)
                       : const EdgeInsets.fromLTRB(22, 16, 18, 10),
@@ -221,7 +205,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
   // ==================== 台标 ====================
 
   Widget _buildLogo(PlayerController c, double scale) {
-    // 手机台标 64→92：用户反馈偏小，配合面板整体加高
     final size = scale < 1 ? 92.0 : 128.0;
     final logo = c.currentLogo;
     Widget placeholder() => Container(
@@ -235,19 +218,29 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
               color: Colors.white54, size: scale < 1 ? 46 : 64),
         );
     if (logo.isEmpty) return placeholder();
+    final image = logo.startsWith('assets/')
+        ? Image.asset(logo,
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => placeholder())
+        : Image.network(logo,
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => placeholder());
     return ClipRRect(
       borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
-      child: Image.network(
-        logo,
-        width: size,
-        height: size,
-        fit: BoxFit.contain,
-        errorBuilder: (_, __, ___) => placeholder(),
-      ),
+      child: image,
     );
   }
 
   // ==================== 节目信息 ====================
+
+  String _resolutionLabel(PlayerController c) {
+    final actual = c.actualResolutionLabel;
+    return actual.isNotEmpty ? actual : c.resolution;
+  }
 
   Widget _buildInfo(PlayerController c, double scale) {
     final info = c.getNowPlayingInfo();
@@ -259,7 +252,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        // 大字：当前节目名（无 EPG 时显示频道名）
         Text(
           current?.title ?? (hasChannel ? info.channelName : '未选择频道'),
           style: TextStyle(
@@ -271,22 +263,18 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           overflow: TextOverflow.ellipsis,
         ),
         SizedBox(height: scale < 1 ? 3 : 5),
-        // 时段 / 频道 / 分辨率 / 线路
         Wrap(
           spacing: 10,
           runSpacing: 4,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            if (current != null)
-              _metaText(_range(current), Colors.amber),
+            if (current != null) _metaText(_range(current), Colors.amber),
             if (hasChannel) _metaText(info.channelName, Colors.white70),
-            if (c.resolutionText.isNotEmpty)
-              _badge(c.resolutionText),
-            _badge('线路 ${c.sourceIndex + 1}/${c.sourceCount}'),
+            if (hasChannel) _badge(_resolutionLabel(c)),
+            if (c.listenMode) _badge('听电视中'),
           ],
         ),
         const SizedBox(height: 3),
-        // 即将播放（保留结束时间）
         if (next != null)
           Text(
             '${_range(next)}  ${next.title}',
@@ -333,107 +321,167 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
   // ==================== 控制按钮 ====================
 
   Widget _buildButtons(PlayerController c) {
-    final hasVideo = c.currentChannel != null;
-    // 可用动作：禁用按钮不进列表，遥控器只会高亮能点的按钮
+    final hasChannel = c.currentChannel != null;
     final actions = <_KbAction>[
-      _KbAction('prevSource', Icons.skip_previous, '上一个源',
-          c.hasPrevSource ? c.prevSource : null),
-      _KbAction('nextSource', Icons.skip_next, '下一个源',
-          c.hasNextSource ? c.nextSource : null),
       _KbAction(
-          'playpause',
-          c.isPlaying ? Icons.pause : Icons.play_arrow,
-          c.isPlaying ? '暂停' : '播放',
-          hasVideo ? widget.onTogglePlayPause : null),
-      if (c.isDesktop) ...[
+        'playpause',
+        c.isPlaying ? Icons.pause : Icons.play_arrow,
+        c.isPlaying ? '暂停' : '播放',
+        hasChannel ? c.togglePlayPause : null,
+      ),
+      _KbAction(
+        'fullmini',
+        c.isDesktop
+            ? (c.isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen)
+            : (c.miniWindow ? Icons.crop_free : Icons.picture_in_picture_alt),
+        c.isDesktop
+            ? (c.isFullscreen ? '退出全屏' : '全屏')
+            : (c.miniWindow ? '退出小窗' : '小窗播放'),
+        hasChannel ? widget.onToggleFullMini : null,
+      ),
+      _KbAction(
+        'mute',
+        c.isMuted ? Icons.volume_off : Icons.volume_up,
+        c.isMuted ? '取消静音' : '静音',
+        hasChannel ? c.toggleMute : null,
+      ),
+      // 截图/录像：仅桌面端（移动端网页层无法安全截取/录制）
+      if (c.isDesktop)
         _KbAction('screenshot', Icons.camera_alt, '截图',
-            hasVideo ? widget.onScreenshot : null),
+            hasChannel ? widget.onScreenshot : null),
+      if (c.isDesktop)
         _KbAction(
-            'record',
-            c.isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
-            c.isRecording ? '停止录制' : '开始录制',
-            hasVideo ? widget.onToggleRecord : null),
-      ],
-      _KbAction(
-          'rotate',
-          Icons.screen_rotation,
-          c.videoRotation.value == 0 ? '旋转画面' : '恢复原始方向',
-          hasVideo ? c.cycleVideoRotation : null),
-      // 网页/内置切换：仅网页频道（含已接管为内置的）出现；
-      // 加密页/未嗅探到直连流时置灰不可点
-      if (c.webPageActive || c.isNativeSniffPlayback)
-        _KbAction(
-          'webnative',
-          c.webPageActive ? Icons.smart_display : Icons.language,
-          c.webPageActive ? '内置播放器播放' : '网页播放器播放',
-          c.canSwitchWebNative ? widget.onSwitchWebNative : null,
+          'record',
+          c.isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
+          c.isRecording ? '停止录制' : '开始录制',
+          hasChannel ? widget.onToggleRecord : null,
         ),
-      _KbAction('channels', Icons.list, '频道列表', widget.onOpenChannels,
-          dismiss: true),
-      _KbAction('epg', Icons.menu_book, '节目单', widget.onOpenEpg,
-          dismiss: true),
-      if (widget.onOpenRemoteAdmin != null)
-        _KbAction('remoteAdmin', Icons.qr_code_2, '手机扫码管理',
-            widget.onOpenRemoteAdmin,
-            dismiss: true),
+      // 画面旋转：90° 旋转 ↔ 恢复原始方向（遥控器/手机均可用）
+      _KbAction(
+        'rotate',
+        Icons.screen_rotation,
+        c.videoRotation.value == 0 ? '旋转画面' : '恢复原始方向',
+        hasChannel ? c.cycleVideoRotation : null,
+      ),
+      _KbAction(
+        'listen',
+        Icons.headphones,
+        c.listenMode ? '退出听电视' : '听电视',
+        hasChannel ? c.toggleListenMode : null,
+      ),
+      _KbAction(
+        'lock',
+        c.locked ? Icons.lock : Icons.lock_open,
+        c.locked ? '已锁定' : '锁定屏幕',
+        c.locked ? null : c.toggleLock,
+        dismiss: true,
+      ),
       _KbAction('settings', Icons.settings, '设置', widget.onOpenSettings,
           dismiss: true),
-      if (c.isCasting)
-        _KbAction('cast', Icons.cast_connected, '断开投屏',
-            c.stopCastAndRestore),
+      _KbAction(
+        'resolution',
+        null,
+        '清晰度',
+        hasChannel ? () => _openResolutionMenu(c) : null,
+        dismiss: true,
+      ),
     ];
     _actions = actions;
-    // 当前高亮的动作若已消失（如断开投屏），清除高亮，等下次方向键重选
     if (_kbId != null && !actions.any((a) => a.id == _kbId)) _kbId = null;
 
-    final children = <Widget>[
-      // 源切换文字夹在两个按钮中间，不占遥控器动作位
-      _btn(actions[0], big: true),
-      Text('源${c.sourceIndex + 1}/${c.sourceCount}',
-          style: const TextStyle(color: Colors.white54, fontSize: 11)),
-      _btn(actions[1], big: true),
-      _btn(actions[2], big: true),
-    ];
-    if (c.isDesktop) {
-      children.addAll([
-        const SizedBox(width: 4),
-        _btn(actions.firstWhere((a) => a.id == 'screenshot')),
-        _btn(actions.firstWhere((a) => a.id == 'record'), big: true),
-        const SizedBox(width: 4),
-      ]);
-    }
-    children.add(_btn(actions.firstWhere((a) => a.id == 'rotate')));
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final a in actions)
+          if (a.id == 'resolution')
+            _resolutionButton(c, a)
+          else
+            _btn(a, big: a.id == 'playpause'),
+        // 投屏中额外提供断开入口
+        if (c.isCasting)
+          _wrapSelected(
+            false,
+            IconButton(
+              icon: const Icon(Icons.cast_connected,
+                  color: Colors.redAccent, size: 24),
+              tooltip: '断开投屏',
+              onPressed: c.stopCastAndRestore,
+            ),
+          ),
+      ],
+    );
+  }
 
-    void addById(String id) {
-      final i = actions.indexWhere((a) => a.id == id);
-      if (i >= 0) children.add(_btn(actions[i]));
-    }
+  Widget _resolutionButton(PlayerController c, _KbAction a) {
+    final label = _resolutionLabel(c);
+    final selected = _kbId == a.id;
+    return _wrapSelected(
+      selected,
+      InkWell(
+        onTap: a.onPressed,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  color: a.onPressed == null ? Colors.white24 : Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 2),
+              Icon(Icons.arrow_drop_up,
+                  color: a.onPressed == null ? Colors.white24 : Colors.white70,
+                  size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
-    addById('webnative');
-    addById('channels');
-    addById('epg');
-    addById('remoteAdmin');
-    addById('settings');
-    addById('cast');
-
-    return Row(mainAxisSize: MainAxisSize.min, children: children);
+  Future<void> _openResolutionMenu(PlayerController c) async {
+    final box = context.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) return;
+    final origin = box.localToGlobal(Offset.zero, ancestor: overlay);
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        origin.dx + box.size.width - 200,
+        origin.dy - 150,
+        overlay.size.width - (origin.dx + box.size.width),
+        overlay.size.height - origin.dy,
+      ),
+      items: const [
+        PopupMenuItem(value: '1080P', child: Text('1080P 高清')),
+        PopupMenuItem(value: '720P', child: Text('720P 准高清')),
+        PopupMenuItem(value: '540P', child: Text('540P 标清')),
+      ],
+    );
+    if (selected != null) await c.setResolution(selected);
   }
 
   Widget _btn(_KbAction a, {bool big = false}) {
     final selected = a.id == _kbId;
-    final color = a.id == 'record'
-        ? (a.tooltip.contains('停止') ? Colors.redAccent : Colors.white)
-        : (a.id == 'cast'
-            ? Colors.redAccent
-            : (a.id == 'rotate'
-                ? null
-                : Colors.white));
-    final iconColor = a.id == 'rotate'
-        ? null // ValueListenableBuilder 内部按旋转角度决定颜色
-        : (a.onPressed == null ? Colors.white24 : color);
     final iconSize = big ? 30.0 : 24.0;
-
-    // 旋转按钮的颜色随旋转状态变化，单独保留 ValueListenableBuilder
+    // 录制中的按钮红色常亮，提示正在录制
+    if (a.id == 'record' && context.read<PlayerController>().isRecording) {
+      return _wrapSelected(
+        selected,
+        IconButton(
+          icon: Icon(a.icon, color: Colors.redAccent, size: iconSize),
+          onPressed: a.onPressed,
+          tooltip: a.tooltip,
+        ),
+      );
+    }
+    // 旋转按钮的颜色随旋转状态变化（0=原始方向灰白，90° 高亮琥珀色）
     if (a.id == 'rotate') {
       return _wrapSelected(
         selected,
@@ -451,13 +499,15 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
         ),
       );
     }
-
+    final iconColor = a.id == 'listen' && context.read<PlayerController>().listenMode
+        ? Colors.amber
+        : (a.id == 'lock' && context.read<PlayerController>().locked
+            ? Colors.amber
+            : (a.onPressed == null ? Colors.white24 : Colors.white));
     return _wrapSelected(
       selected,
       IconButton(
-        icon: Icon(a.icon,
-            color: a.onPressed == null ? Colors.white24 : iconColor,
-            size: iconSize),
+        icon: Icon(a.icon, color: iconColor, size: iconSize),
         onPressed: a.onPressed,
         tooltip: a.tooltip,
       ),
@@ -490,11 +540,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
 }
 
 /// 点播进度条。
-///
-/// 拖动过程中只更新本地预览位置，【松手时】(onChangeEnd) 才真正 seek：
-/// Slider.onChanged 在一次拖动中会连续回调几十次，若每次都 seekTo，
-/// 会反复打断播放内核对长视频远距位置的缓冲（投屏长视频拖动时表现为
-/// 画面卡死、随后被看门狗判定缓冲超时而销毁重建）。
+/// 拖动过程中只更新本地预览位置，松手时才真正 seek（避免频繁打断缓冲）。
 class _SeekBar extends StatefulWidget {
   final PlayerController controller;
   final String Function(Duration) clock;
@@ -506,7 +552,6 @@ class _SeekBar extends StatefulWidget {
 }
 
 class _SeekBarState extends State<_SeekBar> {
-  /// 拖动中的预览位置（毫秒）；未拖动时为 null，跟随实际播放位置
   double? _dragMs;
 
   @override
@@ -515,8 +560,8 @@ class _SeekBarState extends State<_SeekBar> {
     final total = c.duration;
     final max = total.inMilliseconds.toDouble();
     final safeMax = max <= 0 ? 1.0 : max;
-    final pos = _dragMs ??
-        c.position.inMilliseconds.clamp(0, safeMax.round()).toDouble();
+    final pos =
+        _dragMs ?? c.position.inMilliseconds.clamp(0, safeMax.round()).toDouble();
     final value = pos.clamp(0, safeMax).toDouble();
     return Row(
       children: [
@@ -526,10 +571,8 @@ class _SeekBarState extends State<_SeekBar> {
           child: SliderTheme(
             data: SliderThemeData(
               trackHeight: 3,
-              thumbShape:
-                  const RoundSliderThumbShape(enabledThumbRadius: 6),
-              overlayShape:
-                  const RoundSliderOverlayShape(overlayRadius: 12),
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
               activeTrackColor: Colors.blueAccent,
               inactiveTrackColor: Colors.white24,
               thumbColor: Colors.blueAccent,

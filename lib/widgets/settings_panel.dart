@@ -1,92 +1,13 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:qr_flutter/qr_flutter.dart';
-import 'package:window_manager/window_manager.dart';
 
-import '../models/epg_source.dart';
 import '../models/player_settings.dart';
-import '../models/playlist_source.dart';
-import '../services/osd_bus.dart';
 import '../services/player_controller.dart';
-import '../services/web_diag.dart';
 import 'scaled_panel.dart';
 
-/// 选择本地文件。
-/// Windows 上主窗口默认置顶（全屏时强制置顶），而 file_picker 的系统
-/// 文件对话框（IFileDialog）不会自动成为置顶窗口，会被压在主窗口
-/// 后面、任务栏也只闪图标。弹出前临时取消置顶，对话框关闭后恢复。
-Future<PlatformFile?> _pickLocalFileWithTopmostFix() async {
-  bool wasTopmost = false;
-  try {
-    wasTopmost = await windowManager.isAlwaysOnTop();
-    if (wasTopmost) {
-      await windowManager.setAlwaysOnTop(false);
-      // 等窗口管理器应用完层级变更，避免对话框仍被盖住
-      await Future<void>.delayed(const Duration(milliseconds: 80));
-    }
-  } catch (_) {
-    wasTopmost = false;
-  }
-  try {
-    return await FilePicker.pickFile(type: FileType.any);
-  } finally {
-    if (wasTopmost) {
-      try {
-        await windowManager.setAlwaysOnTop(true);
-      } catch (_) {}
-    }
-  }
-}
-
-/// Windows 输入框 IME 保险：在两个输入框之间切换焦点后，Windows 引擎的
-/// 输入法（TSF）连接偶发失效——表现为无法键入字符、程序对按键不响应
-/// （系统相关，部分系统没有；其他 Flutter 程序同样存在）。
-/// 点击时先卸载焦点再延时补挂，强制重建 IME 连接，规避该引擎缺陷。
-class _ImeSafeTextField extends StatefulWidget {
-  final TextEditingController controller;
-  final InputDecoration? decoration;
-  final TextStyle? style;
-
-  const _ImeSafeTextField({
-    required this.controller,
-    this.decoration,
-    this.style,
-  });
-
-  @override
-  State<_ImeSafeTextField> createState() => _ImeSafeTextFieldState();
-}
-
-class _ImeSafeTextFieldState extends State<_ImeSafeTextField> {
-  late final FocusNode _focus = FocusNode();
-
-  @override
-  void dispose() {
-    _focus.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return TextField(
-      controller: widget.controller,
-      focusNode: _focus,
-      style: widget.style,
-      decoration: widget.decoration,
-      onTap: () {
-        _focus.unfocus();
-        Future.delayed(const Duration(milliseconds: 30), () {
-          if (mounted && !_focus.hasFocus) _focus.requestFocus();
-        });
-      },
-    );
-  }
-}
-
-/// 设置面板 - 从底部弹出的设置菜单
-/// 包含三个标签页：播放列表、EPG、播放器设置
+/// 设置面板：从底部滑出的单页滚动设置。
+/// 仅保留少量参数设置、快捷键介绍与手势说明；
+/// 节目源/EPG 来源内置在程序中，不再提供编辑入口。
 class SettingsPanel extends StatefulWidget {
   final bool isOpen;
   final VoidCallback onClose;
@@ -101,22 +22,7 @@ class SettingsPanel extends StatefulWidget {
   State<SettingsPanel> createState() => _SettingsPanelState();
 }
 
-class _SettingsPanelState extends State<SettingsPanel>
-    with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 4, vsync: this);
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
+class _SettingsPanelState extends State<SettingsPanel> {
   @override
   Widget build(BuildContext context) {
     return AnimatedPositioned(
@@ -139,77 +45,191 @@ class _SettingsPanelState extends State<SettingsPanel>
             child: SafeArea(
               top: false,
               child: Builder(builder: (context) {
-                // 横屏手机等矮屏（高度<500）时面板几乎占满全高，避免太短无法操作
+                // 横屏手机等矮屏（高度<500）时面板几乎占满全高
                 final screenH = MediaQuery.of(context).size.height;
                 return SizedBox(
-                  height: screenH * (screenH < 500 ? 0.95 : 0.7),
+                  height: screenH * (screenH < 500 ? 0.95 : 0.72),
                   child: Column(
-                  children: [
-                    // 顶部拖拽条 + 标题
-                    Container(
-                      padding:
-                          const EdgeInsets.only(top: 10, bottom: 8),
-                      child: Column(
-                        children: [
-                          Container(
-                            width: 40,
-                            height: 4,
-                            decoration: BoxDecoration(
-                              color: Colors.white30,
-                              borderRadius: BorderRadius.circular(2),
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.only(top: 10, bottom: 8),
+                        child: Column(
+                          children: [
+                            Container(
+                              width: 40,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: Colors.white30,
+                                borderRadius: BorderRadius.circular(2),
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              const SizedBox(width: 16),
-                              const Text(
-                                '设置',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                const SizedBox(width: 16),
+                                const Text(
+                                  '设置',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
-                              ),
-                              const Spacer(),
-                              IconButton(
-                                icon: const Icon(Icons.close,
-                                    color: Colors.white70),
-                                onPressed: widget.onClose,
-                              ),
-                            ],
-                          ),
-                        ],
+                                const Spacer(),
+                                IconButton(
+                                  icon: const Icon(Icons.close,
+                                      color: Colors.white70),
+                                  onPressed: widget.onClose,
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    // Tab 栏
-                    TabBar(
-                      controller: _tabController,
-                      indicatorColor: Colors.blueAccent,
-                      labelColor: Colors.blueAccent,
-                      unselectedLabelColor: Colors.white54,
-                      tabs: const [
-                        Tab(text: '播放列表'),
-                        Tab(text: 'EPG'),
-                        Tab(text: '播放器'),
-                        Tab(text: '系统'),
-                      ],
-                    ),
-                    const Divider(color: Colors.white12, height: 1),
-                    // Tab 内容
-                    Expanded(
-                      child: TabBarView(
-                        controller: _tabController,
-                        children: [
-                          _PlaylistTab(),
-                          _EpgTab(),
-                          _PlayerSettingsTab(),
-                          _SystemSettingsTab(),
-                        ],
+                      const Divider(color: Colors.white12, height: 1),
+                      Expanded(
+                        child: Consumer<PlayerController>(
+                          builder: (context, controller, _) {
+                            final s = controller.settings;
+                            return ListView(
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                              children: [
+                                _section('播放'),
+                                _switchTile(
+                                  icon: Icons.skip_next,
+                                  title: '自动播放下一频道',
+                                  subtitle: '当前节目结束后自动切换',
+                                  value: s.autoPlayNext,
+                                  onChanged: (v) => controller.updateSettings(
+                                      s.copyWith(autoPlayNext: v)),
+                                ),
+                                _segmentTile<int>(
+                                  icon: Icons.slow_motion_video,
+                                  title: '播放缓冲',
+                                  subtitle: '弱网或直播卡顿可调大，换台后生效',
+                                  segments: const [5, 10, 20, 30],
+                                  selected: s.bufferSeconds,
+                                  labelOf: (v) => '$v 秒',
+                                  onSelected: (v) =>
+                                      controller.updateSettings(
+                                          s.copyWith(bufferSeconds: v)),
+                                ),
+                                _segmentTile<String>(
+                                  icon: Icons.hd,
+                                  title: '画面清晰度',
+                                  subtitle: '当前：${controller.resolution}'
+                                      '${controller.actualResolutionLabel.isEmpty ? '' : '（实际 ${controller.actualResolutionLabel}）'}',
+                                  segments: const ['1080P', '720P', '540P'],
+                                  selected: controller.resolution,
+                                  labelOf: (v) => v,
+                                  onSelected: controller.setResolution,
+                                ),
+
+                                _section('听电视'),
+                                _switchTile(
+                                  icon: Icons.visibility_off,
+                                  title: '听电视时隐藏窗口',
+                                  subtitle: controller.isDesktop
+                                      ? 'Windows 摸鱼模式：只保留声音，窗口最小化（点任务栏恢复）'
+                                      : '仅桌面端生效',
+                                  value: s.listenModeHideWindow,
+                                  onChanged: controller.isDesktop
+                                      ? (v) => controller.updateSettings(s
+                                          .copyWith(listenModeHideWindow: v))
+                                      : null,
+                                ),
+                                _switchTile(
+                                  icon: Icons.music_note,
+                                  title: '听电视时显示信息卡片',
+                                  subtitle: '手机/平板显示上一台、下一台与暂停/继续',
+                                  value: s.listenModeShowCard,
+                                  onChanged: (v) => controller.updateSettings(
+                                      s.copyWith(listenModeShowCard: v)),
+                                ),
+
+                                _section('界面'),
+                                _switchTile(
+                                  icon: Icons.schedule,
+                                  title: '显示系统时间',
+                                  subtitle: '右上角常驻显示当前时间',
+                                  value: s.showClock,
+                                  onChanged: controller.setShowClock,
+                                ),
+                                _sliderTile(
+                                  icon: Icons.touch_app,
+                                  title: '手势灵敏度',
+                                  value: s.gestureSensitivity,
+                                  min: 0.5,
+                                  max: 2.0,
+                                  divisions: 15,
+                                  label:
+                                      '${s.gestureSensitivity.toStringAsFixed(1)}x',
+                                  onChanged: (v) => controller.updateSettings(
+                                      s.copyWith(gestureSensitivity: v)),
+                                ),
+                                _sliderTile(
+                                  icon: Icons.timer,
+                                  title: '面板自动隐藏',
+                                  value: s.autoHideDelay / 1000,
+                                  min: 1.0,
+                                  max: 10.0,
+                                  divisions: 9,
+                                  label:
+                                      '${(s.autoHideDelay / 1000).toStringAsFixed(1)} 秒',
+                                  onChanged: (v) => controller.updateSettings(
+                                      s.copyWith(
+                                          autoHideDelay: (v * 1000).round())),
+                                ),
+                                _uiScaleTiles(context, controller, s),
+
+                                if (controller.isDesktop) ...[
+                                  _section('系统'),
+                                  _switchTile(
+                                    icon: Icons.push_pin,
+                                    title: '窗口置顶',
+                                    subtitle: '窗口始终保持在最前，确保快捷键响应',
+                                    value: s.alwaysOnTop,
+                                    onChanged: (v) => controller.updateSettings(
+                                        s.copyWith(alwaysOnTop: v)),
+                                  ),
+                                  _switchTile(
+                                    icon: Icons.power_settings_new,
+                                    title: '开机启动',
+                                    subtitle: '开机后自动启动 OMTV',
+                                    value: s.launchAtStartup,
+                                    onChanged: (v) => controller.updateSettings(
+                                        s.copyWith(launchAtStartup: v)),
+                                  ),
+                                  _switchTile(
+                                    icon: Icons.fullscreen,
+                                    title: '启动全屏',
+                                    subtitle: '仅在程序启动时生效一次',
+                                    value: s.startFullscreen,
+                                    onChanged: (v) => controller.updateSettings(
+                                        s.copyWith(startFullscreen: v)),
+                                  ),
+                                  _switchTile(
+                                    icon: Icons.cast,
+                                    title: '接收投屏（DLNA）',
+                                    subtitle: '允许手机、电脑把视频投到本机播放',
+                                    value: s.dlnaEnabled,
+                                    onChanged: (v) => controller.updateSettings(
+                                        s.copyWith(dlnaEnabled: v)),
+                                  ),
+                                ],
+
+                                _section('快捷键'),
+                                _shortcuts(controller.isDesktop),
+
+                                _section('手势与遥控器'),
+                                _gestures(controller.isDesktop),
+                              ],
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
                 );
               }),
             ),
@@ -218,619 +238,129 @@ class _SettingsPanelState extends State<SettingsPanel>
       ),
     );
   }
-}
 
-// ==================== 播放列表管理标签页 ====================
+  // ==================== 通用组件 ====================
 
-class _PlaylistTab extends StatefulWidget {
-  @override
-  State<_PlaylistTab> createState() => _PlaylistTabState();
-}
-
-class _PlaylistTabState extends State<_PlaylistTab> {
-  final _nameController = TextEditingController();
-  final _urlController = TextEditingController();
-  PlaylistSourceType _type = PlaylistSourceType.url;
-  bool _isLoading = false;
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _urlController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _pickLocalFile() async {
-    // file_picker 12+ 新 API：FilePicker.pickFile 直接返回 PlatformFile?
-    // 放开所有文件类型：直播源后缀五花八门（.m3u/.m3u8/.txt/.nzk/
-    // .conf/.list/.php 甚至无后缀），加载时按内容自动识别格式
-    final file = await _pickLocalFileWithTopmostFix();
-    if (file?.path != null) {
-      setState(() {
-        _urlController.text = file!.path!;
-        _type = PlaylistSourceType.local;
-      });
-    }
-  }
-
-  Future<void> _addPlaylist() async {
-    final name = _nameController.text.trim();
-    final url = _urlController.text.trim();
-    if (name.isEmpty || url.isEmpty) {
-      OsdBus.show('请填写名称和地址', icon: Icons.warning_amber_rounded);
-      return;
-    }
-    setState(() => _isLoading = true);
-    // 格式存 unknown：加载时按文件/响应【内容】嗅探，后缀不可靠
-    // （.php 可能是 M3U 也可能是 TVBox TXT，.nzk 实际是 TXT）
-    const format = PlaylistFormat.unknown;
-    final source = PlaylistSource(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      name: name,
-      url: url,
-      type: _type,
-      format: format,
-      addedAt: DateTime.now(),
+  Widget _section(String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 18, 4, 8),
+      child: Text(
+        title,
+        style: const TextStyle(
+          color: Colors.blueAccent,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 1,
+        ),
+      ),
     );
-    await context.read<PlayerController>().addPlaylist(source);
-    _nameController.clear();
-    _urlController.clear();
-    setState(() => _isLoading = false);
   }
 
-  /// 编辑已有播放列表（名称/地址/类型）
-  Future<void> _editPlaylist(PlaylistSource source) async {
-    final nameCtl = TextEditingController(text: source.name);
-    final urlCtl = TextEditingController(text: source.url);
-    var type = source.type;
-    if (!mounted) return;
-    final result = await showDialog<PlaylistSource>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialog) => AlertDialog(
-          title: const Text('编辑播放列表'),
-          content: SingleChildScrollView(
+  Widget _switchTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool>? onChanged,
+  }) {
+    return SwitchListTile(
+      secondary: Icon(icon, color: Colors.white70, size: 22),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+      title: Text(title,
+          style: TextStyle(
+              color: onChanged == null ? Colors.white38 : Colors.white,
+              fontSize: 15)),
+      subtitle: Text(subtitle,
+          style: const TextStyle(color: Colors.white54, fontSize: 12)),
+      value: value,
+      onChanged: onChanged,
+      activeColor: Colors.blueAccent,
+    );
+  }
+
+  Widget _segmentTile<T>({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required List<T> segments,
+    required T selected,
+    required String Function(T) labelOf,
+    required ValueChanged<T> onSelected,
+  }) {
+    // 选中值不在分段列表里时（如 4K 频道）回退到第一项显示
+    final value = segments.contains(selected) ? selected : segments.first;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white70, size: 22),
+          const SizedBox(width: 14),
+          Expanded(
             child: Column(
-              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SegmentedButton<PlaylistSourceType>(
-                  segments: const [
-                    ButtonSegment(
-                        value: PlaylistSourceType.url, label: Text('网络地址')),
-                    ButtonSegment(
-                        value: PlaylistSourceType.local, label: Text('本地文件')),
-                  ],
-                  selected: {type},
-                  onSelectionChanged: (s) => setDialog(() => type = s.first),
-                ),
-                const SizedBox(height: 10),
-                _ImeSafeTextField(
-                  controller: nameCtl,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: _inputDecoration('列表名称'),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _ImeSafeTextField(
-                        controller: urlCtl,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: _inputDecoration(
-                            type == PlaylistSourceType.url ? '直播源地址' : '本地文件路径'),
-                      ),
-                    ),
-                    if (type == PlaylistSourceType.local)
-                      IconButton(
-                        icon: const Icon(Icons.folder_open,
-                            color: Colors.blueAccent),
-                        onPressed: () async {
-                          final f =
-                              await _pickLocalFileWithTopmostFix();
-                          if (f?.path != null) urlCtl.text = f!.path!;
-                        },
-                      ),
-                  ],
-                ),
+                Text(title,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 15)),
+                const SizedBox(height: 2),
+                Text(subtitle,
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 12)),
               ],
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('取消'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                final name = nameCtl.text.trim();
-                final url = urlCtl.text.trim();
-                if (name.isEmpty || url.isEmpty) return;
-                Navigator.pop(
-                  ctx,
-                  source.copyWith(name: name, url: url, type: type),
-                );
-              },
-              child: const Text('保存'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (result != null && mounted) {
-      await context.read<PlayerController>().editPlaylist(result);
-    }
-  }
-
-  /// 复制播放列表地址到剪贴板
-  Future<void> _copyPlaylist(PlaylistSource p) async {
-    await Clipboard.setData(ClipboardData(text: p.url));
-    if (!mounted) return;
-    OsdBus.show('地址已复制', icon: Icons.copy);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<PlayerController>(
-      builder: (context, controller, _) {
-        final playlists = controller.sourceManager.playlists;
-        // 整页 ListView：表单+列表一起滚动，横屏矮屏也不会溢出
-        return ListView(
-          padding: const EdgeInsets.only(bottom: 12),
-          children: [
-            // 添加表单
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: SegmentedButton<PlaylistSourceType>(
-                          segments: const [
-                            ButtonSegment(
-                                value: PlaylistSourceType.url,
-                                label: Text('网络地址')),
-                            ButtonSegment(
-                                value: PlaylistSourceType.local,
-                                label: Text('本地文件')),
-                          ],
-                          selected: {_type},
-                          onSelectionChanged: (s) =>
-                              setState(() => _type = s.first),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  _ImeSafeTextField(
-                    controller: _nameController,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: _inputDecoration('列表名称（如：我的电视）'),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _ImeSafeTextField(
-                          controller: _urlController,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: _inputDecoration(
-                              _type == PlaylistSourceType.url
-                                  ? '直播源地址（M3U / TVBox TXT / PHP 等，自动识别）'
-                                  : '本地文件路径（任意类型，自动识别）'),
-                        ),
-                      ),
-                      if (_type == PlaylistSourceType.local)
-                        IconButton(
-                          icon: const Icon(Icons.folder_open,
-                              color: Colors.blueAccent),
-                          onPressed: _pickLocalFile,
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _isLoading ? null : _addPlaylist,
-                      icon: const Icon(Icons.add),
-                      label: Text(_isLoading ? '添加中...' : '添加播放列表'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(color: Colors.white12),
-            // 播放列表
-            if (playlists.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 40),
-                child: Center(
-                  child: Text('暂无播放列表，请添加',
-                      style: TextStyle(color: Colors.white54)),
-                ),
-              )
-            else
-              ...List.generate(playlists.length, (index) {
-                final p = playlists[index];
-                final isCurrent =
-                    controller.sourceManager.currentPlaylistId == p.id;
-                return ListTile(
-                  // 点击整行即切换为当前播放列表
-                  onTap: isCurrent
-                      ? null
-                      : () => controller.selectPlaylist(p.id),
-                  leading: Icon(
-                    p.type == PlaylistSourceType.url
-                        ? Icons.cloud
-                        : Icons.folder,
-                    color: isCurrent
-                        ? Colors.blueAccent
-                        : Colors.white54,
-                  ),
-                  title: Text(
-                    p.name,
-                    style: TextStyle(
-                      color: isCurrent
-                          ? Colors.blueAccent
-                          : Colors.white,
-                      fontWeight: isCurrent
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                  ),
-                  subtitle: Text(
-                    p.url,
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 11),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 当前正在使用：蓝色对号（仅状态标识）
-                      if (isCurrent)
-                        const Icon(Icons.check_circle,
-                            color: Colors.blueAccent, size: 22),
-                      IconButton(
-                        icon: const Icon(Icons.edit,
-                            color: Colors.lightBlueAccent),
-                        onPressed: () => _editPlaylist(p),
-                        tooltip: '编辑',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.copy,
-                            color: Colors.white60),
-                        onPressed: () => _copyPlaylist(p),
-                        tooltip: '复制名称和地址',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.refresh,
-                            color: Colors.amber),
-                        onPressed: () =>
-                            controller.refreshChannels(),
-                        tooltip: '刷新',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete,
-                            color: Colors.redAccent),
-                        onPressed: () =>
-                            controller.removePlaylist(p.id),
-                        tooltip: '删除',
-                      ),
-                    ],
-                  ),
-                );
-              }),
-          ],
-        );
-      },
-    );
-  }
-}
-
-// ==================== EPG 管理标签页 ====================
-
-class _EpgTab extends StatefulWidget {
-  @override
-  State<_EpgTab> createState() => _EpgTabState();
-}
-
-class _EpgTabState extends State<_EpgTab> {
-  final _nameController = TextEditingController();
-  final _urlController = TextEditingController();
-  bool _isLoading = false;
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _urlController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _addEpg() async {
-    final name = _nameController.text.trim();
-    final url = _urlController.text.trim();
-    if (name.isEmpty || url.isEmpty) {
-      OsdBus.show('请填写名称和地址', icon: Icons.warning_amber_rounded);
-      return;
-    }
-    setState(() => _isLoading = true);
-    final source = EpgSource(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      name: name,
-      url: url,
-      addedAt: DateTime.now(),
-    );
-    await context.read<PlayerController>().addEpg(source);
-    _nameController.clear();
-    _urlController.clear();
-    setState(() => _isLoading = false);
-  }
-
-  /// 编辑已有 EPG 源（名称/地址）
-  Future<void> _editEpg(EpgSource source) async {
-    final nameCtl = TextEditingController(text: source.name);
-    final urlCtl = TextEditingController(text: source.url);
-    if (!mounted) return;
-    final result = await showDialog<EpgSource>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('编辑 EPG'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _ImeSafeTextField(
-              controller: nameCtl,
-              style: const TextStyle(color: Colors.white),
-              decoration: _inputDecoration('EPG 名称'),
-            ),
-            const SizedBox(height: 8),
-            _ImeSafeTextField(
-              controller: urlCtl,
-              style: const TextStyle(color: Colors.white),
-              decoration: _inputDecoration('XMLTV EPG 地址 URL'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final name = nameCtl.text.trim();
-              final url = urlCtl.text.trim();
-              if (name.isEmpty || url.isEmpty) return;
-              Navigator.pop(ctx, source.copyWith(name: name, url: url));
-            },
-            child: const Text('保存'),
+          const SizedBox(width: 8),
+          SegmentedButton<T>(
+            showSelectedIcon: false,
+            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+            segments: segments
+                .map((v) => ButtonSegment<T>(
+                    value: v, label: Text(labelOf(v))))
+                .toList(),
+            selected: {value},
+            onSelectionChanged: (sel) => onSelected(sel.first),
           ),
         ],
       ),
     );
-    if (result != null && mounted) {
-      await context.read<PlayerController>().editEpg(result);
-    }
   }
 
-  /// 复制 EPG 地址到剪贴板
-  Future<void> _copyEpg(EpgSource e) async {
-    await Clipboard.setData(ClipboardData(text: e.url));
-    if (!mounted) return;
-    OsdBus.show('地址已复制', icon: Icons.copy);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<PlayerController>(
-      builder: (context, controller, _) {
-        final epgs = controller.sourceManager.epgs;
-        // 整页 ListView：表单+列表一起滚动，横屏矮屏也不会溢出
-        return ListView(
-          padding: const EdgeInsets.only(bottom: 12),
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                children: [
-                  _ImeSafeTextField(
-                    controller: _nameController,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: _inputDecoration('EPG 名称（如：央视节目单）'),
-                  ),
-                  const SizedBox(height: 8),
-                  _ImeSafeTextField(
-                    controller: _urlController,
-                    style: const TextStyle(color: Colors.white),
-                    decoration:
-                        _inputDecoration('XMLTV EPG 地址 URL'),
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: _isLoading ? null : _addEpg,
-                      icon: const Icon(Icons.add),
-                      label: Text(_isLoading ? '添加中...' : '添加 EPG'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(color: Colors.white12),
-            if (epgs.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 40),
-                child: Center(
-                  child: Text('暂无 EPG 源，请添加',
-                      style: TextStyle(color: Colors.white54)),
-                ),
-              )
-            else
-              ...List.generate(epgs.length, (index) {
-                final e = epgs[index];
-                final isCurrent =
-                    controller.sourceManager.currentEpgId == e.id;
-                return ListTile(
-                  // 点击整行即切换为当前 EPG
-                  onTap: isCurrent
-                      ? null
-                      : () => controller.selectEpg(e.id),
-                  leading: Icon(Icons.menu_book,
-                      color: isCurrent
-                          ? Colors.blueAccent
-                          : Colors.white54),
-                  title: Text(
-                    e.name,
-                    style: TextStyle(
-                      color: isCurrent
-                          ? Colors.blueAccent
-                          : Colors.white,
-                      fontWeight: isCurrent
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                  ),
-                  subtitle: Text(
-                    e.url,
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 11),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 当前正在使用：蓝色对号（仅状态标识）
-                      if (isCurrent)
-                        const Icon(Icons.check_circle,
-                            color: Colors.blueAccent, size: 22),
-                      IconButton(
-                        icon: const Icon(Icons.edit,
-                            color: Colors.lightBlueAccent),
-                        onPressed: () => _editEpg(e),
-                        tooltip: '编辑',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.copy,
-                            color: Colors.white60),
-                        onPressed: () => _copyEpg(e),
-                        tooltip: '复制名称和地址',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.refresh,
-                            color: Colors.amber),
-                        onPressed: () => controller.refreshEpg(),
-                        tooltip: '刷新',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete,
-                            color: Colors.redAccent),
-                        onPressed: () => controller.removeEpg(e.id),
-                        tooltip: '删除',
-                      ),
-                    ],
-                  ),
-                );
-              }),
-          ],
-        );
-      },
-    );
-  }
-}
-
-// ==================== 播放器设置标签页 ====================
-
-class _PlayerSettingsTab extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<PlayerController>(
-      builder: (context, controller, _) {
-        final s = controller.settings;
-        return ListView(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          children: [
-            _buildQualitySelector(controller),
-            SwitchListTile(
-              secondary: const Icon(Icons.skip_next, color: Colors.white70),
-              title: const Text('自动播放下一频道',
-                  style: TextStyle(color: Colors.white, fontSize: 15)),
-              subtitle: const Text('当前节目结束后自动切换',
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
-              value: s.autoPlayNext,
-              onChanged: (v) => controller
-                  .updateSettings(s.copyWith(autoPlayNext: v)),
-              activeColor: Colors.blueAccent,
-            ),
-            _buildSlider(
-              icon: Icons.touch_app,
-              title: '手势灵敏度',
-              value: s.gestureSensitivity,
-              min: 0.5,
-              max: 2.0,
-              divisions: 15,
-              label: '${s.gestureSensitivity.toStringAsFixed(1)}x',
-              onChanged: (v) => controller
-                  .updateSettings(s.copyWith(gestureSensitivity: v)),
-            ),
-            _buildSlider(
-              icon: Icons.timer,
-              title: '面板自动隐藏',
-              value: s.autoHideDelay / 1000,
-              min: 1.0,
-              max: 10.0,
-              divisions: 9,
-              label: '${(s.autoHideDelay / 1000).toStringAsFixed(1)} 秒',
-              onChanged: (v) => controller.updateSettings(
-                  s.copyWith(autoHideDelay: (v * 1000).round())),
-            ),
-            _buildSlider(
-              icon: Icons.swap_horiz,
-              title: '切源等待时间',
-              value: s.sourceTimeoutSeconds.toDouble(),
-              min: 5,
-              max: 30,
-              divisions: 5,
-              label: '${s.sourceTimeoutSeconds} 秒',
-              onChanged: (v) => controller.updateSettings(
-                  s.copyWith(sourceTimeoutSeconds: v.round())),
-              subtitleText: '起播超过该时间未成功，自动尝试下一个源',
-            ),
-            // 播放缓冲：分段选择 5/10/20/30 秒（换台时由 MDK 后端应用）
-            ListTile(
-              leading: const Icon(Icons.slow_motion_video,
-                  color: Colors.white70),
-              title: const Text('播放缓冲'),
-              subtitle: const Text('弱网或直播卡顿可调大，换台后生效'),
-              trailing: SegmentedButton<int>(
-                showSelectedIcon: false,
-                style: const ButtonStyle(
-                  visualDensity: VisualDensity.compact,
-                ),
-                segments: const [5, 10, 20, 30]
-                    .map((v) =>
-                        ButtonSegment(value: v, label: Text('$v 秒')))
-                    .toList(),
-                selected: {s.bufferSeconds},
-                onSelectionChanged: (sel) => controller.updateSettings(
-                    s.copyWith(bufferSeconds: sel.first)),
-              ),
-            ),
-            _buildUiScaleTile(context, controller, s),
-            const SizedBox(height: 16),
-          ],
-        );
-      },
+  Widget _sliderTile({
+    required IconData icon,
+    required String title,
+    required double value,
+    required double min,
+    required double max,
+    required int divisions,
+    required String label,
+    required ValueChanged<double> onChanged,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+      leading: Icon(icon, color: Colors.white70, size: 22),
+      title: Text(title,
+          style: const TextStyle(color: Colors.white, fontSize: 15)),
+      subtitle: SliderTheme(
+        data: SliderThemeData(
+          activeTrackColor: Colors.blueAccent,
+          inactiveTrackColor: Colors.white24,
+          thumbColor: Colors.blueAccent,
+          overlayColor: Colors.blueAccent.withOpacity(0.2),
+        ),
+        child: Slider(
+          value: value.clamp(min, max),
+          min: min,
+          max: max,
+          divisions: divisions,
+          label: label,
+          onChanged: onChanged,
+        ),
+      ),
     );
   }
 
   /// 字体缩放：自动按分辨率适配 + 手动滑块
-  Widget _buildUiScaleTile(
+  Widget _uiScaleTiles(
       BuildContext context, PlayerController controller, PlayerSettings s) {
     final mq = MediaQuery.of(context);
     final physicalW = mq.size.width * mq.devicePixelRatio;
@@ -838,23 +368,20 @@ class _PlayerSettingsTab extends StatelessWidget {
     final scale = s.uiScaleAuto ? autoScale : s.uiScale;
     return Column(
       children: [
-        SwitchListTile(
-          secondary: const Icon(Icons.screen_rotation,
-              color: Colors.white70),
-          title: const Text('字体大小自动适配',
-              style: TextStyle(color: Colors.white, fontSize: 15)),
-          subtitle: Text(
-            '按屏幕分辨率自动缩放（当前屏幕：${physicalW.round()} 像素，自动 ${autoScale.toStringAsFixed(2)}x）',
-            style: const TextStyle(color: Colors.white54, fontSize: 12),
-          ),
+        _switchTile(
+          icon: Icons.screen_rotation,
+          title: '字体大小自动适配',
+          subtitle:
+              '按屏幕分辨率自动缩放（当前 ${physicalW.round()} 像素，自动 ${autoScale.toStringAsFixed(2)}x）',
           value: s.uiScaleAuto,
           onChanged: (v) =>
               controller.updateSettings(s.copyWith(uiScaleAuto: v)),
-          activeColor: Colors.blueAccent,
         ),
         ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 4),
           leading: Icon(Icons.format_size,
-              color: s.uiScaleAuto ? Colors.white24 : Colors.white70),
+              color: s.uiScaleAuto ? Colors.white24 : Colors.white70,
+              size: 22),
           title: Text('手动字体缩放',
               style: TextStyle(
                   color: s.uiScaleAuto ? Colors.white38 : Colors.white,
@@ -870,7 +397,6 @@ class _PlayerSettingsTab extends StatelessWidget {
               disabledThumbColor: Colors.white38,
             ),
             child: Slider(
-              // 自动模式下展示当前生效值但禁止拖动
               value: scale.clamp(0.8, 3.0),
               min: 0.8,
               max: 3.0,
@@ -887,362 +413,80 @@ class _PlayerSettingsTab extends StatelessWidget {
     );
   }
 
-  Widget _buildQualitySelector(PlayerController controller) {
-    return ExpansionTile(
-      leading: const Icon(Icons.hd, color: Colors.white70),
-      title: const Text('视频画质',
-          style: TextStyle(color: Colors.white, fontSize: 15)),
-      subtitle: Text(controller.settings.preferredQuality.label,
-          style: const TextStyle(color: Colors.white54, fontSize: 12)),
-      iconColor: Colors.white70,
-      collapsedIconColor: Colors.white70,
-      children: VideoQuality.values.map((q) {
-        return RadioListTile<VideoQuality>(
-          value: q,
-          groupValue: controller.settings.preferredQuality,
-          onChanged: (v) {
-            if (v != null) {
-              controller.updateSettings(
-                  controller.settings.copyWith(preferredQuality: v));
-            }
-          },
-          title: Text(q.label,
-              style:
-                  const TextStyle(color: Colors.white70, fontSize: 14)),
-          activeColor: Colors.blueAccent,
-        );
-      }).toList(),
+  Widget _shortcuts(bool desktop) {
+    final rows = <List<String>>[
+      ['空格', '播放 / 暂停'],
+      ['F / F11', '全屏切换'],
+      ['M', '静音 / 恢复'],
+      ['T', '听电视'],
+      ['L', '锁定 / 解锁'],
+      ['C', '频道列表'],
+      ['E', '节目单'],
+      ['S', '设置'],
+      ['R', '录制'],
+      ['↑ / ↓', '切换频道'],
+      ['← / →', '拖动进度（点播）'],
+      ['数字键', '直接输入频道号'],
+      ['返回 / Esc', '逐层关闭面板'],
+      if (desktop) ['右键', '相当于返回键'],
+    ];
+    return _infoCard(rows
+        .map((r) => _infoRow(r[0], r[1]))
+        .toList());
+  }
+
+  Widget _gestures(bool desktop) {
+    final rows = <List<String>>[
+      ['左侧上下滑', '调节亮度'],
+      ['右侧上下滑', '调节音量'],
+      if (desktop) ['双击画面', '全屏 / 还原'],
+      if (!desktop) ['单击左侧', '打开频道列表'],
+      if (!desktop) ['单击中间', '显示控制面板'],
+      if (!desktop) ['单击右侧', '打开节目单'],
+      ['遥控器 ← / →', '面板内移动高亮'],
+      ['遥控器 OK', '短按确认 / 长按呼出控制面板'],
+      ['遥控器返回', '逐层关闭 / 锁定状态下解锁'],
+    ];
+    return _infoCard(rows
+        .map((r) => _infoRow(r[0], r[1]))
+        .toList());
+  }
+
+  Widget _infoCard(List<Widget> children) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(children: children),
     );
   }
 
-  Widget _buildSlider({
-    required IconData icon,
-    required String title,
-    required double value,
-    required double min,
-    required double max,
-    required int divisions,
-    required String label,
-    required ValueChanged<double> onChanged,
-    String? subtitleText,
-  }) {
-    final clamped = value.clamp(min, max);
-    return ListTile(
-      leading: Icon(icon, color: Colors.white70),
-      title: Text(title,
-          style: const TextStyle(color: Colors.white, fontSize: 15)),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _infoRow(String key, String desc) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
         children: [
-          if (subtitleText != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(subtitleText,
-                  style: const TextStyle(
-                      color: Colors.white54, fontSize: 12)),
+          SizedBox(
+            width: 118,
+            child: Text(
+              key,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          SliderTheme(
-            data: SliderThemeData(
-              activeTrackColor: Colors.blueAccent,
-              inactiveTrackColor: Colors.white24,
-              thumbColor: Colors.blueAccent,
-              overlayColor: Colors.blueAccent.withOpacity(0.2),
-            ),
-            child: Slider(
-              value: clamped,
-              min: min,
-              max: max,
-              divisions: divisions,
-              label: label,
-              onChanged: onChanged,
-            ),
+          ),
+          Expanded(
+            child: Text(desc,
+                style:
+                    const TextStyle(color: Colors.white60, fontSize: 13)),
           ),
         ],
       ),
     );
   }
-}
-
-// ==================== 系统设置标签页 ====================
-
-class _SystemSettingsTab extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<PlayerController>(
-      builder: (context, controller, _) {
-        final s = controller.settings;
-        return ListView(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          children: [
-            if (controller.isDesktop) ...[
-              SwitchListTile(
-                secondary: const Icon(Icons.push_pin,
-                    color: Colors.white70),
-                title: const Text('窗口置顶',
-                    style: TextStyle(color: Colors.white, fontSize: 15)),
-                subtitle: const Text('窗口始终保持在最前，确保快捷键响应',
-                    style: TextStyle(color: Colors.white54, fontSize: 12)),
-                value: s.alwaysOnTop,
-                onChanged: (v) => controller
-                    .updateSettings(s.copyWith(alwaysOnTop: v)),
-                activeColor: Colors.blueAccent,
-              ),
-              SwitchListTile(
-                secondary: const Icon(Icons.power_settings_new,
-                    color: Colors.white70),
-                title: const Text('开机启动',
-                    style: TextStyle(color: Colors.white, fontSize: 15)),
-                subtitle: const Text('开机后自动启动 OMPlayer',
-                    style: TextStyle(color: Colors.white54, fontSize: 12)),
-                value: s.launchAtStartup,
-                onChanged: (v) => controller
-                    .updateSettings(s.copyWith(launchAtStartup: v)),
-                activeColor: Colors.blueAccent,
-              ),
-              SwitchListTile(
-                secondary: const Icon(Icons.fullscreen, color: Colors.white70),
-                title: const Text('启动全屏',
-                    style: TextStyle(color: Colors.white, fontSize: 15)),
-                subtitle: const Text('仅在程序启动时生效一次；启动后双击全屏/还原不受影响',
-                    style: TextStyle(color: Colors.white54, fontSize: 12)),
-                value: s.startFullscreen,
-                onChanged: (v) => controller
-                    .updateSettings(s.copyWith(startFullscreen: v)),
-                activeColor: Colors.blueAccent,
-              ),
-            ],
-            // 开关状态由独立 clockVisible 驱动：切换只重建时钟，不触发
-            // 整棵播放 Stack 重建（旧做法反复切换会灰屏）
-            ValueListenableBuilder<bool>(
-              valueListenable: controller.clockVisible,
-              builder: (context, showClock, _) => SwitchListTile(
-                secondary:
-                    const Icon(Icons.access_time, color: Colors.white70),
-                title: const Text('显示时间',
-                    style: TextStyle(color: Colors.white, fontSize: 15)),
-                subtitle: const Text('右上角一直显示实时系统时间',
-                    style: TextStyle(color: Colors.white54, fontSize: 12)),
-                value: showClock,
-                onChanged: controller.setShowClock,
-                activeColor: Colors.blueAccent,
-              ),
-            ),
-            // DLNA 投屏接收状态 + 开关
-            ListTile(
-              leading: Icon(Icons.cast,
-                  color: controller.dlnaRunning
-                      ? Colors.greenAccent
-                      : Colors.redAccent),
-              title: const Text('DLNA 投屏接收',
-                  style: TextStyle(color: Colors.white, fontSize: 15)),
-              subtitle: Text(
-                controller.dlnaRunning
-                    ? '已开启：${controller.dlnaName}\n${controller.dlnaEndpoint}\n手机需与本机同一局域网，防火墙需放行本程序'
-                    : '未开启：服务已停止或端口被占用',
-                style: const TextStyle(
-                    color: Colors.white54, fontSize: 12),
-              ),
-              trailing: Switch(
-                value: s.dlnaEnabled,
-                onChanged: (v) => controller
-                    .updateSettings(s.copyWith(dlnaEnabled: v)),
-                activeColor: Colors.blueAccent,
-              ),
-            ),
-            // 局域网 Web 管理：手机扫码增删改直播源/EPG
-            ListTile(
-              leading: Icon(Icons.qr_code_2,
-                  color: s.remoteAdminEnabled &&
-                          controller.remoteAdminUrl.isNotEmpty
-                      ? Colors.greenAccent
-                      : Colors.white54),
-              title: const Text('手机扫码管理',
-                  style: TextStyle(color: Colors.white, fontSize: 15)),
-              subtitle: Text(
-                s.remoteAdminEnabled && controller.remoteAdminUrl.isNotEmpty
-                    ? '已开启：手机连同一 Wi‑Fi，扫码即可编辑直播源和 EPG\n${controller.remoteAdminUrl}\n'
-                        '手机打不开时，请在电脑防火墙提示中允许本程序联网'
-                    : (s.remoteAdminEnabled
-                        ? '服务启动中或当前平台不支持（端口 8963 起）'
-                        : '关闭后局域网内无法通过手机管理'),
-                style: const TextStyle(
-                    color: Colors.white54, fontSize: 12),
-              ),
-              trailing: Switch(
-                value: s.remoteAdminEnabled,
-                onChanged: (v) => controller
-                    .updateSettings(s.copyWith(remoteAdminEnabled: v)),
-                activeColor: Colors.blueAccent,
-              ),
-              onTap: controller.remoteAdminUrl.isEmpty
-                  ? null
-                  : () => showRemoteAdminQrDialog(
-                      context, controller.remoteAdminUrl),
-            ),
-            // 网页频道诊断：复现「打不开/黑屏/串台」后导出日志发给开发者
-            ListTile(
-              leading: const Icon(Icons.bug_report_outlined,
-                  color: Colors.white70),
-              title: const Text('导出网页诊断日志',
-                  style: TextStyle(color: Colors.white, fontSize: 15)),
-              subtitle: const Text(
-                  '网页频道故障时使用：先打开故障频道复现一遍，再点这里导出',
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
-              onTap: () async {
-                final p = await WebDiag.flush();
-                OsdBus.show(
-                  p.isEmpty
-                      ? '暂无诊断日志：请先打开一次网页频道复现故障'
-                      : '诊断日志已导出：$p',
-                  icon: Icons.bug_report_outlined,
-                );
-              },
-            ),
-            const SizedBox(height: 16),
-          ],
-        );
-      },
-    );
-  }
-}
-
-// ==================== 公共工具 ====================
-
-/// 弹出局域网管理地址二维码（设置面板与底部控制面板遥控器入口共用）。
-///
-/// 白色圆角卡片 + 圆角模块二维码，URL 独立底色展示，
-/// 「复制地址 / 关闭」两个按钮等高并排，遥控器返回键也可关闭。
-Future<void> showRemoteAdminQrDialog(BuildContext context, String url) {
-  return showDialog<void>(
-    context: context,
-    barrierColor: Colors.black.withOpacity(0.72),
-    builder: (ctx) => Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 40),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 360),
-        padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF7F8FA),
-          borderRadius: BorderRadius.circular(22),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('手机扫码管理',
-                style: TextStyle(
-                    color: Color(0xFF11141B),
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700)),
-            const SizedBox(height: 6),
-            const Text('手机与电脑连接同一 Wi‑Fi',
-                style: TextStyle(color: Colors.black45, fontSize: 13)),
-            const SizedBox(height: 18),
-            // 二维码：白底圆角卡片内嵌圆角方块码，四周留白保证可识别
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.07),
-                    blurRadius: 14,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: QrImageView(
-                data: url,
-                version: QrVersions.auto,
-                size: 216,
-                backgroundColor: Colors.white,
-                padding: EdgeInsets.zero,
-                eyeStyle: const QrEyeStyle(
-                  eyeShape: QrEyeShape.square,
-                  color: Color(0xFF141821),
-                ),
-                dataModuleStyle: const QrDataModuleStyle(
-                  dataModuleShape: QrDataModuleShape.square,
-                  color: Color(0xFF141821),
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
-            Container(
-              width: double.infinity,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFFECEEF2),
-                borderRadius: BorderRadius.circular(9),
-              ),
-              child: SelectableText(
-                url,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    color: Color(0xFF333A47),
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600),
-              ),
-            ),
-            const SizedBox(height: 18),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: url));
-                      if (!ctx.mounted) return;
-                      Navigator.pop(ctx);
-                      OsdBus.show('地址已复制', icon: Icons.copy);
-                    },
-                    icon: const Icon(Icons.copy, size: 18),
-                    label: const Text('复制地址'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFF333A47),
-                      side: const BorderSide(color: Color(0xFFD2D7E0)),
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(11)),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF2563EB),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(11)),
-                    ),
-                    child: const Text('关闭'),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-}
-
-InputDecoration _inputDecoration(String hint) {
-  return InputDecoration(
-    hintText: hint,
-    hintStyle: const TextStyle(color: Colors.white38),
-    filled: true,
-    fillColor: Colors.white10,
-    border: OutlineInputBorder(
-      borderRadius: BorderRadius.circular(8),
-      borderSide: BorderSide.none,
-    ),
-    contentPadding:
-        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-  );
 }

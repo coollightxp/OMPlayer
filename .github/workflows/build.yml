@@ -1,4 +1,4 @@
-name: Build OMPlayer
+name: Build OMTV
 
 on:
   push:
@@ -51,6 +51,8 @@ jobs:
       - name: Patch Android config (cleartext HTTP / cutout fullscreen)
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
+          # 应用名改为 欧米电视（flutter create 默认写 project-name）
+          sed -i 's|android:label="omplayer"|android:label="欧米电视"|' $MANIFEST
           # IPTV 源多为 http:// 明文地址，必须允许明文流量
           sed -i 's|<application|<application android:usesCleartextTraffic="true"|' $MANIFEST
           # 单实例：从图标再次启动时回到已有任务而不是新开进程
@@ -122,7 +124,7 @@ jobs:
                 -keystore "$KS" \
                 -storepass android -alias androiddebugkey -keypass android \
                 -keyalg RSA -keysize 2048 -validity 10000 \
-                -dname "CN=OMPlayer,O=OMPlayer,C=CN"
+                -dname "CN=OMTV,O=OMTV,C=CN"
               # 输出新 base64：请更新 GitHub Secret，之后所有版本签名固定
               echo "=== DEBUG_KEYSTORE_BASE64 (用此整行更新 GitHub Secret) ==="
               base64 -w 0 "$KS"
@@ -174,7 +176,7 @@ jobs:
           cd build/app/outputs/flutter-apk
           for abi in armeabi-v7a arm64-v8a x86_64; do
             if [ -f "app-$abi-release.apk" ]; then
-              mv "app-$abi-release.apk" "OMPlayer-android-$abi.apk"
+              mv "app-$abi-release.apk" "OMTV-android-$abi.apk"
             fi
           done
 
@@ -186,7 +188,7 @@ jobs:
             | sort -V | tail -1)
           if [ -n "$APKSIGNER" ]; then
             "$APKSIGNER" verify --print-certs \
-              build/app/outputs/flutter-apk/OMPlayer-android-arm64-v8a.apk \
+              build/app/outputs/flutter-apk/OMTV-android-arm64-v8a.apk \
               | grep -E 'signer|Certificate' | head -5
           else
             echo "apksigner not found, skipped"
@@ -202,7 +204,7 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: build/app/outputs/flutter-apk/OMPlayer-android-*.apk
+          files: build/app/outputs/flutter-apk/OMTV-android-*.apk
 
   # ==================== Web ====================
   build-web:
@@ -230,6 +232,13 @@ jobs:
           cp branding/web/Icon-512.png web/icons/Icon-maskable-512.png
           cp branding/web/favicon.png web/favicon.png
 
+      - name: Patch Web title / manifest
+        run: |
+          sed -i 's|<title>omplayer</title>|<title>OMTV</title>|' web/index.html
+          sed -i 's|content="omplayer"|content="OMTV"|' web/index.html
+          sed -i 's|"name": "omplayer"|"name": "OMTV"|' web/manifest.json
+          sed -i 's|"short_name": "omplayer"|"short_name": "OMTV"|' web/manifest.json
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -239,7 +248,7 @@ jobs:
       - name: Zip Web build
         run: |
           cd build/web
-          zip -r ../../OMPlayer-web.zip .
+          zip -r ../../OMTV-web.zip .
 
       - name: Upload Web artifact
         uses: actions/upload-artifact@v4
@@ -251,7 +260,7 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: OMPlayer-web.zip
+          files: OMTV-web.zip
 
   # ==================== Windows Desktop ====================
   build-windows:
@@ -279,6 +288,18 @@ jobs:
         shell: pwsh
         run: Copy-Item branding/app_icon.ico windows/runner/resources/app_icon.ico -Force
 
+      - name: Set Windows executable name
+        shell: pwsh
+        run: |
+          $c = 'windows/CMakeLists.txt'
+          $t = [System.IO.File]::ReadAllText($c)
+          $anchor = 'set(BINARY_NAME "omplayer")'
+          if (-not $t.Contains($anchor)) {
+            throw 'BINARY_NAME anchor not found, Flutter template may have changed'
+          }
+          $t = $t.Replace($anchor, 'set(BINARY_NAME "OMTV")')
+          [System.IO.File]::WriteAllText($c, $t, (New-Object System.Text.UTF8Encoding($false)))
+
       # 仓库不提交 windows/ 目录（由 flutter create 现场生成），
       # 因此把 runner 级补丁注入生成的模板文件：
       # main.cpp:
@@ -300,7 +321,7 @@ jobs:
           $inject1 = @(
             '// ===== OMPlayer injected: single instance + one-shot NumLock restore =====',
             'static BOOL g_om_numlock_was_on = FALSE;',
-            'static const wchar_t* kOmSingleInstanceMutex = L"Local\\OMPlayer_SingleInstance";',
+            'static const wchar_t* kOmSingleInstanceMutex = L"Local\\OMTV_SingleInstance";',
             '// 一次性回调：触发后立刻 KillTimer，之后永不干预 NumLock，',
             '// 避免后台轮询读到滞后状态而反复翻转、污染全局键盘状态',
             'static VOID CALLBACK OMNumLockRestore(HWND hwnd, UINT, UINT_PTR id, DWORD) {',
@@ -349,7 +370,7 @@ jobs:
             '  HANDLE om_mutex = ::CreateMutexW(nullptr, TRUE, kOmSingleInstanceMutex);',
             '  (void)om_mutex; // hold for process lifetime; silences C4189 under /WX',
             '  if (::GetLastError() == ERROR_ALREADY_EXISTS) {',
-            '    HWND existing = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"omplayer");',
+            '    HWND existing = ::FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", L"OMTV");',
             '    if (existing != nullptr) {',
             '      ::ShowWindow(existing, SW_RESTORE);',
             '      ::SetForegroundWindow(existing);',
@@ -376,6 +397,8 @@ jobs:
           $t = $t.Replace($a1, $inject1)
           $t = $t.Replace($a2, $inject2)
           $t = $t.Replace($a3, $inject3)
+          # 窗口标题改为 OMTV（单实例 FindWindowW 也按此标题查找）
+          $t = $t.Replace('L"omplayer"', 'L"OMTV"')
           [System.IO.File]::WriteAllText($f, $t, (New-Object System.Text.UTF8Encoding($false)))
           Get-Content $f | Select-String 'OMPlayer' | ForEach-Object { $_.Line.Trim() }
 
@@ -490,6 +513,8 @@ jobs:
             '        case 0x43: action = "c"; break;',
             '        case 0x45: action = "e"; break;',
             '        case 0x53: action = "s"; break;',
+            '        case 0x4C: action = "l"; break;',
+            '        case 0x54: action = "t"; break;',
             '        default: break;',
             '      }',
             '    }',
@@ -621,19 +646,19 @@ jobs:
         run: flutter build windows --release
 
       - name: Zip Windows build
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath OMPlayer-windows.zip
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath OMTV-windows.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: OMPlayer-windows.zip
+          path: OMTV-windows.zip
 
       - name: Upload to Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: OMPlayer-windows.zip
+          files: OMTV-windows.zip
 
   # ==================== Linux Desktop ====================
   build-linux:
@@ -664,6 +689,10 @@ jobs:
       - name: Create Linux project files
         run: flutter create . --platforms=linux --project-name omplayer
 
+      # 窗口标题沿用 flutter create 写入的工程名，改为 OMTV
+      - name: Patch Linux window title
+        run: sed -i 's/"omplayer"/"OMTV"/g' linux/runner/my_application.cc
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -673,16 +702,16 @@ jobs:
       - name: Zip Linux build
         run: |
           cd build/linux/x64/release/bundle
-          zip -r ${{ github.workspace }}/OMPlayer-linux.zip .
+          zip -r ${{ github.workspace }}/OMTV-linux.zip .
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-build
-          path: OMPlayer-linux.zip
+          path: OMTV-linux.zip
 
       - name: Upload to Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: OMPlayer-linux.zip
+          files: OMTV-linux.zip

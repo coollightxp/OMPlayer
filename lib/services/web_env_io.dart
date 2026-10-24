@@ -36,7 +36,7 @@ String _resolveUserDataFolder() {
   final sep = Platform.pathSeparator;
   final local = Platform.environment['LOCALAPPDATA'] ?? '';
   if (local.isNotEmpty) {
-    return '$local${sep}OMPlayer${sep}WebView2';
+    return '$local${sep}OMTV${sep}WebView2';
   }
   // LOCALAPPDATA 缺失（极少数精简系统）：退回 exe 同目录
   final exeFile = File(Platform.resolvedExecutable);

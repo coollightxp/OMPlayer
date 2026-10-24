@@ -22,8 +22,8 @@ String? get _platformFontFamily {
   }
 }
 
-class OMPlayerApp extends StatelessWidget {
-  const OMPlayerApp({super.key});
+class OMTVApp extends StatelessWidget {
+  const OMTVApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -32,7 +32,7 @@ class OMPlayerApp extends StatelessWidget {
       child: Consumer<PlayerController>(
         // 字体缩放变化时重建整个应用，让 4K/8K 等大屏可整体放大文字
         builder: (context, controller, _) => MaterialApp(
-          title: 'OMPlayer',
+          title: 'OMTV',
           debugShowCheckedModeBanner: false,
           // 全局统一字体族须在 ThemeData 构造函数传入（copyWith 无此参数）
           theme: ThemeData(

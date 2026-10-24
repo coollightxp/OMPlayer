@@ -23,11 +23,11 @@ class MediaCaptureService {
     // 回退：程序目录不可写（如安装在受保护目录）时保存到用户视频目录
     final String base;
     if (Platform.isWindows) {
-      base = '${Platform.environment['USERPROFILE']}\\Videos\\OMPlayer';
+      base = '${Platform.environment['USERPROFILE']}\\Videos\\OMTV';
     } else if (Platform.isMacOS) {
-      base = '${Platform.environment['HOME']}/Movies/OMPlayer';
+      base = '${Platform.environment['HOME']}/Movies/OMTV';
     } else {
-      base = '${Platform.environment['HOME']}/Videos/OMPlayer';
+      base = '${Platform.environment['HOME']}/Videos/OMTV';
     }
     final target = Directory('$base/$subDir');
     if (!await target.exists()) {

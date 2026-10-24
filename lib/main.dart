@@ -64,7 +64,7 @@ void main() async {
 
     await windowManager.waitUntilReadyToShow(
       const WindowOptions(
-        title: 'OMPlayer',
+        title: 'OMTV',
         center: true,
         titleBarStyle: TitleBarStyle.hidden,
       ),
@@ -86,5 +86,5 @@ void main() async {
     );
   }
 
-  runApp(const OMPlayerApp());
+  runApp(const OMTVApp());
 }

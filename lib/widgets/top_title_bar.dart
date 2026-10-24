@@ -56,7 +56,7 @@ class TopTitleBar extends StatelessWidget {
                         color: Colors.white70, size: 18),
                     const SizedBox(width: 8),
                     const Text(
-                      'OMPlayer',
+                      'OMTV',
                       style: TextStyle(
                           color: Colors.white70, fontSize: 13),
                     ),

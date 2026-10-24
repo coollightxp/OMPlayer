@@ -14,11 +14,10 @@ import 'package:window_manager/window_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
+import '../data/yangshipin_channels.dart';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
-import '../models/epg_source.dart';
 import '../models/player_settings.dart';
-import '../models/playlist_source.dart';
 import '../models/reservation.dart';
 import 'auto_launch.dart';
 import 'cast_stream_proxy.dart';
@@ -29,13 +28,12 @@ import 'cast_log.dart';
 import 'format_hint.dart';
 import 'media_capture_service.dart';
 import 'native_capture.dart';
-import 'remote_admin_service.dart';
 import 'reservation_manager.dart';
-import 'source_manager.dart';
 import 'web_env.dart';
 import 'web_launch.dart';
 import 'network_monitor.dart';
 import 'osd_bus.dart';
+import 'yangshipin_epg.dart';
 
 /// 播放器状态
 enum PlayerState { idle, loading, playing, paused, error, ended, waitingForNetwork }
@@ -65,20 +63,24 @@ class PlayerController extends ChangeNotifier {
   List<ChannelCategory> _categories = [];
 
   // 新增服务
-  final SourceManager sourceManager = SourceManager();
   final ReservationManager reservationManager = ReservationManager();
   final MediaCaptureService captureService = MediaCaptureService();
+
+  /// 央视频 EPG（独立模块，后台定时刷新）
+  final YangshipinEpg epg = YangshipinEpg();
+  Timer? _epgRefreshTimer;
+
+  // 启动初始化：先显示启动图，频道/EPG 就绪后再进入播放
+  bool _bootReady = false;
+  String _bootStatus = '正在启动…';
+  bool get bootReady => _bootReady;
+  String get bootStatus => _bootStatus;
 
   // DLNA 投屏接收服务（接收其它设备推送的视频）
   final DlnaService dlnaService = DlnaService();
   bool _isCasting = false;
   Channel? _preCastChannel; // 投屏前的频道，用于断开后恢复
 
-  // 局域网 Web 管理服务（手机扫码后增删改直播源/EPG）
-  final RemoteAdminService remoteAdminService = RemoteAdminService();
-  String _remoteAdminUrl = '';
-  String get remoteAdminUrl => _remoteAdminUrl;
-  bool get remoteAdminRunning => remoteAdminService.isRunning;
 
   // NumLock 守护已移至 Windows runner（见文件末说明）
 
@@ -193,7 +195,6 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> _init() async {
     await _loadSettings();
-    await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
 
     // 启动网络监控：开机启动时可能网络未就绪，需要检测并重试
@@ -208,32 +209,60 @@ class PlayerController extends ChangeNotifier {
       }
     });
 
-    // 如果有选中的播放列表，加载频道；否则保持空列表，等用户添加
-    if (sourceManager.currentPlaylist != null) {
-      await refreshChannels();
-    }
+    // 频道为内置静态数据（央视频 pid 表），立即可用
+    _categories = YangshipinChannels.categories;
 
-    // 如果有选中的 EPG，加载节目单
-    if (sourceManager.currentEpg != null) {
-      await refreshEpg();
-    }
-
-    // 先启动 DLNA 投屏接收服务（不等系统值初始化，避免被阻塞）；
-    // 用户可在设置中关闭
+    // 先启动 DLNA 投屏接收服务（不等 EPG，避免被阻塞）
     if (_settings.dlnaEnabled) {
       _startDlna();
     }
-    // 启动局域网 Web 管理服务（手机扫码管理直播源/EPG）
-    if (_settings.remoteAdminEnabled) {
-      _startRemoteAdmin();
-    }
     _initSystemValues();
 
-    // 频道加载完毕后，恢复上次退出时播放的频道
+    // 后台初始化 EPG：逐个频道拉取，完成后才撤掉启动图并恢复上次频道
+    _bootStatus = '正在获取节目单…';
+    notifyListeners();
+    // 启动最多等待 12 秒：接口慢/离线时先进入播放界面，
+    // 剩余频道由后台继续拉取（下次刷新/网络恢复再补）
+    await _loadAllEpg()
+        .timeout(const Duration(seconds: 12), onTimeout: () {});
+
+    _bootReady = true;
+    _bootStatus = '';
+    notifyListeners();
+
+    // 频道/EPG 就绪后恢复上次退出时播放的频道
     await restoreLastChannel();
+
+    // 每 15 分钟增量刷新一次节目单
+    _epgRefreshTimer = Timer.periodic(YangshipinEpg.refreshInterval, (_) {
+      _loadAllEpg();
+    });
 
     notifyListeners();
   }
+
+  /// 拉取全部频道 EPG（失败不影响启动，静默忽略单个频道错误）
+  Future<void> _loadAllEpg() async {
+    _isLoadingEpg = true;
+    notifyListeners();
+    try {
+      await epg.refresh(
+        YangshipinChannels.epgPids,
+        onProgress: (done, total) {
+          // 启动图撤下后不再刷新状态文案，避免后台补拉时整树重建
+          if (!_bootReady) {
+            _bootStatus = '正在获取节目单… $done/$total';
+            notifyListeners();
+          }
+        },
+      );
+    } catch (_) {
+    } finally {
+      _isLoadingEpg = false;
+      notifyListeners();
+    }
+  }
+
 
   // ==================== 网络状态处理 ====================
 
@@ -253,20 +282,10 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  /// 网络恢复：补加载启动时因无网未载入的频道列表/EPG（已载入的不管），
-  /// 并恢复播放
+  /// 网络恢复：补加载启动时因无网未载入的节目单，并恢复播放
   Future<void> _onNetworkRestored() async {
-    // 频道列表为空且已选播放列表：启动时无网加载失败，补加载
-    if (_categories.isEmpty &&
-        sourceManager.currentPlaylist != null &&
-        !_isLoadingPlaylist) {
-      await refreshChannels();
-    }
-    // EPG 无数据且已选 EPG 源：补加载
-    if (sourceManager.cachedEpg.isEmpty &&
-        sourceManager.currentEpg != null &&
-        !_isLoadingEpg) {
-      await refreshEpg();
+    if (epg.isEmpty && !_isLoadingEpg) {
+      _loadAllEpg();
     }
     if (_state == PlayerState.waitingForNetwork) {
       if (_currentChannel != null) {
@@ -391,7 +410,7 @@ class PlayerController extends ChangeNotifier {
   bool get dlnaRunning => _dlnaRunning;
   String get dlnaEndpoint => _dlnaEndpoint;
 
-  /// 启动 DLNA 接收服务：设备名 = OMPlayer + 机器唯一标识
+  /// 启动 DLNA 接收服务：设备名 = OMTV + 机器唯一标识
   Future<void> _startDlna() async {
     if (dlnaService.isRunning) {
       // 已运行（用户刚重新打开开关）：只刷新状态展示
@@ -473,150 +492,6 @@ class PlayerController extends ChangeNotifier {
     _dlnaRunning = false;
     _dlnaEndpoint = '';
     notifyListeners();
-  }
-
-  /// 启动局域网 Web 管理服务
-  Future<void> _startRemoteAdmin() async {
-    if (remoteAdminService.isRunning) {
-      _remoteAdminUrl = remoteAdminService.endpoint;
-      notifyListeners();
-      return;
-    }
-    try {
-      await remoteAdminService.start(
-        hooks: RemoteAdminHooks(
-          getSnapshot: _remoteAdminSnapshot,
-          applySnapshot: _remoteAdminApply,
-          refresh: (kind) async {
-            if (kind == 'epgs') {
-              await refreshEpg();
-            } else {
-              await refreshChannels();
-            }
-          },
-        ),
-      );
-      _remoteAdminUrl = remoteAdminService.endpoint;
-    } catch (_) {
-      _remoteAdminUrl = '';
-    }
-    notifyListeners();
-  }
-
-  void _stopRemoteAdmin() {
-    remoteAdminService.stop();
-    _remoteAdminUrl = '';
-    notifyListeners();
-  }
-
-  Future<Map<String, dynamic>> _remoteAdminSnapshot() async {
-    final s = settings;
-    return {
-      'playlists': sourceManager.playlists.map((e) => e.toJson()).toList(),
-      'currentPlaylistId': sourceManager.currentPlaylistId,
-      'epgs': sourceManager.epgs.map((e) => e.toJson()).toList(),
-      'currentEpgId': sourceManager.currentEpgId,
-      // 手机端常用开关（不放 remoteAdminEnabled：关掉会断开自己）
-      'settings': {
-        'showClock': s.showClock,
-        'dlnaEnabled': s.dlnaEnabled,
-        'alwaysOnTop': s.alwaysOnTop,
-        'autoPlayNext': s.autoPlayNext,
-        'startFullscreen': s.startFullscreen,
-        'launchAtStartup': s.launchAtStartup,
-        'isDesktop': isDesktop,
-      },
-    };
-  }
-
-  Future<void> _remoteAdminApply(Map<String, dynamic> data) async {
-    final rawPl = (data['playlists'] as List?) ?? const [];
-    final playlists = rawPl
-        .whereType<Map>()
-        .map((m) => PlaylistSource.fromJson(
-            _normalizeRemoteItem(m.cast<String, dynamic>())))
-        .toList();
-    final newPlId = data['currentPlaylistId']?.toString();
-    final oldPlId = sourceManager.currentPlaylistId;
-    final oldPlUrl = sourceManager.currentPlaylist?.url;
-    final plExists = await sourceManager.replacePlaylists(playlists, newPlId);
-    if (plExists) {
-      final cur = sourceManager.currentPlaylist!;
-      if (cur.id != oldPlId || cur.url != oldPlUrl) {
-        await refreshChannels();
-      }
-    } else if (oldPlId != null) {
-      // 当前源被删除：清空频道
-      _categories = [];
-      _currentChannel = null;
-      notifyListeners();
-    }
-
-    final rawEpg = (data['epgs'] as List?) ?? const [];
-    final epgs = rawEpg
-        .whereType<Map>()
-        .map((m) => EpgSource.fromJson(
-            _normalizeRemoteItem(m.cast<String, dynamic>())))
-        .toList();
-    final newEpgId = data['currentEpgId']?.toString();
-    final oldEpgId = sourceManager.currentEpgId;
-    await sourceManager.replaceEpgs(epgs, newEpgId);
-    if (sourceManager.currentEpg != null &&
-        sourceManager.currentEpgId != oldEpgId) {
-      await refreshEpg();
-    }
-
-    // 手机端常用开关（settings 段缺省时跳过，兼容旧版页面的请求）
-    final rawSettings = data['settings'];
-    if (rawSettings is Map) {
-      bool? rb(String key) =>
-          rawSettings[key] is bool ? rawSettings[key] as bool : null;
-      final cur = _settings;
-
-      // 时钟走独立通道，避免整棵播放树重建（见 setShowClock 注释）
-      final clock = rb('showClock');
-      if (clock != null && clock != cur.showClock) {
-        setShowClock(clock);
-      }
-
-      final dlna = rb('dlnaEnabled') ?? cur.dlnaEnabled;
-      final autoPlayNext = rb('autoPlayNext') ?? cur.autoPlayNext;
-      final startFullscreen = rb('startFullscreen') ?? cur.startFullscreen;
-      final alwaysOnTop =
-          isDesktop ? (rb('alwaysOnTop') ?? cur.alwaysOnTop) : cur.alwaysOnTop;
-      final launchAtStartup = isDesktop
-          ? (rb('launchAtStartup') ?? cur.launchAtStartup)
-          : cur.launchAtStartup;
-      if (dlna != cur.dlnaEnabled ||
-          autoPlayNext != cur.autoPlayNext ||
-          startFullscreen != cur.startFullscreen ||
-          alwaysOnTop != cur.alwaysOnTop ||
-          launchAtStartup != cur.launchAtStartup) {
-        updateSettings(cur.copyWith(
-          dlnaEnabled: dlna,
-          autoPlayNext: autoPlayNext,
-          startFullscreen: startFullscreen,
-          alwaysOnTop: alwaysOnTop,
-          launchAtStartup: launchAtStartup,
-        ));
-      }
-    }
-    notifyListeners();
-  }
-
-  /// 手机端新建项可能缺少 addedAt 等字段，补默认值
-  Map<String, dynamic> _normalizeRemoteItem(Map<String, dynamic> j) {
-    if (j['id'] is! String || (j['id'] as String).isEmpty) {
-      j['id'] = DateTime.now().millisecondsSinceEpoch.toString();
-    }
-    if (j['name'] is! String) j['name'] = '未命名';
-    if (j['url'] is! String) j['url'] = '';
-    if (j['type'] is! String) j['type'] = 'url';
-    if (j['format'] is! String) j['format'] = 'unknown';
-    if (j['addedAt'] is! String) {
-      j['addedAt'] = DateTime.now().toIso8601String();
-    }
-    return j;
   }
 
   /// 播放投屏推送的 URL（记录投屏前频道用于断开恢复）
@@ -805,34 +680,14 @@ class PlayerController extends ChangeNotifier {
 
   // ==================== 频道加载 ====================
 
-  /// 刷新当前播放列表的频道
+  /// 重新应用内置央视频频道表（静态数据，无需网络）
   Future<void> refreshChannels() async {
-    _isLoadingPlaylist = true;
-    _lastError = null;
+    _categories = YangshipinChannels.categories;
     notifyListeners();
-    try {
-      _categories = await sourceManager.loadChannels();
-    } catch (e) {
-      _lastError = '加载频道列表失败: $e';
-    } finally {
-      _isLoadingPlaylist = false;
-      notifyListeners();
-    }
   }
 
-  /// 刷新 EPG 数据
-  Future<void> refreshEpg() async {
-    _isLoadingEpg = true;
-    notifyListeners();
-    try {
-      await sourceManager.loadEpg();
-    } catch (e) {
-      _lastError = '加载 EPG 失败: $e';
-    } finally {
-      _isLoadingEpg = false;
-      notifyListeners();
-    }
-  }
+  /// 重新拉取 EPG（设置面板「刷新节目单」按钮 / 网络恢复时使用）
+  Future<void> refreshEpg() => _loadAllEpg();
 
   // ==================== 播放控制 ====================
 
@@ -1018,6 +873,17 @@ class PlayerController extends ChangeNotifier {
     _applyWebVolume();
     // 网页频道用 CSS filter 调光（系统亮度 API 管不到 WebView2）
     _applyWebBrightness();
+    // 把当前清晰度档位同步给站点（页面已加载时立即生效）
+    _applyWebResolution();
+  }
+
+  void _applyWebResolution() {
+    final level = switch (_resolution) {
+      '1080P' => '1080',
+      '720P' => '720',
+      _ => '540',
+    };
+    _webEval?.call("window.__omSetRes && window.__omSetRes('$level')");
   }
 
   /// 注销网页控制桥（WebView 销毁前）
@@ -1044,7 +910,10 @@ class PlayerController extends ChangeNotifier {
     WinHotkeys().setWebForward(value);
     // 起播成功：把 App 音量写入页面 video（attachWebBridge 时页面
     // 可能还没有 video 元素，这里才是真正生效的时机）
-    if (value) _applyWebVolume();
+    if (value) {
+      _applyWebVolume();
+      _applyWebResolution();
+    }
     notifyListeners();
   }
 
@@ -1452,8 +1321,7 @@ class PlayerController extends ChangeNotifier {
       initTimeout =
           isHls ? const Duration(seconds: 45) : const Duration(seconds: 15);
     } else {
-      initTimeout =
-          Duration(seconds: _settings.sourceTimeoutSeconds.clamp(3, 60));
+      initTimeout = const Duration(seconds: 8);
     }
 
     // 代际已过期：静默移除监听并丢弃结果（controller 已被新代 dispose）
@@ -1729,6 +1597,90 @@ class PlayerController extends ChangeNotifier {
     return true;
   }
 
+  // ==================== 听电视 / 锁定 / 小窗 ====================
+
+  /// 听电视：只保留声音，界面切换为信息卡片（手机）或最小化窗口（桌面）
+  bool _listenMode = false;
+  bool get listenMode => _listenMode;
+
+  Future<void> enterListenMode() async {
+    if (_listenMode) return;
+    _listenMode = true;
+    // 听电视下不显示播放层，隐藏光标（网页仍在后台播放声音）
+    WinHotkeys().setCursorHide(false);
+    if (isDesktop && _settings.listenModeHideWindow) {
+      try {
+        // 只最小化，保留任务栏图标：窗口最小化后本进程不再是前台，
+        // 原生键盘钩子不会转发按键，必须留一条可见的恢复入口
+        // （任务栏点击/Alt+Tab 恢复后再点卡片退出听电视）
+        await windowManager.minimize();
+      } catch (_) {}
+    }
+    notifyListeners();
+  }
+
+  Future<void> exitListenMode() async {
+    if (!_listenMode) return;
+    _listenMode = false;
+    if (isDesktop) {
+      try {
+        await windowManager.restore();
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
+    }
+    notifyListeners();
+  }
+
+  Future<void> toggleListenMode() =>
+      _listenMode ? exitListenMode() : enterListenMode();
+
+  /// 锁定：屏蔽误触（返回键/快捷键需先解锁）
+  bool _locked = false;
+  bool get locked => _locked;
+
+  void toggleLock() {
+    _locked = !_locked;
+    OsdBus.show(_locked ? '已锁定，避免误操作' : '已解锁', icon: Icons.lock);
+    notifyListeners();
+  }
+
+  void unlock() {
+    if (!_locked) return;
+    _locked = false;
+    OsdBus.show('已解锁', icon: Icons.lock_open);
+    notifyListeners();
+  }
+
+  /// 小窗播放：桌面端缩小真实窗口并置顶；移动端由播放页缩小视频层
+  bool _miniWindow = false;
+  bool get miniWindow => _miniWindow;
+  Size _sizeBeforeMini = const Size(1280, 720);
+
+  Future<void> toggleMiniWindow() async {
+    _miniWindow = !_miniWindow;
+    if (isDesktop) {
+      try {
+        if (_miniWindow) {
+          final full = await windowManager.isFullScreen();
+          if (full) {
+            _isFullscreen = false;
+            await windowManager.setFullScreen(false);
+            await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+          }
+          _sizeBeforeMini = await windowManager.getSize();
+          await windowManager.setAlwaysOnTop(true);
+          await windowManager.setSize(const Size(420, 236));
+        } else {
+          await windowManager.setSize(_sizeBeforeMini);
+          await _applyAlwaysOnTop();
+        }
+      } catch (_) {}
+    }
+    notifyListeners();
+  }
+
+
   // ==================== 设置持久化 ====================
 
   static const _kAutoPlayNext = 'settings_auto_play_next';
@@ -1741,11 +1693,12 @@ class PlayerController extends ChangeNotifier {
   static const _kDlnaEnabled = 'settings_dlna_enabled';
   static const _kDefaultVolume = 'settings_default_volume';
   static const _kDefaultBrightness = 'settings_default_brightness';
-  static const _kSourceTimeout = 'settings_source_timeout_seconds';
   static const _kBufferSeconds = 'settings_buffer_seconds';
   static const _kUiScale = 'settings_ui_scale';
   static const _kUiScaleAuto = 'settings_ui_scale_auto';
-  static const _kRemoteAdmin = 'settings_remote_admin';
+  static const _kResolution = 'settings_resolution';
+  static const _kListenHideWindow = 'settings_listen_hide_window';
+  static const _kListenShowCard = 'settings_listen_show_card';
   static const _kFavoriteChannelIds = 'omplayer_favorite_channel_ids';
 
   Future<void> _loadSettings() async {
@@ -1763,12 +1716,13 @@ class PlayerController extends ChangeNotifier {
         dlnaEnabled: p.getBool(_kDlnaEnabled) ?? true,
         defaultVolume: p.getDouble(_kDefaultVolume) ?? 0.8,
         defaultBrightness: p.getDouble(_kDefaultBrightness) ?? 0.8,
-        sourceTimeoutSeconds: p.getInt(_kSourceTimeout) ?? 5,
         bufferSeconds: p.getInt(_kBufferSeconds) ?? 5,
         uiScale: p.getDouble(_kUiScale) ?? 1.0,
         uiScaleAuto: p.getBool(_kUiScaleAuto) ?? true,
-        remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
+        listenModeHideWindow: p.getBool(_kListenHideWindow) ?? true,
+        listenModeShowCard: p.getBool(_kListenShowCard) ?? true,
       );
+      _resolution = p.getString(_kResolution) ?? '1080P';
       _favoriteChannelIds
         ..clear()
         ..addAll(p.getStringList(_kFavoriteChannelIds) ?? const <String>[]);
@@ -1790,11 +1744,11 @@ class PlayerController extends ChangeNotifier {
       await p.setBool(_kDlnaEnabled, _settings.dlnaEnabled);
       await p.setDouble(_kDefaultVolume, _settings.defaultVolume);
       await p.setDouble(_kDefaultBrightness, _settings.defaultBrightness);
-      await p.setInt(_kSourceTimeout, _settings.sourceTimeoutSeconds);
       await p.setInt(_kBufferSeconds, _settings.bufferSeconds);
       await p.setDouble(_kUiScale, _settings.uiScale);
       await p.setBool(_kUiScaleAuto, _settings.uiScaleAuto);
-      await p.setBool(_kRemoteAdmin, _settings.remoteAdminEnabled);
+      await p.setBool(_kListenHideWindow, _settings.listenModeHideWindow);
+      await p.setBool(_kListenShowCard, _settings.listenModeShowCard);
     } catch (_) {}
   }
 
@@ -1827,8 +1781,6 @@ class PlayerController extends ChangeNotifier {
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
     final topChanged = settings.alwaysOnTop != _settings.alwaysOnTop;
     final dlnaChanged = settings.dlnaEnabled != _settings.dlnaEnabled;
-    final remoteAdminChanged =
-        settings.remoteAdminEnabled != _settings.remoteAdminEnabled;
     _settings = settings;
     _saveSettings();
     if (launchChanged && isDesktop) {
@@ -1842,13 +1794,6 @@ class PlayerController extends ChangeNotifier {
         _startDlna();
       } else {
         _stopDlna();
-      }
-    }
-    if (remoteAdminChanged) {
-      if (settings.remoteAdminEnabled) {
-        _startRemoteAdmin();
-      } else {
-        _stopRemoteAdmin();
       }
     }
     notifyListeners();
@@ -1879,8 +1824,9 @@ class PlayerController extends ChangeNotifier {
 
   /// 获取当前频道的 EPG（无真实数据时返回空，不使用模拟数据）
   List<EpgProgram> getCurrentEpg() {
-    if (_currentChannel == null) return [];
-    return sourceManager.getProgramsForChannel(_currentChannel!);
+    final ch = _currentChannel;
+    if (ch == null) return const [];
+    return epg.programsFor(ch.tvgId.isNotEmpty ? ch.tvgId : ch.id);
   }
 
   /// 当前正在播放的节目
@@ -1896,7 +1842,7 @@ class PlayerController extends ChangeNotifier {
   /// 左侧频道列表用它显示每路的"正在播"小字
   String currentProgramTitleFor(Channel channel) {
     final now = DateTime.now();
-    for (final p in sourceManager.getProgramsForChannel(channel)) {
+    for (final p in epg.programsFor(channel.tvgId.isNotEmpty ? channel.tvgId : channel.id)) {
       if (now.isAfter(p.startTime) && now.isBefore(p.endTime)) return p.title;
     }
     return '';
@@ -1911,18 +1857,68 @@ class PlayerController extends ChangeNotifier {
     return null;
   }
 
-  /// 当前频道台标（M3U tvg-logo 或 EPG icon），无则空串
-  String get currentLogo =>
-      _currentChannel == null ? '' : sourceManager.getLogoForChannel(_currentChannel!);
+  /// 当前频道台标（内置 assets/logos，由频道表指定）
+  String get currentLogo => _currentChannel?.logoUrl ?? '';
 
-  /// 视频分辨率文字，如 "1280 × 720"
+  /// 分辨率选择（1080P / 720P / 540P），切换时调用站点清晰度菜单
+  String _resolution = '1080P';
+  String get resolution => _resolution;
+
+  /// 网页内视频的实际尺寸（由注入脚本回传），用于校正分辨率文字
+  int _webVideoWidth = 0;
+  int _webVideoHeight = 0;
+  int get webVideoWidth => _webVideoWidth;
+  int get webVideoHeight => _webVideoHeight;
+
+  /// 注入脚本回传的实际视频尺寸
+  void reportWebVideoSize(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    if (_webVideoWidth == width && _webVideoHeight == height) return;
+    _webVideoWidth = width;
+    _webVideoHeight = height;
+    notifyListeners();
+  }
+
+  /// 按实际画面高度归类的清晰度文字（投屏/网页视频都适用）
+  String get actualResolutionLabel {
+    final h = _webVideoHeight;
+    if (h >= 1800) return '4K';
+    if (h >= 1000) return '1080P';
+    if (h >= 700) return '720P';
+    if (h >= 480) return '540P';
+    if (h > 0) return '${h}P';
+    return '';
+  }
+
+  /// 视频分辨率文字，如 "1920 × 1080"
   String get resolutionText {
+    if (_webPageActive && _webVideoWidth > 0 && _webVideoHeight > 0) {
+      return '$_webVideoWidth × $_webVideoHeight';
+    }
     final vc = _videoController;
     if (vc == null || !vc.value.isInitialized) return '';
     final w = vc.value.size.width.round();
     final h = vc.value.size.height.round();
     if (w <= 0 || h <= 0) return '';
+    _webVideoWidth = w;
+    _webVideoHeight = h;
     return '$w × $h';
+  }
+
+  /// 切换清晰度：持久化并对当前网页频道生效
+  Future<void> setResolution(String value) async {
+    _resolution = value;
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString(_kResolution, value);
+    } catch (_) {}
+    final level = switch (value) {
+      '1080P' => '1080',
+      '720P' => '720',
+      _ => '540',
+    };
+    _webEval?.call("window.__omSetRes && window.__omSetRes('$level')");
+    notifyListeners();
   }
 
   /// fvp 对直播流上报的时长极大（double.maxFinite 微秒 ≈ 9.2e18 秒），
@@ -2572,87 +2568,6 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  // ==================== 播放列表/EPG 源管理（代理方法） ====================
-
-  Future<void> addPlaylist(PlaylistSource source) async {
-    await sourceManager.addPlaylist(source);
-    // 首个播放列表自动选中并加载频道，让左侧列表立即可读
-    if (sourceManager.currentPlaylistId == null) {
-      await selectPlaylist(source.id);
-    } else {
-      notifyListeners();
-    }
-  }
-
-  Future<void> removePlaylist(String id) async {
-    await sourceManager.removePlaylist(id);
-    if (sourceManager.currentPlaylistId == null) {
-      _categories = [];
-    }
-    notifyListeners();
-  }
-
-  /// 编辑播放列表（名称/地址/类型）；当前源地址变化时重新加载频道
-  Future<void> editPlaylist(PlaylistSource source) async {
-    final idx =
-        sourceManager.playlists.indexWhere((p) => p.id == source.id);
-    final urlChanged =
-        idx >= 0 && sourceManager.playlists[idx].url != source.url;
-    await sourceManager.updatePlaylist(source);
-    if (urlChanged && sourceManager.currentPlaylistId == source.id) {
-      await refreshChannels();
-    } else {
-      notifyListeners();
-    }
-  }
-
-  Future<void> selectPlaylist(String? id) async {
-    await sourceManager.selectPlaylist(id);
-    if (id != null) {
-      await refreshChannels();
-    } else {
-      _categories = [];
-      notifyListeners();
-    }
-  }
-
-  Future<void> addEpg(EpgSource source) async {
-    await sourceManager.addEpg(source);
-    // 首个 EPG 源自动选中并加载节目单
-    if (sourceManager.currentEpgId == null) {
-      await selectEpg(source.id);
-    } else {
-      notifyListeners();
-    }
-  }
-
-  Future<void> removeEpg(String id) async {
-    await sourceManager.removeEpg(id);
-    notifyListeners();
-  }
-
-  /// 编辑 EPG（名称/地址）；当前源地址变化时重新加载节目单
-  Future<void> editEpg(EpgSource source) async {
-    final idx = sourceManager.epgs.indexWhere((e) => e.id == source.id);
-    final urlChanged =
-        idx >= 0 && sourceManager.epgs[idx].url != source.url;
-    await sourceManager.updateEpg(source);
-    if (urlChanged && sourceManager.currentEpgId == source.id) {
-      await refreshEpg();
-    } else {
-      notifyListeners();
-    }
-  }
-
-  Future<void> selectEpg(String? id) async {
-    await sourceManager.selectEpg(id);
-    if (id != null) {
-      await refreshEpg();
-    } else {
-      notifyListeners();
-    }
-  }
-
   // ==================== NumLock 状态守护（Windows runner 层实现） ====================
   // Flutter Windows 引擎在窗口初始化时会把 NumLock 意外同步为关闭。
   // 该修复必须在原生 runner 的 UI 线程做（Dart FFI 线程没有消息队列，
@@ -2718,7 +2633,8 @@ class PlayerController extends ChangeNotifier {
     _disposeVideoController();
     WakelockPlus.disable();
     dlnaService.stop();
-    remoteAdminService.stop();
+    _epgRefreshTimer?.cancel();
+    epg.dispose();
     reservationManager.dispose();
     clockVisible.dispose();
     super.dispose();
