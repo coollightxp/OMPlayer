@@ -126,7 +126,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.177';
+  static const String _appVersion = '1.0.178';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -135,6 +135,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 对话框内部 StatefulBuilder 的刷新句柄：遥控器 ←/→ 改焦点后
   /// 通过它只重建对话框（外层 setState 不会触发 showDialog 内容重建）
   StateSetter? _exitDialogRefresh;
+
+  // 关机确认卡片：60 秒倒计时 + 取消/关机按钮，倒计时结束自动关机，
+  // 默认聚焦「取消」避免误关机（对标 OMTV）
+  bool _shutdownDialogOpen = false;
+  int _shutdownFocusIndex = 0; // 0=取消, 1=关机
+  StateSetter? _shutdownRefresh;
+  int _shutdownCountdown = 60;
+  Timer? _shutdownTimer;
 
   // 两个侧边面板的状态句柄：遥控器/键盘导航由本页统一分发
   // （HardwareKeyboard 与 Windows 低级钩子走同一入口）
@@ -443,6 +451,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _menuLongTimer?.cancel();
     _seekOsdHideTimer?.cancel();
     _msgOsdTimer?.cancel();
+    _shutdownTimer?.cancel();
     OsdBus.message.removeListener(_onBusOsd);
     _rootFocusNode.dispose();
     _controllerRef?.removeListener(_onControllerChanged);
@@ -869,6 +878,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 安卓返回键/遥控器返回处理（PopScope 拦截后调用）：
   /// 按层级关闭 设置→投屏→面板→全屏；都没有时弹退出确认
   Future<void> _handleBackPressed() async {
+    // 关机确认卡片：返回键 = 取消关机
+    if (_shutdownDialogOpen) {
+      _confirmShutdown(false);
+      return;
+    }
     // 重入守卫：退出确认框已在显示时直接忽略，
     // 防止连按返回弹出两个路由、关闭时连带弹掉播放器（黑屏）
     if (_exitDialogOpen) return;
@@ -1013,14 +1027,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         _toggleSettings();
         break;
       case 'shutdown':
-        final isWindows =
-            !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
-        _showOsd(
-          isWindows ? '5 秒后将关闭系统，可运行 shutdown /a 取消' : '即将关闭系统…',
-          icon: Icons.power_settings_new,
-          duration: const Duration(seconds: 5),
-        );
-        await shutdownSystem();
+        // 不直接执行 shutdown：先弹应用内关机卡片（60 秒倒计时，
+        // 默认聚焦「取消」），确认后才关机（对标 OMTV）
+        await _showShutdownDialog();
         break;
     }
   }
@@ -1136,6 +1145,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         k == LogicalKeyboardKey.gameButtonA;
     final isLr = k == LogicalKeyboardKey.arrowLeft ||
         k == LogicalKeyboardKey.arrowRight;
+    // 关机确认卡片有独立按键逻辑，优先于退出框处理
+    if (_shutdownDialogOpen) {
+      return _handleShutdownDialogKey(k, isDown, isUp);
+    }
     // 退出确认对话框有遥控器友好界面，走专用逻辑
     if (_exitDialogOpen) {
       return _handleExitDialogKey(k, isDown, isUp);
@@ -1236,6 +1249,212 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return true;
     }
     return false;
+  }
+
+  /// 关机确认卡片：60 秒秒倒计时 + 取消/关机按钮，默认聚焦「取消」。
+  /// 倒计时到 0 自动执行关机；按返回/Esc/菜单键取消。
+  /// Windows 端不再用系统 shutdown 倒计时（系统会弹「几分钟后关机」提示框），
+  /// 改为应用内倒计时后直接 `shutdown /s /t 0 /f`（对标 OMTV）
+  Future<void> _showShutdownDialog() async {
+    _shutdownFocusIndex = 0;
+    _shutdownCountdown = 60;
+    _shutdownDialogOpen = true;
+    _shutdownTimer?.cancel();
+    _shutdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!_shutdownDialogOpen) return;
+      if (_shutdownCountdown > 0) {
+        _shutdownCountdown--;
+        _shutdownRefresh?.call(() {});
+      }
+      if (_shutdownCountdown <= 0) {
+        _confirmShutdown(true);
+      }
+    });
+    final result = await showDialog<String?>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            _shutdownRefresh = setDialogState;
+            final double panelScale =
+                (MediaQuery.sizeOf(ctx).width / 1280).clamp(0.72, 1.0);
+            // autofocus：网页频道的 WebView 平台视图不跟随 Flutter 焦点，
+            // 卡片打开时把焦点拉回 Flutter，遥控器按键才收得到
+            return Focus(
+              autofocus: true,
+              child: Dialog(
+                backgroundColor: const Color(0xFF12151A),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: const BorderSide(color: Colors.white24),
+                ),
+                child: SizedBox(
+                  width: 360 * panelScale,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 30, vertical: 24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.power_settings_new,
+                                  color: Colors.orangeAccent, size: 26),
+                              const SizedBox(width: 8),
+                              const Text(
+                                '关机倒计时',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          // 倒计时数字：大号显示，最后 10 秒变红
+                          Text(
+                            '$_shutdownCountdown',
+                            style: TextStyle(
+                              color: _shutdownCountdown <= 10
+                                  ? Colors.redAccent
+                                  : Colors.blueAccent,
+                              fontSize: 44,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _shutdownButton(
+                                label: '取消',
+                                color: Colors.white70,
+                                selected: _shutdownFocusIndex == 0,
+                                onTap: () => _confirmShutdown(false),
+                              ),
+                              const SizedBox(width: 18),
+                              _shutdownButton(
+                                label: '关机',
+                                color: Colors.orangeAccent,
+                                selected: _shutdownFocusIndex == 1,
+                                onTap: () => _confirmShutdown(true),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    _shutdownTimer?.cancel();
+    _shutdownTimer = null;
+    _shutdownDialogOpen = false;
+    _shutdownRefresh = null;
+    // 卡片确认后才真正关机（系统侧 t=0 立即执行，不再弹系统倒计时框）
+    if (result == 'confirm' && mounted) {
+      await shutdownSystem();
+    }
+  }
+
+  /// 关机卡片里的一个按钮（高亮由全局按键维护，不自建 FocusNode）
+  Widget _shutdownButton({
+    required String label,
+    required Color color,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) {
+        final idx = label == '取消' ? 0 : 1;
+        if (_shutdownFocusIndex != idx) {
+          _shutdownFocusIndex = idx;
+          _shutdownRefresh?.call(() {});
+        }
+      },
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 100,
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: selected
+                ? color.withOpacity(0.22)
+                : Colors.white.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: selected ? color : Colors.white24,
+              width: selected ? 2.0 : 1.0,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? color : Colors.white70,
+              fontSize: 16,
+              fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 关机确认卡片按键处理：
+  /// ←/→ 在「取消」「关机」间切换；OK 确认当前选中；返回/Esc/菜单键 = 取消
+  bool _handleShutdownDialogKey(
+      LogicalKeyboardKey k, bool isDown, bool isUp) {
+    final isOk = k == LogicalKeyboardKey.select ||
+        k == LogicalKeyboardKey.enter ||
+        k == LogicalKeyboardKey.numpadEnter ||
+        k == LogicalKeyboardKey.gameButtonA;
+    if (isOk) {
+      if (isDown && _shutdownDialogOpen) {
+        _confirmShutdown(_shutdownFocusIndex == 1);
+      }
+      return true;
+    }
+    if (k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight) {
+      if (isDown) {
+        _shutdownFocusIndex = _shutdownFocusIndex == 0 ? 1 : 0;
+        _shutdownRefresh?.call(() {});
+      }
+      return true;
+    }
+    // 上下键消费掉，防止穿透切台
+    if (k == LogicalKeyboardKey.arrowUp ||
+        k == LogicalKeyboardKey.arrowDown) {
+      return true;
+    }
+    if (k == LogicalKeyboardKey.contextMenu ||
+        k == LogicalKeyboardKey.escape) {
+      if (isDown && _shutdownDialogOpen) _confirmShutdown(false);
+      return true;
+    }
+    return false;
+  }
+
+  /// 确认或取消关机：关卡片并记下结果，调用方据此执行关机
+  void _confirmShutdown(bool confirm) {
+    if (!_shutdownDialogOpen) return;
+    _shutdownDialogOpen = false;
+    _shutdownTimer?.cancel();
+    _shutdownTimer = null;
+    Navigator.of(context).pop<String?>(confirm ? 'confirm' : null);
   }
 
   /// 侧边面板（频道列表/EPG）是否有一个打开：打开期间方向键与 OK
@@ -2214,6 +2433,19 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
           _menuHeld = false;
           _menuLongTimer?.cancel();
           _menuLongFired = false;
+        }
+        return;
+      }
+      // 关机确认卡片：←/→ 切换「取消」「关机」，OK 确认当前选中，
+      // 返回/菜单取消（与 _handleShutdownDialogKey 逻辑一致，原生钩子路径）
+      if (_shutdownDialogOpen) {
+        if (action == 'left' || action == 'right') {
+          _shutdownFocusIndex = _shutdownFocusIndex == 0 ? 1 : 0;
+          _shutdownRefresh?.call(() {});
+        } else if (action == 'ok') {
+          _confirmShutdown(_shutdownFocusIndex == 1);
+        } else if (action == 'back' || action == 'esc' || action == 'menu') {
+          _confirmShutdown(false);
         }
         return;
       }
