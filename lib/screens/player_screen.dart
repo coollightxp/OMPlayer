@@ -122,7 +122,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.167';
+  static const String _appVersion = '1.0.168';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
@@ -791,6 +791,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                         }
                       },
                     ),
+
+                  // 启动画面：配置、节目列表、EPG 读入期间盖住全屏，
+                  // 读完后自动消失（详见 PlayerController.bootReady）
+                  if (!controller.bootReady)
+                    _BootSplash(status: controller.bootStatus),
                 ],
               );
             },
@@ -5039,4 +5044,91 @@ class _SniffCandidate {
     required this.referer,
     required this.ua,
   }) : last = DateTime.now();
+}
+
+/// 启动画面：初始化配置、节目列表、EPG 期间覆盖全屏显示启动 logo，
+/// 全部读入后（[PlayerController.bootReady]）自动消失
+class _BootSplash extends StatelessWidget {
+  final String status;
+  const _BootSplash({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    // logo 宽度按屏宽缩放并限幅；标题用 Flutter Text 渲染（矢量、任意
+    // 分辨率都清晰），不依赖位图里的文字
+    final logoW = (MediaQuery.sizeOf(context).width * 0.15).clamp(110.0, 300.0);
+    final titleSize = (logoW * 0.26).clamp(22.0, 72.0);
+    // 整体上移一点，图像再额外上移一点，和文字拉开距离
+    final lift = MediaQuery.sizeOf(context).height * 0.045;
+    final imgLift = logoW * 0.12;
+    return Positioned.fill(
+      child: ColoredBox(
+        color: Colors.black,
+        child: Stack(
+          children: [
+            Center(
+              child: Transform.translate(
+                offset: Offset(0, -(lift + imgLift)),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: logoW,
+                      child: Image.asset(
+                        'branding/splash.png',
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      ),
+                    ),
+                    SizedBox(height: logoW * 0.10 + imgLift),
+                    Padding(
+                      // 抵消末字字距造成的视觉左偏
+                      padding: EdgeInsets.only(left: titleSize * 0.14),
+                      child: Text(
+                        '欧米直播',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: titleSize,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: titleSize * 0.14,
+                          height: 1.12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 44,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      color: Colors.blueAccent,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    status.isEmpty ? '正在启动…' : status,
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

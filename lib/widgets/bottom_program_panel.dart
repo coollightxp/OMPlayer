@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/epg_program.dart';
+import '../services/channel_logo.dart';
 import '../services/player_controller.dart';
 import 'scaled_panel.dart';
 
@@ -234,7 +235,23 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           child: Icon(Icons.live_tv,
               color: Colors.white54, size: scale < 1 ? 46 : 64),
         );
-    if (logo.isEmpty) return placeholder();
+    if (logo.isEmpty) {
+      // 源里没给 tvg-logo：用内置台标按频道名匹配，仍没有则占位
+      final asset = c.currentChannel == null
+          ? ''
+          : ChannelLogo.assetFor(c.currentChannel!);
+      if (asset.isEmpty) return placeholder();
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
+        child: Image.asset(
+          asset,
+          width: size,
+          height: size,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => placeholder(),
+        ),
+      );
+    }
     return ClipRRect(
       borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
       child: Image.network(

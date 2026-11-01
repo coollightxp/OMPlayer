@@ -16,11 +16,6 @@ import 'services/web_env.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 启动前清理 WebView2 缓存，避免旧缓存导致网页频道加载慢/卡旧画面
-  cleanWebView2Cache();
-  // 创建自定义 WebView2 环境，禁用磁盘缓存 + 允许无手势自动播放
-  await initWebViewEnvironment();
-
   // 播放缓冲设置需在注册 MDK 后端前读取（仅启动时应用一次）
   // 注意：不能让 SharedPreferences 失败阻塞 runApp——平台通道一失败
   // main 直接死掉就是永久白屏（安卓实测 NoSuchMethodError 时整机白屏
@@ -28,16 +23,29 @@ void main() async {
   var bufferSeconds = 5;
   var launchAtStartup = false;
   var alwaysOnTop = true;
+  var webEnabled = true;
   var prefsOk = false;
   try {
     final prefs = await SharedPreferences.getInstance();
     bufferSeconds = prefs.getInt('settings_buffer_seconds') ?? 5;
     launchAtStartup = prefs.getBool('settings_launch_at_startup') ?? false;
     alwaysOnTop = prefs.getBool('settings_always_on_top') ?? true;
+    webEnabled = prefs.getBool('settings_web_enabled') ?? true;
     prefsOk = true;
   } catch (e) {
     debugPrint('SharedPreferences load failed, using defaults: $e');
   }
+
+  // 仅在「网页直播支持」开启时才清理缓存并创建 WebView2 运行时环境。
+  // 关闭时不调用、不创建，避免不支持 WebView2 的系统（如精简版
+  // Windows 7/8、缺运行时的 Win10）在启动或退出时崩溃
+  if (webEnabled) {
+    // 启动前清理 WebView2 缓存，避免旧缓存导致网页频道加载慢/卡旧画面
+    cleanWebView2Cache();
+    // 创建自定义 WebView2 环境，禁用磁盘缓存 + 允许无手势自动播放
+    await initWebViewEnvironment();
+  }
+
   // Windows/Linux 注册 MDK 视频播放后端（video_player 官方不支持桌面端）
   registerFvp(bufferSeconds: bufferSeconds);
 

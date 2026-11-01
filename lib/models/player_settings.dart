@@ -49,6 +49,11 @@ class PlayerSettings {
   /// 局域网 Web 管理服务开关（手机扫码管理直播源/EPG）
   final bool remoteAdminEnabled;
 
+  /// 网页直播支持开关（默认开）。
+  /// 关闭后启动时不清理/不创建 WebView2 运行时环境，网页频道
+  /// （webview:// 源）不可用——用于不支持 WebView2 的系统避免退出崩溃
+  final bool webEnabled;
+
   const PlayerSettings({
     this.autoPlayNext = true,
     this.defaultVolume = 0.8,
@@ -66,6 +71,7 @@ class PlayerSettings {
     this.uiScale = 1.0,
     this.uiScaleAuto = true,
     this.remoteAdminEnabled = true,
+    this.webEnabled = true,
   });
 
   PlayerSettings copyWith({
@@ -85,6 +91,7 @@ class PlayerSettings {
     double? uiScale,
     bool? uiScaleAuto,
     bool? remoteAdminEnabled,
+    bool? webEnabled,
   }) {
     return PlayerSettings(
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -104,6 +111,7 @@ class PlayerSettings {
       uiScale: uiScale ?? this.uiScale,
       uiScaleAuto: uiScaleAuto ?? this.uiScaleAuto,
       remoteAdminEnabled: remoteAdminEnabled ?? this.remoteAdminEnabled,
+      webEnabled: webEnabled ?? this.webEnabled,
     );
   }
 }

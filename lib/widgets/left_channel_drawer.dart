@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/channel.dart';
+import '../services/channel_logo.dart';
 import '../services/osd_bus.dart';
 import '../services/player_controller.dart';
 import 'scaled_panel.dart';
@@ -702,6 +703,25 @@ class _ChannelTile extends StatelessWidget {
     this.keyboardSelected = false,
   });
 
+  /// 列表台标：节目源 tvg-logo 优先，其次内置台标，都没有用默认图标
+  Widget _buildLogo() {
+    Widget fallback() => const Icon(Icons.tv, color: Colors.white70, size: 18);
+    if (channel.logoUrl.isNotEmpty) {
+      return Image.network(
+        channel.logoUrl,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => fallback(),
+      );
+    }
+    final asset = ChannelLogo.assetFor(channel);
+    if (asset.isEmpty) return fallback();
+    return Image.asset(
+      asset,
+      fit: BoxFit.contain,
+      errorBuilder: (_, __, ___) => fallback(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return InkWell(
@@ -751,11 +771,8 @@ class _ChannelTile extends StatelessWidget {
                 color: isSelected ? Colors.blueAccent : Colors.white10,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(
-                Icons.tv,
-                color: isSelected ? Colors.white : Colors.white70,
-                size: 18,
-              ),
+              clipBehavior: Clip.antiAlias,
+              child: _buildLogo(),
             ),
             const SizedBox(width: 8),
             Expanded(

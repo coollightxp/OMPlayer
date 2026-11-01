@@ -135,6 +135,22 @@ class PlayerController extends ChangeNotifier {
   String? _lastError;
   bool _isFullscreen = false;
 
+  /// 启动初始化是否完成（配置、节目列表、EPG 全部读入后才置 true）。
+  /// 播放页据此显示启动画面，避免先闪一下空白/空频道列表
+  bool _bootReady = false;
+  /// 启动画面上的状态文案（"正在读取节目列表…"等）
+  String _bootStatus = '正在启动…';
+
+  bool get bootReady => _bootReady;
+  String get bootStatus => _bootStatus;
+
+  /// 更新启动状态文案（启动画面正在显示，通知即可刷新）
+  void _boot(String status) {
+    if (_bootStatus == status) return;
+    _bootStatus = status;
+    notifyListeners();
+  }
+
   // 录制状态（fvp 原生录制 / 网页 MediaRecorder 录制）
   bool _isRecording = false;
   String? _recordPath;
@@ -192,7 +208,9 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> _init() async {
+    _boot('正在读取设置…');
     await _loadSettings();
+    _boot('正在加载节目源…');
     await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
 
@@ -210,11 +228,13 @@ class PlayerController extends ChangeNotifier {
 
     // 如果有选中的播放列表，加载频道；否则保持空列表，等用户添加
     if (sourceManager.currentPlaylist != null) {
+      _boot('正在读取节目列表…');
       await refreshChannels();
     }
 
     // 如果有选中的 EPG，加载节目单
     if (sourceManager.currentEpg != null) {
+      _boot('正在读取节目单…');
       await refreshEpg();
     }
 
@@ -230,8 +250,11 @@ class PlayerController extends ChangeNotifier {
     _initSystemValues();
 
     // 频道加载完毕后，恢复上次退出时播放的频道
+    _boot('正在恢复上次播放的频道…');
     await restoreLastChannel();
 
+    // 启动初始化完成：撤掉启动画面
+    _bootReady = true;
     notifyListeners();
   }
 
@@ -1050,6 +1073,12 @@ class PlayerController extends ChangeNotifier {
 
   /// 打开网页频道（TVBox webview:// 链接，如央视网网站播放器）
   Future<void> _openWebPageChannel(Channel channel) async {
+    // 网页直播支持已关闭：不创建/调用 WebView，给一条提示后保持原状
+    if (!_settings.webEnabled) {
+      OsdBus.show('网页直播支持已关闭，可在 设置 → 系统 中开启',
+          icon: Icons.language);
+      return;
+    }
     // 已在播放同一个网页频道：保持现状（网页已在前台/后台缓冲中），
     // 不要把前景状态重置回黑屏缓冲、重新走一遍探测流程
     if (_webPageActive && _currentChannel?.id == channel.id) {
@@ -1746,6 +1775,7 @@ class PlayerController extends ChangeNotifier {
   static const _kUiScale = 'settings_ui_scale';
   static const _kUiScaleAuto = 'settings_ui_scale_auto';
   static const _kRemoteAdmin = 'settings_remote_admin';
+  static const _kWebEnabled = 'settings_web_enabled';
   static const _kFavoriteChannelIds = 'omplayer_favorite_channel_ids';
 
   Future<void> _loadSettings() async {
@@ -1768,6 +1798,7 @@ class PlayerController extends ChangeNotifier {
         uiScale: p.getDouble(_kUiScale) ?? 1.0,
         uiScaleAuto: p.getBool(_kUiScaleAuto) ?? true,
         remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
+        webEnabled: p.getBool(_kWebEnabled) ?? true,
       );
       _favoriteChannelIds
         ..clear()
@@ -1795,6 +1826,7 @@ class PlayerController extends ChangeNotifier {
       await p.setDouble(_kUiScale, _settings.uiScale);
       await p.setBool(_kUiScaleAuto, _settings.uiScaleAuto);
       await p.setBool(_kRemoteAdmin, _settings.remoteAdminEnabled);
+      await p.setBool(_kWebEnabled, _settings.webEnabled);
     } catch (_) {}
   }
 
@@ -1829,6 +1861,7 @@ class PlayerController extends ChangeNotifier {
     final dlnaChanged = settings.dlnaEnabled != _settings.dlnaEnabled;
     final remoteAdminChanged =
         settings.remoteAdminEnabled != _settings.remoteAdminEnabled;
+    final webChanged = settings.webEnabled != _settings.webEnabled;
     _settings = settings;
     _saveSettings();
     if (launchChanged && isDesktop) {
@@ -1849,6 +1882,14 @@ class PlayerController extends ChangeNotifier {
         _startRemoteAdmin();
       } else {
         _stopRemoteAdmin();
+      }
+    }
+    if (webChanged) {
+      if (settings.webEnabled) {
+        // 打开：按需创建 WebView2 运行时环境（启动时关闭过则此时才创建）
+        initWebViewEnvironment();
+      } else if (_webPageActive) {
+        exitWebPage();
       }
     }
     notifyListeners();

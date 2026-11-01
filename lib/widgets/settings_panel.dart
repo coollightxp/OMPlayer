@@ -131,7 +131,12 @@ class _SettingsPanelState extends State<SettingsPanel>
         child: ScaledPanel(
           alignment: Alignment.bottomCenter,
           scale: panelScaleOf(context),
-          child: Material(
+          // 限宽居中：设置面板不再通栏铺满，宽屏下保持 760 逻辑像素以内
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: Material(
             color: Colors.black87,
             elevation: 24,
             borderRadius:
@@ -212,6 +217,8 @@ class _SettingsPanelState extends State<SettingsPanel>
                 ),
                 );
               }),
+            ),
+              ),
             ),
           ),
         ),
@@ -1024,6 +1031,29 @@ class _SystemSettingsTab extends StatelessWidget {
                     style: TextStyle(color: Colors.white54, fontSize: 12)),
                 value: showClock,
                 onChanged: controller.setShowClock,
+                activeColor: Colors.blueAccent,
+              ),
+            ),
+            // 网页直播支持：关闭后启动不加载 WebView2 运行时环境，
+            // 网页频道（webview:// 源）不可用
+            ListTile(
+              leading: Icon(Icons.language,
+                  color: s.webEnabled
+                      ? Colors.greenAccent
+                      : Colors.white54),
+              title: const Text('网页直播支持',
+                  style: TextStyle(color: Colors.white, fontSize: 15)),
+              subtitle: Text(
+                s.webEnabled
+                    ? '已开启：支持 webview:// 网页直播源\n关闭后重启不再加载 WebView2（不支持的系统可避免出错）'
+                    : '已关闭：启动不加载 WebView2 运行时，网页直播源不可用；重新开启后恢复',
+                style: const TextStyle(
+                    color: Colors.white54, fontSize: 12),
+              ),
+              trailing: Switch(
+                value: s.webEnabled,
+                onChanged: (v) => controller
+                    .updateSettings(s.copyWith(webEnabled: v)),
                 activeColor: Colors.blueAccent,
               ),
             ),
