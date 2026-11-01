@@ -194,7 +194,7 @@ class _SettingsPanelState extends State<SettingsPanel>
     // 面板内所有可聚焦节点的树顺序（页签栏在最前，内容自上而下）
     final stops = <FocusNode>[];
     for (final n in _panelFocusNode.traversalDescendants) {
-      if (n.attached && n.canRequestFocus && n.context != null) stops.add(n);
+      if (n.canRequestFocus && n.context != null) stops.add(n);
     }
     if (stops.isEmpty) return false;
 
