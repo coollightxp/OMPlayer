@@ -128,9 +128,8 @@ class _SettingsPanelState extends State<SettingsPanel>
   }
 
   /// 上下键改为在设置内容里纵向移动焦点。
-  /// 滑块（Slider）自身把上下键当成数值增减吃掉了，焦点一旦落在滑块上
-  /// 就跳不出来；这里在按键进入焦点树之前截获上下键，按几何方向移动焦点，
-  /// 左右键仍交给控件自己（滑块调数值、顶部页签切页）。
+  /// 用遍历顺序（列表自上而下的阅读顺序）走位，不依赖几何方向计算；
+  /// 到顶部后落到页签栏，页签栏上左右键切页。
   bool _onVerticalKey(KeyEvent event) {
     if (!widget.isOpen) return false;
     // 设置里弹出对话框（编辑源、二维码等）时放行：焦点属于对话框，
@@ -142,27 +141,48 @@ class _SettingsPanelState extends State<SettingsPanel>
     if (!isUp && key != LogicalKeyboardKey.arrowDown) return false;
     final focus = FocusManager.instance.primaryFocus;
     if (focus == null) return false;
-    // 焦点还停在面板外（刚打开、焦点在播放页根节点）：从顶部页签进入，
-    // 否则按根节点的整屏矩形做方向定位会找不到目标
+    // 焦点还停在面板外（刚打开、焦点在播放页根节点）：从顶部页签进入
     if (!_focusInsidePanel(focus)) {
       _tabFocus.requestFocus();
       return true;
     }
+    // 已在页签栏上：往上不再移动，往下进入当前页内容
+    if (focus == _tabFocus) {
+      if (!isUp) {
+        focus.focusInDirection(TraversalDirection.down);
+        _afterFocusMove(null, false);
+      }
+      return true;
+    }
     focus.focusInDirection(
         isUp ? TraversalDirection.up : TraversalDirection.down);
-    // 焦点移动后把目标滚到可视区（设置内容是可滚动的长列表）
-    final target = FocusManager.instance.primaryFocus?.context;
-    if (target != null && target.mounted) {
-      Scrollable.ensureVisible(
-        target,
-        duration: const Duration(milliseconds: 120),
-        alignmentPolicy: isUp
-            ? ScrollPositionAlignmentPolicy.keepVisibleAtStart
-            : ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
-      );
-    }
+    _afterFocusMove(focus, isUp);
     // 无论是否真的移动了焦点都吞掉该键，避免落到滑块上继续改数值
     return true;
+  }
+
+  /// 焦点变更在微任务后才生效，这里下一帧检查是否真的移动了：
+  /// 向上没得可走（已在内容区顶部）就回到页签栏
+  void _afterFocusMove(FocusNode? before, bool isUp) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (before != null && before.hasFocus) {
+        if (isUp) _tabFocus.requestFocus();
+        return;
+      }
+      _scrollFocusedIntoView();
+    });
+  }
+
+  /// 把当前焦点滚到可视区（设置内容是可滚动的长列表）
+  void _scrollFocusedIntoView() {
+    final target = FocusManager.instance.primaryFocus?.context;
+    if (target == null || !target.mounted) return;
+    Scrollable.ensureVisible(
+      target,
+      duration: const Duration(milliseconds: 120),
+      alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+    );
   }
 
   /// 当前焦点是否位于设置面板内部
@@ -243,10 +263,14 @@ class _SettingsPanelState extends State<SettingsPanel>
                                 ),
                               ),
                               const Spacer(),
-                              IconButton(
-                                icon: const Icon(Icons.close,
-                                    color: Colors.white70),
-                                onPressed: widget.onClose,
+                              // 关闭按钮只给鼠标用（遥控器用 Esc 关闭），
+                              // 不参与焦点遍历，保证内容区往上走落到页签栏
+                              ExcludeFocus(
+                                child: IconButton(
+                                  icon: const Icon(Icons.close,
+                                      color: Colors.white70),
+                                  onPressed: widget.onClose,
+                                ),
                               ),
                             ],
                           ),
@@ -276,18 +300,35 @@ class _SettingsPanelState extends State<SettingsPanel>
                         _tabFocus.requestFocus();
                         return KeyEventResult.handled;
                       },
-                      child: TabBar(
-                        controller: _tabController,
-                        indicatorColor: Colors.blueAccent,
-                        labelColor: Colors.blueAccent,
-                        unselectedLabelColor: Colors.white54,
-                        tabs: const [
-                          Tab(text: '播放列表'),
-                          Tab(text: 'EPG'),
-                          Tab(text: '播放器'),
-                          Tab(text: '系统'),
-                          Tab(text: '说明'),
-                        ],
+                      child: ListenableBuilder(
+                        listenable: _tabFocus,
+                        builder: (context, child) {
+                          // 焦点在页签栏时给一圈描边，遥控器用户能看清
+                          // 焦点已经上来了，此时左右键切页
+                          return Container(
+                            decoration: _tabFocus.hasFocus
+                                ? BoxDecoration(
+                                    border: Border.all(
+                                        color: Colors.white70, width: 1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  )
+                                : null,
+                            child: child,
+                          );
+                        },
+                        child: TabBar(
+                          controller: _tabController,
+                          indicatorColor: Colors.blueAccent,
+                          labelColor: Colors.blueAccent,
+                          unselectedLabelColor: Colors.white54,
+                          tabs: const [
+                            Tab(text: '播放列表'),
+                            Tab(text: 'EPG'),
+                            Tab(text: '播放器'),
+                            Tab(text: '系统'),
+                            Tab(text: '说明'),
+                          ],
+                        ),
                       ),
                     ),
                     const Divider(color: Colors.white12, height: 1),
@@ -958,27 +999,16 @@ class _PlayerSettingsTab extends StatelessWidget {
                   color: s.uiScaleAuto ? Colors.white38 : Colors.white,
                   fontSize: 15)),
           enabled: !s.uiScaleAuto,
-          subtitle: SliderTheme(
-            data: SliderThemeData(
-              activeTrackColor: Colors.blueAccent,
-              inactiveTrackColor: Colors.white24,
-              thumbColor: Colors.blueAccent,
-              overlayColor: Colors.blueAccent.withOpacity(0.2),
-              disabledActiveTrackColor: Colors.white24,
-              disabledThumbColor: Colors.white38,
-            ),
-            child: Slider(
-              // 自动模式下展示当前生效值但禁止拖动
-              value: scale.clamp(0.8, 3.0),
-              min: 0.8,
-              max: 3.0,
-              divisions: 22,
-              label: '${scale.toStringAsFixed(1)}x',
-              onChanged: s.uiScaleAuto
-                  ? null
-                  : (v) =>
-                      controller.updateSettings(s.copyWith(uiScale: v)),
-            ),
+          subtitle: _NavSlider(
+            // 自动模式下展示当前生效值但禁止拖动
+            value: scale.clamp(0.8, 3.0).toDouble(),
+            min: 0.8,
+            max: 3.0,
+            divisions: 22,
+            label: '${scale.toStringAsFixed(1)}x',
+            onChanged: s.uiScaleAuto
+                ? null
+                : (v) => controller.updateSettings(s.copyWith(uiScale: v)),
           ),
         ),
       ],
@@ -1039,23 +1069,127 @@ class _PlayerSettingsTab extends StatelessWidget {
                   style: const TextStyle(
                       color: Colors.white54, fontSize: 12)),
             ),
-          SliderTheme(
+          _NavSlider(
+            value: clamped.toDouble(),
+            min: min,
+            max: max,
+            divisions: divisions,
+            label: label,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ==================== 遥控器可用的滑块 ====================
+
+/// 键盘/遥控器友好的滑块。
+/// Flutter 自带的 Slider 会把上下方向键当成数值增减（并且它自己持有焦点，
+/// 比外层更靠近焦点树），结果焦点落在滑块上就跳不出来、按上下还会改值。
+/// 这里给滑块套一个自建焦点节点：内层 Slider 用 ExcludeFocus 排除出焦点树，
+/// 左右键由外层自己调节数值，上下键回到外层（由设置面板统一做焦点移动）。
+class _NavSlider extends StatefulWidget {
+  const _NavSlider({
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.divisions,
+    required this.label,
+    required this.onChanged,
+  });
+
+  final double value;
+  final double min;
+  final double max;
+  final int divisions;
+  final String label;
+  final ValueChanged<double>? onChanged;
+
+  @override
+  State<_NavSlider> createState() => _NavSliderState();
+}
+
+class _NavSliderState extends State<_NavSlider> {
+  final FocusNode _focusNode = FocusNode(debugLabel: 'settingsSlider');
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode.addListener(_onFocusChanged);
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_onFocusChanged);
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// 一格（divisions 均分）的步长
+  double get _step => widget.divisions > 0
+      ? (widget.max - widget.min) / widget.divisions
+      : 0.01;
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (widget.onChanged == null) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key != LogicalKeyboardKey.arrowLeft &&
+        key != LogicalKeyboardKey.arrowRight) {
+      return KeyEventResult.ignored;
+    }
+    final next = (widget.value +
+            (key == LogicalKeyboardKey.arrowRight ? _step : -_step))
+        .clamp(widget.min, widget.max)
+        .toDouble();
+    widget.onChanged!(next);
+    return KeyEventResult.handled;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.onChanged != null;
+    final focused = _focusNode.hasFocus;
+    return Focus(
+      focusNode: _focusNode,
+      onKeyEvent: _onKey,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        decoration: focused
+            ? BoxDecoration(
+                border: Border.all(
+                    color: enabled ? Colors.blueAccent : Colors.white38),
+                borderRadius: BorderRadius.circular(8),
+              )
+            : null,
+        child: ExcludeFocus(
+          child: SliderTheme(
             data: SliderThemeData(
               activeTrackColor: Colors.blueAccent,
               inactiveTrackColor: Colors.white24,
               thumbColor: Colors.blueAccent,
               overlayColor: Colors.blueAccent.withOpacity(0.2),
+              disabledActiveTrackColor: Colors.white24,
+              disabledThumbColor: Colors.white38,
             ),
             child: Slider(
-              value: clamped,
-              min: min,
-              max: max,
-              divisions: divisions,
-              label: label,
-              onChanged: onChanged,
+              value: widget.value,
+              min: widget.min,
+              max: widget.max,
+              divisions: widget.divisions,
+              label: widget.label,
+              onChanged: widget.onChanged,
             ),
           ),
-        ],
+        ),
       ),
     );
   }
