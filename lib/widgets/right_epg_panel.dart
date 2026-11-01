@@ -212,8 +212,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
 
   @override
   Widget build(BuildContext context) {
-    // 面板宽度：与左侧频道抽屉一致的窄屏策略。手机横屏/电视盒子按屏宽
-    // 40% 加宽（原固定 0.78 只有 265 逻辑像素，节目名看不全）
+    // 面板宽度：与左侧频道抽屉一致，手机横屏/电视盒子左中右三等分
     final size = MediaQuery.of(context).size;
     final shortest = size.shortestSide;
     final double designW;
@@ -222,7 +221,8 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     } else if (shortest >= 600) {
       designW = _designWidth * 0.95;
     } else if (size.width >= 800) {
-      designW = (size.width * 0.34).clamp(300.0, 480.0).toDouble();
+      // 左中右三等分
+      designW = size.width / 3;
     } else {
       designW = (size.width * 0.80).clamp(300.0, 430.0).toDouble();
     }
@@ -269,11 +269,11 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
         return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: Row(
             children: [
-              const Icon(Icons.menu_open, color: Colors.white, size: 22),
-              const SizedBox(width: 10),
+              const Icon(Icons.menu_open, color: Colors.white, size: 20),
+              const SizedBox(width: 8),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -282,7 +282,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
                       '节目单 EPG',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 20,
+                        fontSize: 18,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -292,7 +292,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
                       softWrap: false,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          color: Colors.white54, fontSize: 14),
+                          color: Colors.white54, fontSize: 13),
                     ),
                     // 联动显示当前正在播放的节目名
                     if (controller.currentProgram != null)
@@ -301,7 +301,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            color: Colors.greenAccent, fontSize: 14),
+                            color: Colors.greenAccent, fontSize: 13),
                       ),
                   ],
                 ),
@@ -417,8 +417,8 @@ class _EpgProgramTile extends StatelessWidget {
   Widget _buildCard(
       BuildContext context, bool isNow, bool isPast, bool canReserve) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: isNow
             ? Colors.blueAccent.withOpacity(0.25)
@@ -440,32 +440,32 @@ class _EpgProgramTile extends StatelessWidget {
             children: [
               Icon(
                 _statusIcon(),
-                size: 16,
+                size: 14,
                 color: isNow
                     ? Colors.greenAccent
                     : (isPast ? Colors.white38 : Colors.white70),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 5),
               Text(
                 program.timeRange,
                 style: TextStyle(
                   color: isNow ? Colors.greenAccent : Colors.white60,
-                  fontSize: 14,
+                  fontSize: 13,
                   fontWeight: FontWeight.w500,
                 ),
               ),
               if (isNow)
                 Container(
-                  margin: const EdgeInsets.only(left: 8),
+                  margin: const EdgeInsets.only(left: 6),
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                   decoration: BoxDecoration(
                     color: Colors.redAccent,
                     borderRadius: BorderRadius.circular(3),
                   ),
                   child: const Text(
                     '直播中',
-                    style: TextStyle(color: Colors.white, fontSize: 11.5),
+                    style: TextStyle(color: Colors.white, fontSize: 10.5),
                   ),
                 ),
               const Spacer(),
@@ -480,7 +480,7 @@ class _EpgProgramTile extends StatelessWidget {
                             ? Icons.alarm_on
                             : Icons.alarm_add,
                         color: reserved ? Colors.amber : Colors.white54,
-                        size: 22,
+                        size: 20,
                       ),
                       onPressed: () {
                         controller.toggleReservation(program);
@@ -499,29 +499,29 @@ class _EpgProgramTile extends StatelessWidget {
                 ),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           Text(
             program.title,
             style: TextStyle(
               color: isPast ? Colors.white38 : Colors.white,
-              fontSize: 17,
+              fontSize: 15.5,
               fontWeight: isNow ? FontWeight.bold : FontWeight.normal,
             ),
           ),
           if (program.description.isNotEmpty) ...[
-            const SizedBox(height: 4),
+            const SizedBox(height: 3),
             Text(
               program.description,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: isPast ? Colors.white24 : Colors.white54,
-                fontSize: 13,
+                fontSize: 12,
               ),
             ),
           ],
           if (isNow) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 7),
             ClipRRect(
               borderRadius: BorderRadius.circular(2),
               child: LinearProgressIndicator(
@@ -529,7 +529,7 @@ class _EpgProgramTile extends StatelessWidget {
                 backgroundColor: Colors.white10,
                 valueColor: const AlwaysStoppedAnimation<Color>(
                     Colors.greenAccent),
-                minHeight: 4,
+                minHeight: 3.5,
               ),
             ),
           ],

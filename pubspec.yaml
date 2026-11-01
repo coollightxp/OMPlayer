@@ -1,7 +1,7 @@
 name: omplayer
 description: A cross-platform Flutter live streaming media player.
 publish_to: 'none'
-version: 1.0.182+183
+version: 1.0.183+184
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -86,5 +86,7 @@ flutter:
   assets:
     - branding/icon_1024.png
     - branding/splash.png
+    # 网页管理页页头图标（手机扫码页）
+    - branding/web/Icon-192.png
     # 内置频道台标（节目源没给 tvg-logo 时按频道名匹配）
     - assets/logos/

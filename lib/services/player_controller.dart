@@ -546,8 +546,11 @@ class PlayerController extends ChangeNotifier {
         'dlnaEnabled': s.dlnaEnabled,
         'alwaysOnTop': s.alwaysOnTop,
         'autoPlayNext': s.autoPlayNext,
+        'autoReloadStall': s.autoReloadStall,
         'startFullscreen': s.startFullscreen,
         'launchAtStartup': s.launchAtStartup,
+        'uiScale': s.uiScale,
+        'uiScaleAuto': s.uiScaleAuto,
         'isDesktop': isDesktop,
       },
     };
@@ -605,6 +608,12 @@ class PlayerController extends ChangeNotifier {
 
       final dlna = rb('dlnaEnabled') ?? cur.dlnaEnabled;
       final autoPlayNext = rb('autoPlayNext') ?? cur.autoPlayNext;
+      final autoReloadStall = rb('autoReloadStall') ?? cur.autoReloadStall;
+      final uiScaleAuto = rb('uiScaleAuto') ?? cur.uiScaleAuto;
+      double uiScale = cur.uiScale;
+      if (rawSettings['uiScale'] is num) {
+        uiScale = (rawSettings['uiScale'] as num).toDouble().clamp(0.8, 3.0);
+      }
       final startFullscreen = rb('startFullscreen') ?? cur.startFullscreen;
       final alwaysOnTop =
           isDesktop ? (rb('alwaysOnTop') ?? cur.alwaysOnTop) : cur.alwaysOnTop;
@@ -613,12 +622,18 @@ class PlayerController extends ChangeNotifier {
           : cur.launchAtStartup;
       if (dlna != cur.dlnaEnabled ||
           autoPlayNext != cur.autoPlayNext ||
+          autoReloadStall != cur.autoReloadStall ||
+          uiScaleAuto != cur.uiScaleAuto ||
+          uiScale != cur.uiScale ||
           startFullscreen != cur.startFullscreen ||
           alwaysOnTop != cur.alwaysOnTop ||
           launchAtStartup != cur.launchAtStartup) {
         updateSettings(cur.copyWith(
           dlnaEnabled: dlna,
           autoPlayNext: autoPlayNext,
+          autoReloadStall: autoReloadStall,
+          uiScaleAuto: uiScaleAuto,
+          uiScale: uiScale,
           startFullscreen: startFullscreen,
           alwaysOnTop: alwaysOnTop,
           launchAtStartup: launchAtStartup,

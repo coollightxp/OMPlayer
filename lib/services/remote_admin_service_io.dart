@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 /// Web 管理服务回调（只使用基础类型，Web 占位实现中保持同名镜像定义）
 class RemoteAdminHooks {
   /// 返回当前全部配置快照：
@@ -80,6 +82,12 @@ class RemoteAdminService {
           ..add('Cache-Control', 'no-store, must-revalidate')
           ..add('Pragma', 'no-cache');
         req.response.write(_adminHtml);
+      } else if (req.method == 'GET' && path == '/logo.png') {
+        // 页头品牌图标：直接使用打包进应用图标资源，避免维护第二份图
+        final data = await rootBundle.load('branding/web/Icon-192.png');
+        req.response.headers.contentType = ContentType('image', 'png');
+        req.response.headers.add('Cache-Control', 'public, max-age=86400');
+        req.response.add(data.buffer.asUint8List());
       } else if (req.method == 'GET' && path == '/api/snapshot') {
         final data = await _hooks!.getSnapshot();
         _json(req, data);
@@ -165,7 +173,7 @@ const _adminHtml = r'''<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="format-detection" content="telephone=no">
-<title>OMPlayer 直播源管理</title>
+<title>欧米直播 · 直播源管理</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html{-webkit-text-size-adjust:100%}
@@ -187,11 +195,9 @@ button{font-family:inherit;cursor:pointer;-webkit-appearance:none;appearance:non
 }
 .brand{display:-webkit-flex;display:flex;-webkit-align-items:center;align-items:center}
 .logo{
-  width:34px;height:34px;border-radius:9px;margin-right:10px;-webkit-flex:0 0 auto;flex:0 0 auto;
-  background:-webkit-linear-gradient(135deg,#3b82f6,#2563eb);
-  display:-webkit-flex;display:flex;-webkit-align-items:center;align-items:center;-webkit-justify-content:center;justify-content:center;
-  font-size:18px;font-weight:700;color:#fff;
-  -webkit-box-shadow:0 3px 10px rgba(37,99,235,.35);box-shadow:0 3px 10px rgba(37,99,235,.35);
+  width:36px;height:36px;border-radius:9px;margin-right:10px;-webkit-flex:0 0 auto;flex:0 0 auto;
+  display:block;background:#161a23;
+  -webkit-box-shadow:0 3px 10px rgba(0,0,0,.4);box-shadow:0 3px 10px rgba(0,0,0,.4);
 }
 .brand .titles{-webkit-flex:1 1 auto;flex:1 1 auto;min-width:0}
 .brand h1{font-size:17px;font-weight:600;letter-spacing:.2px;line-height:1.25}
@@ -277,6 +283,21 @@ button{font-family:inherit;cursor:pointer;-webkit-appearance:none;appearance:non
 }
 .sw-track.on{background:#2563eb}
 .sw-track.on .sw-thumb{left:22px}
+.sw-row.col{display:block;padding:14px 14px 16px}
+.sw-row.col .sw-text{padding-right:0}
+.range{
+  width:100%;height:30px;margin-top:10px;padding:0;border:none;background:transparent;
+  -webkit-appearance:none;appearance:none;outline:none;
+}
+.range::-webkit-slider-runnable-track{height:5px;border-radius:99px;background:#2c3344}
+.range::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;width:20px;height:20px;border-radius:50%;
+  background:#3b82f6;margin-top:-7.5px;border:2px solid #0f131b;
+  -webkit-box-shadow:0 2px 6px rgba(0,0,0,.5);box-shadow:0 2px 6px rgba(0,0,0,.5);
+}
+.range::-moz-range-track{height:5px;border-radius:99px;background:#2c3344}
+.range::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:#3b82f6;border:none}
+#scale-val{color:#9fb2e8;font-weight:600;font-size:13px}
 .set-hint{font-size:11.5px;color:#55607a;margin:2px 2px 0;line-height:1.6}
 .fab{
   position:fixed;right:18px;
@@ -341,10 +362,10 @@ input:focus{border-color:#3b82f6}
 <body>
 <div class="top">
   <div class="brand">
-    <div class="logo">OM</div>
+    <img class="logo" src="/logo.png" alt="欧米直播">
     <div class="titles">
-      <h1>直播源管理</h1>
-      <div class="sub">同 Wi-Fi 下使用 · <b id="host"></b> · 自动保存</div>
+      <h1>欧米直播</h1>
+      <div class="sub">直播源管理 · <b id="host"></b> · 自动保存</div>
     </div>
   </div>
   <div class="seg-tabs">
@@ -439,29 +460,62 @@ function render(){
 function settingDefs(){
   return [
     ['showClock','显示时间','右上角常驻显示系统时钟',false],
-    ['autoPlayNext','自动播放下一台','当前频道结束后自动切到下一频道',false],
-    ['startFullscreen','启动即全屏','程序启动后直接进入全屏',false],
-    ['dlnaEnabled','DLNA 投屏接收','允许手机/其它设备投屏到本机',false],
-    ['alwaysOnTop','窗口置顶','桌面端保持播放器窗口在最前',true],
-    ['launchAtStartup','开机自启动','登录系统后自动启动 OMPlayer',true]
+    ['autoPlayNext','自动播放下一台','当前频道播放结束后自动切到下一台',false],
+    ['autoReloadStall','网页频道卡死自动重载','网页播放长时间无进度时自动重载当前频道',false],
+    ['dlnaEnabled','DLNA 投屏接收','允许手机或其它设备投屏到本机',false],
+    ['startFullscreen','启动即全屏','程序启动后直接进入全屏',true],
+    ['alwaysOnTop','窗口置顶','保持播放器窗口始终在最前',true],
+    ['launchAtStartup','开机自启动','登录系统后自动启动欧米直播',true]
   ];
 }
 function renderSettings(){
   var el=document.getElementById('list');
   var s=state.settings||{};
-  var html='<div class="group-title">常用开关</div>';
+  var html='<div class="group-title">播放</div>';
   var defs=settingDefs();
+  var desktopGrouped=false;
   for(var i=0;i<defs.length;i++){
     var d=defs[i];
     if(d[3]&&s.isDesktop===false)continue;
+    if(d[3]&&!desktopGrouped){html+='<div class="group-title">桌面端</div>';desktopGrouped=true}
     var on=s[d[0]]===true;
     html+='<div class="sw-row" onclick="toggleSetting(\''+d[0]+'\')">'
       +'<div class="sw-text"><div class="sw-title">'+d[1]+'</div>'
       +'<div class="sw-sub">'+d[2]+'</div></div>'
       +'<div class="sw-track'+(on?' on':'')+'"><div class="sw-thumb"></div></div></div>';
   }
-  html+='<div class="set-hint">修改即时生效并自动保存。更多设置请在设备上打开「设置」面板。</div>';
+  // 界面缩放：开启自动适配时按屏幕宽度算字号，关闭后才出现手动滑块
+  html+='<div class="group-title">显示</div>';
+  var autoOn=s.uiScaleAuto!==false;
+  html+='<div class="sw-row" onclick="toggleSetting(\'uiScaleAuto\')">'
+    +'<div class="sw-text"><div class="sw-title">界面缩放自动适配</div>'
+    +'<div class="sw-sub">按屏幕宽度自动计算字号，关闭后可手动调节</div></div>'
+    +'<div class="sw-track'+(autoOn?' on':'')+'"><div class="sw-thumb"></div></div></div>';
+  if(!autoOn){
+    var sc=typeof s.uiScale==='number'?s.uiScale:1;
+    if(sc<0.8)sc=0.8;if(sc>2.5)sc=2.5;
+    html+='<div class="sw-row col"><div class="sw-text">'
+      +'<div class="sw-title">界面缩放比例 <span id="scale-val">'+sc.toFixed(2)+'x</span></div>'
+      +'<div class="sw-sub">电视上字太小看不全就调大，内容超出屏幕就调小</div></div>'
+      +'<input type="range" class="range" min="0.8" max="2.5" step="0.05" value="'+sc+'"'
+      +' oninput="onScaleInput(this.value)" onchange="onScaleCommit(this.value)"></div>';
+  }
+  html+='<div class="set-hint">修改即时生效并自动保存。缓冲、源超时、画质等更多设置请在设备上打开「设置」面板。</div>';
   el.innerHTML=html;
+}
+var scaleTimer;
+function onScaleInput(v){
+  if(!state.settings)state.settings={};
+  state.settings.uiScale=parseFloat(v);
+  var lab=document.getElementById('scale-val');
+  if(lab)lab.textContent=state.settings.uiScale.toFixed(2)+'x';
+  clearTimeout(scaleTimer);
+  scaleTimer=setTimeout(function(){persist()},500);
+}
+function onScaleCommit(v){
+  onScaleInput(v);
+  clearTimeout(scaleTimer);
+  persist().then(function(){toast('已保存 '+state.settings.uiScale.toFixed(2)+'x')});
 }
 function toggleSetting(key){
   if(!state.settings)state.settings={};
