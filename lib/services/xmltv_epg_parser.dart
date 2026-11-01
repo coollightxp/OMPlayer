@@ -65,7 +65,7 @@ class XmltvEpgParser {
         final id = ch.getAttribute('id') ?? '';
         final names = ch
             .findElements('display-name')
-            .map((e) => e.innerText.trim())
+            .map((e) => decodeEntities(e.innerText.trim()))
             .where((e) => e.isNotEmpty)
             .toList();
         if (names.isEmpty && id.isNotEmpty) names.add(id);
@@ -83,9 +83,10 @@ class XmltvEpgParser {
         final endTime = _parseXmltvDate(prog.getAttribute('stop') ?? '');
         if (startTime == null || endTime == null) continue;
 
-        final title =
-            prog.findElements('title').firstOrNull?.innerText ?? '未知节目';
-        final desc = prog.findElements('desc').firstOrNull?.innerText ?? '';
+        final title = decodeEntities(
+            prog.findElements('title').firstOrNull?.innerText ?? '未知节目');
+        final desc = decodeEntities(
+            prog.findElements('desc').firstOrNull?.innerText ?? '');
         rows.add([
           channelId,
           title,
@@ -134,9 +135,50 @@ class XmltvEpgParser {
     );
   }
 
+  /// HTML/XML 实体：部分 XMLTV 源把实体的字面串写进了文本
+  /// （如 `&amp;apos;` 只解码一层后剩 `&apos;`，界面上就显示成乱码）
+  static final _entityRe = RegExp(r'&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);');
+
+  /// 再解一层实体（两次足够处理双重转义）
+  static String decodeEntities(String s) {
+    if (!s.contains('&')) return s;
+    var out = s;
+    for (var pass = 0; pass < 2; pass++) {
+      final next = out.replaceAllMapped(_entityRe, (m) {
+        final body = m.group(1)!;
+        final lower = body.toLowerCase();
+        if (lower.startsWith('#x')) {
+          final v = int.tryParse(body.substring(2), radix: 16);
+          return v == null ? m.group(0)! : String.fromCharCode(v);
+        }
+        if (lower.startsWith('#')) {
+          final v = int.tryParse(body.substring(1));
+          return v == null ? m.group(0)! : String.fromCharCode(v);
+        }
+        switch (lower) {
+          case 'amp':
+            return '&';
+          case 'apos':
+            return "'";
+          case 'quot':
+            return '"';
+          case 'lt':
+            return '<';
+          case 'gt':
+            return '>';
+          case 'nbsp':
+            return ' ';
+        }
+        return m.group(0)!;
+      });
+      if (next == out) break;
+      out = next;
+    }
+    return out;
+  }
+
   /// 归一化名称：忽略大小写、空格、标点、括号差异
   static final _normRe = RegExp(r'[\s\-_（）()\[\].·、,，+]');
-
   static String norm(String s) => s.toLowerCase().replaceAll(_normRe, '');
 
   static final _cctvRe = RegExp(r'cctv[-\s]*(\d+)\s*(\+?)');
