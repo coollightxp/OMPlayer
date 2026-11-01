@@ -111,6 +111,15 @@ class _SettingsPanelState extends State<SettingsPanel>
   /// 设置内容根节点：判断当前焦点是否已在面板内
   final GlobalKey _panelKey = GlobalKey();
 
+  /// 面板根焦点节点：上下键在这里统一处理。它自己不取焦点、不参与遍历，
+  /// 只是包住全部内容，让按键一定能先在面板内处理掉（不依赖
+  /// HardwareKeyboard 处理器顺序）
+  final FocusNode _panelFocusNode = FocusNode(
+    debugLabel: 'settingsPanelRoot',
+    skipTraversal: true,
+    canRequestFocus: false,
+  );
+
   @override
   void initState() {
     super.initState();
@@ -126,6 +135,7 @@ class _SettingsPanelState extends State<SettingsPanel>
     HardwareKeyboard.instance.removeHandler(_onVerticalKey);
     _tabController.removeListener(_onTabIndexChanged);
     _tabFocus.dispose();
+    _panelFocusNode.dispose();
     _tabController.dispose();
     super.dispose();
   }
@@ -155,45 +165,53 @@ class _SettingsPanelState extends State<SettingsPanel>
   }
 
   /// 上下键改为在设置内容里纵向移动焦点。
-  /// 用遍历顺序（列表自上而下的阅读顺序）走位，不依赖几何方向计算；
-  /// 到顶部后落到页签栏，页签栏上左右键切页。
+  ///
+  /// 不使用几何方向计算（focusInDirection）也不依赖 WidgetOrder 遍历：
+  /// 直接取「面板根节点下所有可聚焦节点」的树顺序（即界面自上而下的顺序），
+  /// 上一格/下一格走一步。这样不会隔行跳、也不会穿到播放页其它面板。
+  /// 到最上面落到页签栏，页签栏上用左右键切页。
   bool _onVerticalKey(KeyEvent event) {
     if (!widget.isOpen) return false;
     // 设置里弹出对话框（编辑源、二维码等）时放行：焦点属于对话框，
     // 不能把焦点抢回设置面板
     if (!(ModalRoute.of(context)?.isCurrent ?? true)) return false;
+    return _handleVertical(event);
+  }
+
+  /// 面板根焦点上的按键：与上面的全局处理器共用同一套逻辑，
+  /// 保证焦点在面板内时按键一定先在这里被吃掉
+  KeyEventResult _onPanelKeyEvent(FocusNode node, KeyEvent event) =>
+      _handleVertical(event)
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored;
+
+  bool _handleVertical(KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
     final key = event.logicalKey;
     final isUp = key == LogicalKeyboardKey.arrowUp;
     if (!isUp && key != LogicalKeyboardKey.arrowDown) return false;
+
+    // 面板内所有可聚焦节点的树顺序（页签栏在最前，内容自上而下）
+    final stops = <FocusNode>[];
+    for (final n in _panelFocusNode.traversalDescendants) {
+      if (n.attached && n.canRequestFocus && n.context != null) stops.add(n);
+    }
+    if (stops.isEmpty) return false;
+
     final focus = FocusManager.instance.primaryFocus;
-    if (focus == null) return false;
-    // 焦点还停在面板外（刚打开、焦点在播放页根节点）：从顶部页签进入
-    if (!_focusInsidePanel(focus)) {
+    final idx = stops.indexWhere((n) => n == focus || n.hasFocus);
+    if (idx < 0) {
+      // 焦点还停在面板外（刚打开时）：从页签栏进入
       _tabFocus.requestFocus();
       return true;
     }
-    // 已在页签栏上：往上不再移动，往下进入当前页内容
-    if (focus == _tabFocus) {
-      if (!isUp) {
-        focus.focusInDirection(TraversalDirection.down);
-        _scrollFocusedIntoView();
-      }
+    final target = idx + (isUp ? -1 : 1);
+    if (target < 0 || target >= stops.length) {
+      // 已到顶/到底：吞掉按键，停在原处
       return true;
     }
-    // 按面板内的遍历顺序走位（FocusTraversalGroup 把范围圈在面板里，
-    // 上下键不会穿到播放页底部面板）。源条目行尾的按钮不参与遍历，
-    // 只在行内用左右键进入，所以上下一定是一行一行地走
-    if (isUp) {
-      if (!focus.focusInDirection(TraversalDirection.up)) {
-        // 内容区已到顶：落到页签栏
-        _tabFocus.requestFocus();
-      }
-    } else {
-      focus.focusInDirection(TraversalDirection.down);
-    }
+    stops[target].requestFocus();
     _scrollFocusedIntoView();
-    // 无论是否真的移动了焦点都吞掉该键，避免落到滑块上继续改数值
     return true;
   }
 
@@ -212,22 +230,6 @@ class _SettingsPanelState extends State<SettingsPanel>
     });
   }
 
-  /// 当前焦点是否位于设置面板内部
-  bool _focusInsidePanel(FocusNode node) {
-    final nodeContext = node.context;
-    final panelContext = _panelKey.currentContext;
-    if (nodeContext == null || panelContext == null) return false;
-    if (nodeContext == panelContext) return true;
-    var inside = false;
-    nodeContext.visitAncestorElements((element) {
-      if (element == panelContext) {
-        inside = true;
-        return false;
-      }
-      return true;
-    });
-    return inside;
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -265,8 +267,11 @@ class _SettingsPanelState extends State<SettingsPanel>
                   // 否则方向键会穿到播放页底部面板的按钮上
                   child: FocusTraversalGroup(
                     policy: WidgetOrderTraversalPolicy(),
-                    child: Column(
-                  children: [
+                    child: Focus(
+                      focusNode: _panelFocusNode,
+                      onKeyEvent: _onPanelKeyEvent,
+                      child: Column(
+                    children: [
                     // 顶部拖拽条 + 标题
                     Container(
                       padding:
@@ -371,7 +376,8 @@ class _SettingsPanelState extends State<SettingsPanel>
                     // 焦点树里，方向键会跑到看不见的控件上）
                     Expanded(child: _tabPage(_tabController.index)),
                   ],
-                  ),
+                      ),
+                    ),
                   ),
                 );
               }),
