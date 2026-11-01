@@ -28,6 +28,12 @@ class BottomProgramPanel extends StatefulWidget {
   /// 网页/内置播放器来回切换（无可切流时置灰不可点）
   final VoidCallback? onSwitchWebNative;
 
+  /// 小窗播放（桌面端缩小窗口并置顶；移动端传 null，按钮不显示）
+  final VoidCallback? onToggleMini;
+
+  /// 重载当前频道（网页卡死/黑屏时手动恢复）
+  final VoidCallback? onReload;
+
   /// 遥控器激活「跳转类」按钮（频道/EPG/设置/扫码）后通知播放页关闭面板
   final VoidCallback? onDismissRemote;
 
@@ -46,6 +52,8 @@ class BottomProgramPanel extends StatefulWidget {
     required this.onScreenshot,
     required this.onToggleRecord,
     this.onSwitchWebNative,
+    this.onToggleMini,
+    this.onReload,
     this.onOpenRemoteAdmin,
     this.onDismissRemote,
     this.onHoverEnter,
@@ -376,6 +384,16 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           Icons.screen_rotation,
           c.videoRotation.value == 0 ? '旋转画面' : '恢复原始方向',
           hasVideo ? c.cycleVideoRotation : null),
+      // 小窗置顶（桌面端）：再点一次恢复原窗口
+      if (c.isDesktop && widget.onToggleMini != null)
+        _KbAction(
+            'mini',
+            c.miniWindow ? Icons.fullscreen : Icons.picture_in_picture_alt,
+            c.miniWindow ? '恢复窗口' : '小窗播放',
+            widget.onToggleMini),
+      // 手动重载当前频道：网页卡死/黑屏时不必等自动看门狗
+      if (widget.onReload != null)
+        _KbAction('reload', Icons.refresh, '重载频道', widget.onReload),
       // 网页/内置切换：仅网页频道（含已接管为内置的）出现；
       // 加密页/未嗅探到直连流时置灰不可点
       if (c.webPageActive || c.isNativeSniffPlayback)
@@ -426,6 +444,8 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
       if (i >= 0) children.add(_btn(actions[i]));
     }
 
+    addById('mini');
+    addById('reload');
     addById('webnative');
     addById('channels');
     addById('epg');

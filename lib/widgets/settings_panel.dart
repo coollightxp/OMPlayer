@@ -1057,6 +1057,26 @@ class _SystemSettingsTab extends StatelessWidget {
                 activeColor: Colors.blueAccent,
               ),
             ),
+            // 网页频道卡死自动重载：位置 24 秒不推进即重载（每频道最多 3 次）
+            ListTile(
+              leading: Icon(Icons.refresh,
+                  color: s.autoReloadStall
+                      ? Colors.greenAccent
+                      : Colors.white54),
+              title: const Text('网页卡死自动重载',
+                  style: TextStyle(color: Colors.white, fontSize: 15)),
+              subtitle: const Text(
+                '已开启：网页频道播放位置连续 24 秒不推进时自动重载（每频道最多 3 次）\n'
+                '内置播放器的直播流有自己的卡顿自愈，不受此开关影响',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              trailing: Switch(
+                value: s.autoReloadStall,
+                onChanged: (v) => controller
+                    .updateSettings(s.copyWith(autoReloadStall: v)),
+                activeColor: Colors.blueAccent,
+              ),
+            ),
             // DLNA 投屏接收状态 + 开关
             ListTile(
               leading: Icon(Icons.cast,

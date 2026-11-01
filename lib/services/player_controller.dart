@@ -868,6 +868,8 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放指定频道（从第一个源开始，失败自动尝试下一个源）
   Future<void> playChannel(Channel channel) async {
+    // 换频道：网页卡死重载计数清零（同一频道最多自动重载 3 次）
+    _autoReloadCount = 0;
     // 无网络时等待网络（开机启动时系统网络可能未就绪）
     if (!await _waitForNetwork()) {
       // 30 秒内仍无网络，保持等待状态，后台继续检测
@@ -1758,6 +1760,82 @@ class PlayerController extends ChangeNotifier {
     return true;
   }
 
+  // ==================== 锁定 / 小窗 / 重载 ====================
+
+  /// 频道锁定：屏蔽遥控器误触。锁定期间除「返回键」/ L 键解锁外，
+  /// 切台、切源、播放控制、打开面板全部忽略
+  bool _locked = false;
+  bool get locked => _locked;
+
+  void toggleLock() {
+    _locked = !_locked;
+    OsdBus.show(_locked ? '已锁定，按返回键或 L 键解锁' : '已解锁',
+        icon: _locked ? Icons.lock : Icons.lock_open);
+    notifyListeners();
+  }
+
+  void unlock() {
+    if (!_locked) return;
+    _locked = false;
+    OsdBus.show('已解锁', icon: Icons.lock_open);
+    notifyListeners();
+  }
+
+  /// 小窗播放（仅桌面端）：窗口缩成 420×236 并置顶，再点一次恢复原尺寸
+  bool _miniWindow = false;
+  bool get miniWindow => _miniWindow;
+  Size _sizeBeforeMini = const Size(1280, 720);
+
+  Future<void> toggleMiniWindow() async {
+    if (!isDesktop) return;
+    _miniWindow = !_miniWindow;
+    try {
+      if (_miniWindow) {
+        // 全屏时任务栏被盖住、无法操作小窗，先进出全屏
+        if (await windowManager.isFullScreen()) {
+          _isFullscreen = false;
+          await windowManager.setFullScreen(false);
+          await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+        }
+        _sizeBeforeMini = await windowManager.getSize();
+        await windowManager.setAlwaysOnTop(true);
+        await windowManager.setSize(const Size(420, 236));
+      } else {
+        await windowManager.setSize(_sizeBeforeMini);
+        await _applyAlwaysOnTop();
+      }
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  /// 网页频道重载序号：每次重载 +1，播放页据此重建网页控件（页面重新加载）
+  int _webReloadSerial = 0;
+  int get webReloadSerial => _webReloadSerial;
+
+  /// 当前频道的自动重载次数（网页卡死看门狗用，换频道清零）
+  int _autoReloadCount = 0;
+  int get autoReloadCount => _autoReloadCount;
+
+  void markAutoReload() => _autoReloadCount++;
+
+  /// 重载当前频道：网页频道整页重新载入（站点脚本随后按频道名重新点台），
+  /// 直播流频道从第一个源重新播放。底部面板「重载」按钮与网页卡死
+  /// 看门狗都走这里
+  Future<void> reloadCurrentChannel() async {
+    final channel = _currentChannel;
+    if (channel == null) return;
+    OsdBus.show('正在重载「${channel.name}」', icon: Icons.refresh);
+    if (_webPageActive) {
+      _webReloadSerial++;
+      setWebForeground(false);
+      _webPlaying = false;
+      notifyListeners();
+      return;
+    }
+    _sourceIndex = 0;
+    await _playCurrentSource();
+  }
+
   // ==================== 设置持久化 ====================
 
   static const _kAutoPlayNext = 'settings_auto_play_next';
@@ -1776,6 +1854,7 @@ class PlayerController extends ChangeNotifier {
   static const _kUiScaleAuto = 'settings_ui_scale_auto';
   static const _kRemoteAdmin = 'settings_remote_admin';
   static const _kWebEnabled = 'settings_web_enabled';
+  static const _kAutoReloadStall = 'settings_auto_reload_stall';
   static const _kFavoriteChannelIds = 'omplayer_favorite_channel_ids';
 
   Future<void> _loadSettings() async {
@@ -1799,6 +1878,7 @@ class PlayerController extends ChangeNotifier {
         uiScaleAuto: p.getBool(_kUiScaleAuto) ?? true,
         remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
         webEnabled: p.getBool(_kWebEnabled) ?? true,
+        autoReloadStall: p.getBool(_kAutoReloadStall) ?? true,
       );
       _favoriteChannelIds
         ..clear()
@@ -1827,6 +1907,7 @@ class PlayerController extends ChangeNotifier {
       await p.setBool(_kUiScaleAuto, _settings.uiScaleAuto);
       await p.setBool(_kRemoteAdmin, _settings.remoteAdminEnabled);
       await p.setBool(_kWebEnabled, _settings.webEnabled);
+      await p.setBool(_kAutoReloadStall, _settings.autoReloadStall);
     } catch (_) {}
   }
 

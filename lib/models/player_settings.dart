@@ -54,6 +54,11 @@ class PlayerSettings {
   /// （webview:// 源）不可用——用于不支持 WebView2 的系统避免退出崩溃
   final bool webEnabled;
 
+  /// 网页频道卡死自动重载（默认开）：网页播放位置连续 24 秒不推进时
+  /// 自动重载当前频道，每个频道最多重载 3 次。仅对网页播放生效，
+  /// 内置播放器（直播流）本身已有卡顿自愈看门狗
+  final bool autoReloadStall;
+
   const PlayerSettings({
     this.autoPlayNext = true,
     this.defaultVolume = 0.8,
@@ -72,6 +77,7 @@ class PlayerSettings {
     this.uiScaleAuto = true,
     this.remoteAdminEnabled = true,
     this.webEnabled = true,
+    this.autoReloadStall = true,
   });
 
   PlayerSettings copyWith({
@@ -92,6 +98,7 @@ class PlayerSettings {
     bool? uiScaleAuto,
     bool? remoteAdminEnabled,
     bool? webEnabled,
+    bool? autoReloadStall,
   }) {
     return PlayerSettings(
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -112,6 +119,7 @@ class PlayerSettings {
       uiScaleAuto: uiScaleAuto ?? this.uiScaleAuto,
       remoteAdminEnabled: remoteAdminEnabled ?? this.remoteAdminEnabled,
       webEnabled: webEnabled ?? this.webEnabled,
+      autoReloadStall: autoReloadStall ?? this.autoReloadStall,
     );
   }
 }
