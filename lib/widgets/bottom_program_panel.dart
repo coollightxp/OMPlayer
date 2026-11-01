@@ -374,7 +374,18 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             c.isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
             c.isRecording ? '停止录制' : '开始录制',
             hasVideo ? widget.onToggleRecord : null),
-        // 静音 / 全屏（与 OMTV 底部栏一致，鼠标直接可点）
+      ],
+      // 顺序必须与界面从左到右一致：旋转在小窗/静音/全屏之前，
+      // 否则遥控器 ←/→ 会在「全屏 ↔ 旋转 ↔ 小窗」之间来回跳
+      _KbAction(
+          'rotate',
+          Icons.screen_rotation,
+          c.videoRotation.value == 0
+              ? '旋转画面'
+              : (c.videoRotation.value == 3 ? '恢复原始方向' : '继续旋转 90°'),
+          hasVideo ? c.cycleVideoRotation : null),
+      // 静音 / 全屏（与 OMTV 底部栏一致，鼠标直接可点）
+      if (c.isDesktop) ...[
         _KbAction(
             'mute',
             c.isMuted ? Icons.volume_off : Icons.volume_up,
@@ -386,13 +397,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             c.isFullscreen ? '退出全屏' : '全屏',
             c.toggleFullscreen),
       ],
-      _KbAction(
-          'rotate',
-          Icons.screen_rotation,
-          c.videoRotation.value == 0
-              ? '旋转画面'
-              : (c.videoRotation.value == 3 ? '恢复原始方向' : '继续旋转 90°'),
-          hasVideo ? c.cycleVideoRotation : null),
       // 小窗置顶（桌面端）：再点一次恢复原窗口
       if (c.isDesktop && widget.onToggleMini != null)
         _KbAction(
