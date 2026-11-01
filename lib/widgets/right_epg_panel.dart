@@ -212,10 +212,23 @@ class RightEpgPanelState extends State<RightEpgPanel> {
 
   @override
   Widget build(BuildContext context) {
-    // 小屏只收窄宽度，不整体缩放（否则高度被缩、上下留空）
-    final shortest = MediaQuery.of(context).size.shortestSide;
-    final wScale = shortest < 600 ? 0.78 : (shortest < 700 ? 0.9 : 1.0);
-    final drawerW = _designWidth * wScale;
+    // 面板宽度：与左侧频道抽屉一致的窄屏策略。手机横屏/电视盒子按屏宽
+    // 40% 加宽（原固定 0.78 只有 265 逻辑像素，节目名看不全）
+    final size = MediaQuery.of(context).size;
+    final shortest = size.shortestSide;
+    final double designW;
+    if (shortest >= 700) {
+      designW = _designWidth;
+    } else if (shortest >= 600) {
+      designW = _designWidth * 0.95;
+    } else if (size.width >= 800) {
+      designW = (size.width * 0.40).clamp(_designWidth, 560.0).toDouble();
+    } else {
+      designW = (size.width * 0.88).clamp(300.0, 430.0).toDouble();
+    }
+    // 不超过屏幕宽度的 92%，避免小逻辑分辨率电视盒子上被裁切
+    final drawerW =
+        designW.clamp(0.0, size.width * 0.92).toDouble();
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,
@@ -275,6 +288,9 @@ class RightEpgPanelState extends State<RightEpgPanel> {
                     ),
                     Text(
                       controller.currentChannel?.name ?? '未选择频道',
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           color: Colors.white54, fontSize: 12),
                     ),

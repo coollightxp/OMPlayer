@@ -398,11 +398,27 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    // 小屏只收窄宽度，不再整体等比缩放——整体缩放会让抽屉高度也缩到
-    // 72% 并垂直居中，上下各空出一块，无法充满屏幕高度
-    final shortest = MediaQuery.of(context).size.shortestSide;
-    final wScale = shortest < 600 ? 0.78 : (shortest < 700 ? 0.9 : 1.0);
-    final drawerW = _designWidth * wScale;
+    // 面板宽度：
+    // - 桌面/大平板：设计宽度 320；
+    // - 手机横屏、安卓电视盒子：按屏宽比例加宽。原来固定 0.78 只有 250
+    //   逻辑像素，分类名被挤成两行、列表里的节目名被截断；
+    // - 手机竖屏：最多占屏宽 88%，避免整屏被盖住。
+    final size = MediaQuery.of(context).size;
+    final shortest = size.shortestSide;
+    final double designW;
+    if (shortest >= 700) {
+      designW = _designWidth;
+    } else if (shortest >= 600) {
+      designW = _designWidth * 0.95;
+    } else if (size.width >= 800) {
+      designW = (size.width * 0.40).clamp(_designWidth, 520.0).toDouble();
+    } else {
+      designW = (size.width * 0.88).clamp(280.0, 400.0).toDouble();
+    }
+    // 任何情况下不超过屏幕宽度的 92%：逻辑分辨率很小的电视盒子上
+    // 面板不能宽于屏幕，否则内容会被裁掉
+    final drawerW =
+        designW.clamp(0.0, size.width * 0.92).toDouble();
     return AnimatedPositioned(
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOutCubic,
@@ -451,6 +467,9 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           Expanded(
             child: Text(
               _selectedCategory == null ? '频道列表' : _selectedCategory!.name,
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 17,
