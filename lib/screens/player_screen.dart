@@ -126,7 +126,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.173';
+  static const String _appVersion = '1.0.174';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -377,6 +377,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     PhysicalKeyboardKey.numpad8,
     PhysicalKeyboardKey.numpad9,
   ];
+
+  /// 遥控器/键盘接管：立即隐藏鼠标指针（原生侧在鼠标移动时恢复显示，
+  /// 否则按钮上的手型光标会让指针一直挂着）
+  void _hidePointerForRemote() {
+    _cursorHideTimer?.cancel();
+    _winHotkeys.hideCursorNow();
+  }
 
   /// 鼠标活动：恢复显示并重置 3 秒隐藏计时（仅播放中计时）
   void _pokeCursor() {
@@ -925,7 +932,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
             final options = _exitOptions(c);
             // 按钮多于 4 个（锁定/设置/关机全出现）时加宽卡片，
             // 避免 FittedBox 把标题和图标整体缩得太小
-            final double cardW = (options.length > 4 ? 470 : 380) * panelScale;
+            final double cardW = (options.length > 4 ? 430 : 340) * panelScale;
             return Dialog(
               backgroundColor: const Color(0xFF12151A),
               shape: RoundedRectangleBorder(
@@ -938,7 +945,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   fit: BoxFit.scaleDown,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 34, vertical: 24),
+                        horizontal: 28, vertical: 18),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.center,
@@ -947,19 +954,19 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                           '欧米直播',
                           style: TextStyle(
                             color: Colors.white,
-                            fontSize: 24,
+                            fontSize: 20,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        const SizedBox(height: 3),
+                        const SizedBox(height: 2),
                         Text(
                           '版本 $_appVersion',
                           style: const TextStyle(
                             color: Colors.white54,
-                            fontSize: 13,
+                            fontSize: 12,
                           ),
                         ),
-                        const SizedBox(height: 18),
+                        const SizedBox(height: 14),
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -968,7 +975,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                               Padding(
                                 padding: EdgeInsets.only(
                                     right:
-                                        i == options.length - 1 ? 0 : 22),
+                                        i == options.length - 1 ? 0 : 16),
                                 child: _buildExitIconOption(
                                     ctx, i, options[i]),
                               ),
@@ -1070,13 +1077,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 58,
-              height: 58,
+              width: 48,
+              height: 48,
               decoration: BoxDecoration(
                 color: selected
                     ? color.withOpacity(0.22)
                     : Colors.white.withOpacity(0.04),
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(6),
                 border: Border.all(
                   color: selected ? color : Colors.white24,
                   width: selected ? 2.0 : 1.0,
@@ -1085,23 +1092,20 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
               child: Icon(
                 opt.icon,
                 color: selected ? color : Colors.white70,
-                size: 28,
+                size: 22,
               ),
             ),
             // 标签行固定高度：仅框选/悬停项显示文字，避免布局跳动
             SizedBox(
-              height: 20,
+              height: 18,
               child: Center(
                 child: selected
-                    ? Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Text(
-                          opt.label,
-                          style: TextStyle(
-                            color: color,
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                          ),
+                    ? Text(
+                        opt.label,
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
                         ),
                       )
                     : const SizedBox.shrink(),
@@ -1275,6 +1279,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     final k = event.logicalKey;
     final isDown = event is KeyDownEvent;
     final isUp = event is KeyUpEvent;
+
+    // 键盘/遥控器一有动作就隐藏鼠标指针（鼠标一移动原生侧自动恢复）
+    if (isDown) _hidePointerForRemote();
 
     // 锁定状态：除「返回键 / 菜单键 / L 键」解锁外，所有按键一律屏蔽，
     // 防止遥控器/键盘误触切台、改设置或退出（屏幕上有锁定角标提示）
@@ -2168,6 +2175,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   /// 同一套短按/长按/面板导航逻辑。
   void _onNativeAction(String action, bool isDown) {
     if (!mounted) return;
+    if (isDown) _hidePointerForRemote();
     if (isDown) {
       if (!_nativeHeld.add(action)) return; // 自动重复，忽略
     } else {

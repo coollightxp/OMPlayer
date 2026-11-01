@@ -85,6 +85,14 @@ class WinHotkeys {
     } catch (_) {}
   }
 
+  /// 立即隐藏鼠标指针。遥控器/键盘接管时调用（鼠标一移动原生侧自动恢复），
+  /// 比 3 秒空闲隐藏更即时，也不会被按钮上的手型光标覆盖。
+  Future<void> hideCursorNow() async {
+    try {
+      await _channel.send('H');
+    } catch (_) {}
+  }
+
   /// true=网页频道在前台：钩子拦截按键并转发（WebView 吞键）；
   /// false=普通视频界面：钩子放行，保留 Flutter 完整按键事件
   Future<void> setWebForward(bool enable) async {

@@ -115,6 +115,8 @@ class _SettingsPanelState extends State<SettingsPanel>
   void initState() {
     super.initState();
     _tabController = TabController(length: 5, vsync: this);
+    // 只构建当前页签内容，切页时需要重建
+    _tabController.addListener(_onTabIndexChanged);
     // 上下方向键统一由面板自己接管（见 _onVerticalKey）
     HardwareKeyboard.instance.addHandler(_onVerticalKey);
   }
@@ -122,9 +124,34 @@ class _SettingsPanelState extends State<SettingsPanel>
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onVerticalKey);
+    _tabController.removeListener(_onTabIndexChanged);
     _tabFocus.dispose();
     _tabController.dispose();
     super.dispose();
+  }
+
+  int _lastTabIndex = 0;
+
+  void _onTabIndexChanged() {
+    if (_tabController.index == _lastTabIndex) return;
+    _lastTabIndex = _tabController.index;
+    if (mounted) setState(() {});
+  }
+
+  /// 当前页签内容（只构建选中的那一页，避免隐藏页的控件进入焦点遍历）
+  Widget _tabPage(int index) {
+    switch (index) {
+      case 1:
+        return _EpgTab();
+      case 2:
+        return _PlayerSettingsTab();
+      case 3:
+        return _SystemSettingsTab();
+      case 4:
+        return _HelpTab();
+      default:
+        return _PlaylistTab();
+    }
   }
 
   /// 上下键改为在设置内容里纵向移动焦点。
@@ -150,39 +177,39 @@ class _SettingsPanelState extends State<SettingsPanel>
     if (focus == _tabFocus) {
       if (!isUp) {
         focus.focusInDirection(TraversalDirection.down);
-        _afterFocusMove(null, false);
+        _scrollFocusedIntoView();
       }
       return true;
     }
-    focus.focusInDirection(
-        isUp ? TraversalDirection.up : TraversalDirection.down);
-    _afterFocusMove(focus, isUp);
+    // 按面板内的遍历顺序走位（FocusTraversalGroup 把范围圈在面板里，
+    // 上下键不会穿到播放页底部面板）。源条目行尾的按钮不参与遍历，
+    // 只在行内用左右键进入，所以上下一定是一行一行地走
+    if (isUp) {
+      if (!focus.focusInDirection(TraversalDirection.up)) {
+        // 内容区已到顶：落到页签栏
+        _tabFocus.requestFocus();
+      }
+    } else {
+      focus.focusInDirection(TraversalDirection.down);
+    }
+    _scrollFocusedIntoView();
     // 无论是否真的移动了焦点都吞掉该键，避免落到滑块上继续改数值
     return true;
   }
 
-  /// 焦点变更在微任务后才生效，这里下一帧检查是否真的移动了：
-  /// 向上没得可走（已在内容区顶部）就回到页签栏
-  void _afterFocusMove(FocusNode? before, bool isUp) {
+  /// 把当前焦点滚到可视区（设置内容是可滚动的长列表）。
+  /// 焦点变更在微任务里生效，下一帧再取 primaryFocus。
+  void _scrollFocusedIntoView() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (before != null && before.hasFocus) {
-        if (isUp) _tabFocus.requestFocus();
-        return;
-      }
-      _scrollFocusedIntoView();
+      final target = FocusManager.instance.primaryFocus?.context;
+      if (target == null || !target.mounted) return;
+      Scrollable.ensureVisible(
+        target,
+        duration: const Duration(milliseconds: 120),
+        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      );
     });
-  }
-
-  /// 把当前焦点滚到可视区（设置内容是可滚动的长列表）
-  void _scrollFocusedIntoView() {
-    final target = FocusManager.instance.primaryFocus?.context;
-    if (target == null || !target.mounted) return;
-    Scrollable.ensureVisible(
-      target,
-      duration: const Duration(milliseconds: 120),
-      alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
-    );
   }
 
   /// 当前焦点是否位于设置面板内部
@@ -234,7 +261,11 @@ class _SettingsPanelState extends State<SettingsPanel>
                 return SizedBox(
                   key: _panelKey,
                   height: screenH * (screenH < 500 ? 0.95 : 0.7),
-                  child: Column(
+                  // 焦点遍历圈定在设置面板内（按控件树顺序上下走）：
+                  // 否则方向键会穿到播放页底部面板的按钮上
+                  child: FocusTraversalGroup(
+                    policy: WidgetOrderTraversalPolicy(),
+                    child: Column(
                   children: [
                     // 顶部拖拽条 + 标题
                     Container(
@@ -316,37 +347,32 @@ class _SettingsPanelState extends State<SettingsPanel>
                             child: child,
                           );
                         },
-                        child: TabBar(
-                          controller: _tabController,
-                          indicatorColor: Colors.blueAccent,
-                          labelColor: Colors.blueAccent,
-                          unselectedLabelColor: Colors.white54,
-                          tabs: const [
-                            Tab(text: '播放列表'),
-                            Tab(text: 'EPG'),
-                            Tab(text: '播放器'),
-                            Tab(text: '系统'),
-                            Tab(text: '说明'),
-                          ],
+                        // 页签自身不取焦点：焦点由上面的 Focus 节点持有，
+                        // 左右键才能稳定切页
+                        child: ExcludeFocus(
+                          child: TabBar(
+                            controller: _tabController,
+                            indicatorColor: Colors.blueAccent,
+                            labelColor: Colors.blueAccent,
+                            unselectedLabelColor: Colors.white54,
+                            tabs: const [
+                              Tab(text: '播放列表'),
+                              Tab(text: 'EPG'),
+                              Tab(text: '播放器'),
+                              Tab(text: '系统'),
+                              Tab(text: '说明'),
+                            ],
+                          ),
                         ),
                       ),
                     ),
                     const Divider(color: Colors.white12, height: 1),
-                    // Tab 内容
-                    Expanded(
-                      child: TabBarView(
-                        controller: _tabController,
-                        children: [
-                          _PlaylistTab(),
-                          _EpgTab(),
-                          _PlayerSettingsTab(),
-                          _SystemSettingsTab(),
-                          _HelpTab(),
-                        ],
-                      ),
-                    ),
+                    // Tab 内容：只构建当前页（TabBarView 会把另外 4 页也留在
+                    // 焦点树里，方向键会跑到看不见的控件上）
+                    Expanded(child: _tabPage(_tabController.index)),
                   ],
-                ),
+                  ),
+                  ),
                 );
               }),
             ),
@@ -595,72 +621,27 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                 final p = playlists[index];
                 final isCurrent =
                     controller.sourceManager.currentPlaylistId == p.id;
-                return ListTile(
-                  // 点击整行即切换为当前播放列表
-                  onTap: isCurrent
+                return _SourceRow(
+                  title: p.name,
+                  subtitle: p.url,
+                  icon: p.type == PlaylistSourceType.url
+                      ? Icons.cloud
+                      : Icons.folder,
+                  isCurrent: isCurrent,
+                  // 行上按 OK = 选定该播放列表；左右键进入行尾按钮
+                  onSelect: isCurrent
                       ? null
                       : () => controller.selectPlaylist(p.id),
-                  leading: Icon(
-                    p.type == PlaylistSourceType.url
-                        ? Icons.cloud
-                        : Icons.folder,
-                    color: isCurrent
-                        ? Colors.blueAccent
-                        : Colors.white54,
-                  ),
-                  title: Text(
-                    p.name,
-                    style: TextStyle(
-                      color: isCurrent
-                          ? Colors.blueAccent
-                          : Colors.white,
-                      fontWeight: isCurrent
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                  ),
-                  subtitle: Text(
-                    p.url,
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 11),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 当前正在使用：蓝色对号（仅状态标识）
-                      if (isCurrent)
-                        const Icon(Icons.check_circle,
-                            color: Colors.blueAccent, size: 22),
-                      IconButton(
-                        icon: const Icon(Icons.edit,
-                            color: Colors.lightBlueAccent),
-                        onPressed: () => _editPlaylist(p),
-                        tooltip: '编辑',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.copy,
-                            color: Colors.white60),
-                        onPressed: () => _copyPlaylist(p),
-                        tooltip: '复制名称和地址',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.refresh,
-                            color: Colors.amber),
-                        onPressed: () =>
-                            controller.refreshChannels(),
-                        tooltip: '刷新',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete,
-                            color: Colors.redAccent),
-                        onPressed: () =>
-                            controller.removePlaylist(p.id),
-                        tooltip: '删除',
-                      ),
-                    ],
-                  ),
+                  actions: [
+                    _RowAction(Icons.edit, Colors.lightBlueAccent, '编辑',
+                        () => _editPlaylist(p)),
+                    _RowAction(Icons.copy, Colors.white60, '复制名称和地址',
+                        () => _copyPlaylist(p)),
+                    _RowAction(Icons.refresh, Colors.amber, '刷新',
+                        () => controller.refreshChannels()),
+                    _RowAction(Icons.delete, Colors.redAccent, '删除',
+                        () => controller.removePlaylist(p.id)),
+                  ],
                 );
               }),
           ],
@@ -814,66 +795,23 @@ class _EpgTabState extends State<_EpgTab> {
                 final e = epgs[index];
                 final isCurrent =
                     controller.sourceManager.currentEpgId == e.id;
-                return ListTile(
-                  // 点击整行即切换为当前 EPG
-                  onTap: isCurrent
-                      ? null
-                      : () => controller.selectEpg(e.id),
-                  leading: Icon(Icons.menu_book,
-                      color: isCurrent
-                          ? Colors.blueAccent
-                          : Colors.white54),
-                  title: Text(
-                    e.name,
-                    style: TextStyle(
-                      color: isCurrent
-                          ? Colors.blueAccent
-                          : Colors.white,
-                      fontWeight: isCurrent
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
-                  ),
-                  subtitle: Text(
-                    e.url,
-                    style: const TextStyle(
-                        color: Colors.white38, fontSize: 11),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 当前正在使用：蓝色对号（仅状态标识）
-                      if (isCurrent)
-                        const Icon(Icons.check_circle,
-                            color: Colors.blueAccent, size: 22),
-                      IconButton(
-                        icon: const Icon(Icons.edit,
-                            color: Colors.lightBlueAccent),
-                        onPressed: () => _editEpg(e),
-                        tooltip: '编辑',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.copy,
-                            color: Colors.white60),
-                        onPressed: () => _copyEpg(e),
-                        tooltip: '复制名称和地址',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.refresh,
-                            color: Colors.amber),
-                        onPressed: () => controller.refreshEpg(),
-                        tooltip: '刷新',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete,
-                            color: Colors.redAccent),
-                        onPressed: () => controller.removeEpg(e.id),
-                        tooltip: '删除',
-                      ),
-                    ],
-                  ),
+                return _SourceRow(
+                  title: e.name,
+                  subtitle: e.url,
+                  icon: Icons.menu_book,
+                  isCurrent: isCurrent,
+                  onSelect:
+                      isCurrent ? null : () => controller.selectEpg(e.id),
+                  actions: [
+                    _RowAction(Icons.edit, Colors.lightBlueAccent, '编辑',
+                        () => _editEpg(e)),
+                    _RowAction(Icons.copy, Colors.white60, '复制名称和地址',
+                        () => _copyEpg(e)),
+                    _RowAction(Icons.refresh, Colors.amber, '刷新',
+                        () => controller.refreshEpg()),
+                    _RowAction(Icons.delete, Colors.redAccent, '删除',
+                        () => controller.removeEpg(e.id)),
+                  ],
                 );
               }),
           ],
@@ -1542,6 +1480,226 @@ Widget _helpNotesCard(List<String> notes) {
       ],
     ),
   );
+}
+
+// ==================== 源条目行（播放列表 / EPG 共用） ====================
+
+/// 行尾操作按钮
+class _RowAction {
+  const _RowAction(this.icon, this.color, this.tooltip, this.onPressed);
+
+  final IconData icon;
+  final Color color;
+  final String tooltip;
+  final VoidCallback onPressed;
+}
+
+/// 源条目行。遥控器交互：
+/// - 上下键：设置面板统一做行间移动（本行只占一个焦点节点，
+///   行尾按钮不参与焦点遍历，所以不会停在按钮上出不来）
+/// - 左右键：在「整行（选定）」与行尾各按钮之间切换
+/// - OK：整行＝选定该源；按钮上＝执行该按钮
+class _SourceRow extends StatefulWidget {
+  const _SourceRow({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.isCurrent,
+    required this.onSelect,
+    required this.actions,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final bool isCurrent;
+
+  /// null＝已是当前源，选定无效果
+  final VoidCallback? onSelect;
+  final List<_RowAction> actions;
+
+  @override
+  State<_SourceRow> createState() => _SourceRowState();
+}
+
+class _SourceRowState extends State<_SourceRow> {
+  final FocusNode _rowNode = FocusNode(debugLabel: 'settingsSourceRow');
+  late final List<FocusNode> _actionNodes = List<FocusNode>.generate(
+    widget.actions.length,
+    (i) => FocusNode(debugLabel: 'settingsSourceRowAction$i'),
+  );
+
+  /// 0＝整行（选定），1..n＝第 n 个行尾按钮
+  int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _rowNode.addListener(_onFocusChanged);
+    for (final n in _actionNodes) {
+      n.addListener(_onFocusChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    _rowNode.removeListener(_onFocusChanged);
+    for (final n in _actionNodes) {
+      n.removeListener(_onFocusChanged);
+      n.dispose();
+    }
+    _rowNode.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (!mounted) return;
+    final i = _actionNodes.indexWhere((n) => n.hasFocus);
+    setState(() => _index = i < 0 ? 0 : i + 1);
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final k = event.logicalKey;
+    if (k == LogicalKeyboardKey.arrowLeft ||
+        k == LogicalKeyboardKey.arrowRight) {
+      final target = (k == LogicalKeyboardKey.arrowLeft ? _index - 1 : _index + 1)
+          .clamp(0, widget.actions.length)
+          .toInt();
+      setState(() => _index = target);
+      if (target == 0) {
+        _rowNode.requestFocus();
+      } else {
+        _actionNodes[target - 1].requestFocus();
+      }
+      return KeyEventResult.handled;
+    }
+    // 整行上按 OK/回车 = 选定该源（按钮上的 OK 由按钮自身处理）
+    if (_index == 0 &&
+        (k == LogicalKeyboardKey.select ||
+            k == LogicalKeyboardKey.enter ||
+            k == LogicalKeyboardKey.numpadEnter ||
+            k == LogicalKeyboardKey.gameButtonA)) {
+      widget.onSelect?.call();
+      return KeyEventResult.handled;
+    }
+    // 上下键交给设置面板统一处理
+    return KeyEventResult.ignored;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final focused = _rowNode.hasFocus || _index > 0;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+      decoration: BoxDecoration(
+        color: _rowNode.hasFocus ? Colors.white.withOpacity(0.04) : null,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: focused ? Colors.blueAccent : Colors.transparent,
+          width: 1.5,
+        ),
+      ),
+      child: Focus(
+        focusNode: _rowNode,
+        onKeyEvent: _onKey,
+        child: Row(
+          children: [
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: widget.onSelect,
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  child: Row(
+                    children: [
+                      Icon(
+                        widget.icon,
+                        size: 22,
+                        color: widget.isCurrent
+                            ? Colors.blueAccent
+                            : Colors.white54,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              widget.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: widget.isCurrent
+                                    ? Colors.blueAccent
+                                    : Colors.white,
+                                fontWeight: widget.isCurrent
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                            Text(
+                              widget.subtitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white38, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            // 当前正在使用：蓝色对号（仅状态标识）
+            if (widget.isCurrent)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 4),
+                child: Icon(Icons.check_circle,
+                    color: Colors.blueAccent, size: 20),
+              ),
+            // 行尾按钮：不参与上下遍历，只能用左右键在行内进入
+            Focus(
+              skipTraversal: true,
+              descendantsAreTraversable: false,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var i = 0; i < widget.actions.length; i++)
+                    Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: _actionNodes[i].hasFocus
+                              ? Colors.white70
+                              : Colors.transparent,
+                        ),
+                      ),
+                      child: IconButton(
+                        focusNode: _actionNodes[i],
+                        visualDensity: VisualDensity.compact,
+                        iconSize: 20,
+                        tooltip: widget.actions[i].tooltip,
+                        icon: Icon(widget.actions[i].icon,
+                            color: widget.actions[i].color),
+                        onPressed: widget.actions[i].onPressed,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 4),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 // ==================== 公共工具 ====================
