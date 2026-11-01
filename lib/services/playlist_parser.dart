@@ -35,6 +35,15 @@ class PlaylistParser {
   static final _gluedUrl =
       RegExp(r'^(.+?)([a-zA-Z][a-zA-Z0-9+.\-]*://\S+)$');
 
+  /// 多源分隔符（DIYP 用 #，部分源用 ,）
+  static final _sepRe = RegExp(r'[,#]');
+
+  /// #EXTINF 属性解析：tvg-id=".." group-title=".." ...
+  static final _attrRe = RegExp(r'([a-zA-Z-]+)="([^"]*)"');
+
+  /// 频道名合并时的噪声字符（空格、横线、下划线、括号）
+  static final _mergeNoiseRe = RegExp(r'[\s\-_（）()\[\]]');
+
   /// 根据【内容】判断格式（后缀名不可靠：.php 可能返回 M3U 也可能返回
   /// TXT，.nzk 等自定义后缀实际是 TXT）
   static PlaylistFormat detectFormat(String content, String url) {
@@ -61,7 +70,7 @@ class PlaylistParser {
       final idx = line.indexOf(',');
       if (idx > 0) {
         final rest = line.substring(idx + 1).trim();
-        final first = rest.split(RegExp(r'[,#]')).first.trim();
+        final first = rest.split(_sepRe).first.trim();
         if (rest.isNotEmpty && _asStreamUrl(first) != null) {
           hasNameUrl = true;
         }
@@ -167,7 +176,7 @@ class PlaylistParser {
       final attrs = <String, String>{};
       final attrStr =
           extInf.substring(0, commaIdx >= 0 ? commaIdx : extInf.length);
-      final regExp = RegExp(r'([a-zA-Z-]+)="([^"]*)"');
+      final regExp = _attrRe;
       for (final match in regExp.allMatches(attrStr)) {
         attrs[match.group(1)!] = match.group(2) ?? '';
       }
@@ -251,7 +260,7 @@ class PlaylistParser {
         final mid = rest.substring(0, restComma).trim();
         final tail = rest.substring(restComma + 1).trim();
         final tailFirst =
-            tail.split(RegExp(r'[,#]')).first.trim();
+            tail.split(_sepRe).first.trim();
         if (_asStreamUrl(mid) == null &&
             _asStreamUrl(tailFirst) != null) {
           final urls3 = _splitSources(tail);
@@ -288,7 +297,7 @@ class PlaylistParser {
   /// 若拆分后不是合法流地址则原样返回（# 也可能是 URL fragment）
   static List<String> _splitSources(String rest) {
     final urls = <String>[];
-    final parts = rest.split(RegExp(r'[,#]'));
+    final parts = rest.split(_sepRe);
     for (final p in parts) {
       final u = _asStreamUrl(p);
       if (u != null) {
@@ -339,7 +348,7 @@ class PlaylistParser {
   static String _mergeKey(String name) {
     return name
         .toLowerCase()
-        .replaceAll(RegExp(r'[\s\-_（）()\[\]]'), '');
+        .replaceAll(_mergeNoiseRe, '');
   }
 
   /// 频道 id：URL + 名称双重哈希。

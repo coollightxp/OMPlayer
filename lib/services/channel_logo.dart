@@ -49,9 +49,11 @@ class ChannelLogo {
   }
 
   /// 归一化：转小写、去空白、全角括号转半角、去掉 `-`/`·`、`+` 记作 plus
+  static final _spaceRe = RegExp(r'\s+');
+
   static String normalize(String s) => s
       .toLowerCase()
-      .replaceAll(RegExp(r'\s+'), '')
+      .replaceAll(_spaceRe, '')
       .replaceAll('（', '(')
       .replaceAll('）', ')')
       .replaceAll('-', '')

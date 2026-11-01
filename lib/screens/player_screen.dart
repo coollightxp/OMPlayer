@@ -63,6 +63,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   String? _prevChannelId;
   bool _prevWebActive = false;
 
+  /// 小窗状态上一次值：切入小窗时关掉全部面板（小窗口 420×236 里
+  /// 这些按大屏排版的卡片会把画面整个盖住）
+  bool _prevMini = false;
+
   // 鼠标自动隐藏（播放中 3 秒无动作）
   Timer? _cursorHideTimer;
   bool _cursorHidden = false;
@@ -122,7 +126,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.170';
+  static const String _appVersion = '1.0.171';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -223,14 +227,38 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         c.state == PlayerState.playing && _prevState != PlayerState.playing;
     _prevState = c.state;
 
-    // 切台：显示左上角台名/节目名 OSD
+    // 小窗（420×236）：面板都是按大屏排版的悬浮卡片，在这里会把画面
+    // 整个盖住。切入小窗瞬间把已打开/待打开的面板全部收起，之后
+    // 构建里也统一不再渲染这些面板
+    if (c.miniWindow != _prevMini) {
+      _prevMini = c.miniWindow;
+      if (c.miniWindow) {
+        _bottomHideTimer?.cancel();
+        _drawerHideTimer?.cancel();
+        _osdTimer?.cancel();
+        setState(() {
+          _bottomPanelVisible = false;
+          _bottomHovering = false;
+          _topBarVisible = false;
+          _leftDrawerOpen = false;
+          _rightEpgOpen = false;
+          _settingsOpen = false;
+          _osdVisible = false;
+        });
+        // 若刚才关掉的是设置面板，恢复低级钩子的数字键拦截
+        _winHotkeys.setCapture(true);
+      }
+    }
+    final mini = c.miniWindow;
+
+    // 切台：显示左上角台名/节目名 OSD（小窗里不显示，窗口太小）
     final cid = c.currentChannel?.id;
-    if (cid != null && cid != _prevChannelId) {
+    if (cid != null && cid != _prevChannelId && !mini) {
       _showChannelOsd();
     }
     _prevChannelId = cid;
 
-    if (becamePlaying && c.currentChannel != null) {
+    if (becamePlaying && c.currentChannel != null && !mini) {
       setState(() {
         _bottomPanelVisible = true;
         _bottomHovering = false;
@@ -242,7 +270,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     // 网页频道切入/切出：切入时像正常起播一样先显示信息面板再自动隐藏
     if (c.webPageActive != _prevWebActive) {
       _prevWebActive = c.webPageActive;
-      if (c.webPageActive) {
+      if (c.webPageActive && !mini) {
         setState(() {
           _bottomPanelVisible = true;
           _bottomHovering = false;
@@ -441,6 +469,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         cursor: _cursorHidden ? SystemMouseCursors.none : MouseCursor.defer,
         onHover: (event) {
           _pokeCursor();
+          // 小窗里不呼出顶部标题栏（窗口只有 420×236，标题栏会盖住画面）
+          if (_controllerRef?.miniWindow ?? false) return;
           // 鼠标靠近屏幕顶部时呼出悬停标题栏
           final nearTop = event.position.dy < 40;
           if (nearTop != _topBarVisible) {
@@ -469,6 +499,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
               // 判断与视觉不同步，导致遥控器左右键被 seek 逻辑接管而面板
               // 按钮收不到焦点，返回键也关不掉面板
               final panelVisible = _bottomPanelVisible;
+              // 小窗（420×236）：所有面板/OSD 都按大屏尺寸排版，在小窗里
+              // 会把画面整个盖住，这里统一不渲染（只留左上角恢复按钮）
+              final mini = controller.miniWindow;
               final webUrl = controller.webPageActive
                   ? controller.currentChannel?.webPageUrl ?? ''
                   : '';
@@ -555,10 +588,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 切台 OSD（左上角序号/台名/节目名）
                   // 放在手势层与各面板【之下】：面板滑出时盖住它，
                   // 避免 OSD 卡片挡住频道面板顶部的返回按钮
-                  _buildChannelOsd(controller),
+                  if (!mini) _buildChannelOsd(controller),
 
                   // 右上角系统时间：独立自治，切换不重建整棵 Stack
-                  const ClockOverlay(),
+                  if (!mini) const ClockOverlay(),
 
                   // 锁定角标：顶部居中提示已锁定与解锁方式
                   if (controller.locked) _buildLockBadge(),
@@ -592,8 +625,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 控制面板/EPG（见 _buildGestureLayer），不再使用贴边
                   // 窄热区；桌面端保留 hover 边缘自动弹出
 
-                  // 桌面端 hover 边缘自动弹出
-                  if (controller.isDesktop) ...[
+                  // 桌面端 hover 边缘自动弹出（小窗里不响应，避免面板盖画面）
+                  if (controller.isDesktop && !mini) ...[
                     // 左边缘：不在 onExit 里启动隐藏计时——面板滑入会覆盖
                     // 这个 20px 触发区，触发区合成 onExit 与面板 onEnter 的
                     // 回调顺序若为「先入后出」，会把面板刚取消的隐藏定时器
@@ -648,81 +681,85 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 不能在外面用 MouseRegion 包裹：根是 AnimatedPositioned 的
                   // 组件被其它 RenderObjectWidget 包裹会破坏 Stack parentData，
                   // release 下直接灰屏）
-                  BottomProgramPanel(
-                    key: _bottomPanelKey,
-                    isVisible: panelVisible,
-                    onHoverEnter: _cancelBottomHide,
-                    onHoverExit: _scheduleBottomHide,
-                    onHoverMove: _cancelBottomHide,
-                    onTogglePlayPause: controller.togglePlayPause,
-                    onScreenshot: _takeScreenshot,
-                    onToggleRecord: () => _toggleRecording(controller),
-                    onSwitchWebNative: () =>
-                        controller.switchWebNativePlayback(),
-                    // 小窗置顶（仅桌面端）；重载当前频道（卡死/黑屏时手动恢复）
-                    onToggleMini:
-                        controller.isDesktop ? controller.toggleMiniWindow : null,
-                    onReload: controller.reloadCurrentChannel,
-                    onOpenRemoteAdmin:
-                        controller.remoteAdminUrl.isEmpty
-                            ? null
-                            : () => _showRemoteAdminQr(controller),
-                    onDismissRemote: () {
-                      if (_bottomPanelVisible) {
-                        setState(() => _bottomPanelVisible = false);
-                      }
-                      _bottomHideTimer?.cancel();
-                    },
-                  ),
+                  if (!mini)
+                    BottomProgramPanel(
+                      key: _bottomPanelKey,
+                      isVisible: panelVisible,
+                      onHoverEnter: _cancelBottomHide,
+                      onHoverExit: _scheduleBottomHide,
+                      onHoverMove: _cancelBottomHide,
+                      onTogglePlayPause: controller.togglePlayPause,
+                      onScreenshot: _takeScreenshot,
+                      onToggleRecord: () => _toggleRecording(controller),
+                      onSwitchWebNative: () =>
+                          controller.switchWebNativePlayback(),
+                      // 小窗置顶（仅桌面端）；重载当前频道（卡死/黑屏时手动恢复）
+                      onToggleMini: controller.isDesktop
+                          ? controller.toggleMiniWindow
+                          : null,
+                      onReload: controller.reloadCurrentChannel,
+                      onOpenRemoteAdmin: controller.remoteAdminUrl.isEmpty
+                          ? null
+                          : () => _showRemoteAdminQr(controller),
+                      onDismissRemote: () {
+                        if (_bottomPanelVisible) {
+                          setState(() => _bottomPanelVisible = false);
+                        }
+                        _bottomHideTimer?.cancel();
+                      },
+                    ),
 
-                  // 左侧频道抽屉
-                  LeftChannelDrawer(
-                    key: _leftDrawerKey,
-                    isOpen: _leftDrawerOpen,
-                    onClose: () {
-                      setState(() => _leftDrawerOpen = false);
-                      WidgetsBinding.instance.addPostFrameCallback(
-                          (_) => _ensureShortcutFocus());
-                    },
-                    onHoverEnter: _cancelDrawerHide,
-                    onHoverExit: _startDrawerHideTimer,
-                    onHoverMove: _cancelDrawerHide,
-                    onOpenSettings: () {
-                      setState(() => _leftDrawerOpen = false);
-                      _toggleSettings();
-                    },
-                  ),
+                  // 左侧频道抽屉（小窗里不渲染，下同）
+                  if (!mini)
+                    LeftChannelDrawer(
+                      key: _leftDrawerKey,
+                      isOpen: _leftDrawerOpen,
+                      onClose: () {
+                        setState(() => _leftDrawerOpen = false);
+                        WidgetsBinding.instance.addPostFrameCallback(
+                            (_) => _ensureShortcutFocus());
+                      },
+                      onHoverEnter: _cancelDrawerHide,
+                      onHoverExit: _startDrawerHideTimer,
+                      onHoverMove: _cancelDrawerHide,
+                      onOpenSettings: () {
+                        setState(() => _leftDrawerOpen = false);
+                        _toggleSettings();
+                      },
+                    ),
 
                   // 右侧 EPG 面板
-                  RightEpgPanel(
-                    key: _rightEpgKey,
-                    isOpen: _rightEpgOpen,
-                    onClose: () {
-                      setState(() => _rightEpgOpen = false);
-                      WidgetsBinding.instance.addPostFrameCallback(
-                          (_) => _ensureShortcutFocus());
-                    },
-                    onHoverEnter: _cancelDrawerHide,
-                    onHoverExit: _startDrawerHideTimer,
-                    onHoverMove: _cancelDrawerHide,
-                  ),
+                  if (!mini)
+                    RightEpgPanel(
+                      key: _rightEpgKey,
+                      isOpen: _rightEpgOpen,
+                      onClose: () {
+                        setState(() => _rightEpgOpen = false);
+                        WidgetsBinding.instance.addPostFrameCallback(
+                            (_) => _ensureShortcutFocus());
+                      },
+                      onHoverEnter: _cancelDrawerHide,
+                      onHoverExit: _startDrawerHideTimer,
+                      onHoverMove: _cancelDrawerHide,
+                    ),
 
                   // 设置面板
-                  SettingsPanel(
-                    isOpen: _settingsOpen,
-                    onClose: () {
-                      setState(() => _settingsOpen = false);
-                      // 关闭后恢复低级钩子对数字键的选台拦截
-                      _winHotkeys.setCapture(true);
-                      WidgetsBinding.instance.addPostFrameCallback(
-                          (_) => _ensureShortcutFocus());
-                    },
-                  ),
+                  if (!mini)
+                    SettingsPanel(
+                      isOpen: _settingsOpen,
+                      onClose: () {
+                        setState(() => _settingsOpen = false);
+                        // 关闭后恢复低级钩子对数字键的选台拦截
+                        _winHotkeys.setCapture(true);
+                        WidgetsBinding.instance.addPostFrameCallback(
+                            (_) => _ensureShortcutFocus());
+                      },
+                    ),
 
                   // 鼠标右键 = 遥控器返回：按层级关闭 设置→投屏→抽屉→面板，
                   // 再按弹退出确认（网页频道前台时右键被 WebView 消费，
                   // 网页区内不触发；网页菜单已在 JS 层禁用）
-                  if (controller.isDesktop)
+                  if (controller.isDesktop && !mini)
                     Positioned.fill(
                       child: GestureDetector(
                         behavior: HitTestBehavior.translucent,
@@ -794,6 +831,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   // 频道抽屉 / EPG / 设置打开时不显示，以免挡住它们
                   // 顶部的关闭、返回按钮
                   if (controller.isDesktop &&
+                      !mini &&
                       !_leftDrawerOpen &&
                       !_rightEpgOpen &&
                       !_settingsOpen)

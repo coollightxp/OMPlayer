@@ -1,4 +1,8 @@
+import 'dart:convert' show utf8;
+
+import 'package:archive/archive.dart';
 import 'package:collection/collection.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:xml/xml.dart';
 
 import '../models/channel.dart';
@@ -11,22 +15,49 @@ typedef XmltvResult = ({
   Map<String, String> channelIcons,
 });
 
+/// 后台 isolate 入口：解压（按 gzip 魔数判断）+ UTF-8 解码 + 原始解析。
+/// 只做纯数据运算，入参/返回值都是可跨 isolate 传递的基本类型。
+Map<String, Object?> _decodeEpgBytes(List<int> bytes) {
+  final String body;
+  if (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b) {
+    body = utf8.decode(GZipDecoder().decodeBytes(bytes));
+  } else {
+    body = utf8.decode(bytes);
+  }
+  return XmltvEpgParser.parseRaw(body);
+}
+
 /// XMLTV 格式 EPG 解析器
 class XmltvEpgParser {
-  /// 解析 XMLTV 内容
-  static XmltvResult parse(String xmlContent) {
-    final result = <String, List<EpgProgram>>{};
+  /// 解析 XMLTV 内容（同步版，供已解码成字符串的场景）
+  static XmltvResult parse(String xmlContent) =>
+      _buildResult(parseRaw(xmlContent));
+
+  /// 解析压缩（.gz）或明文 EPG 字节。
+  ///
+  /// gunzip、UTF-8 解码、XML DOM 解析全部丢到后台 isolate：常见 XMLTV
+  /// 解压后 7 MB、3.7 万条节目，在 UI isolate 上做这些会冻住启动画面
+  /// 数秒（状态文案会停在「正在读取节目列表…」不动，观感就是卡死）。
+  static Future<XmltvResult> parseBytesAsync(List<int> bytes) async {
+    final raw = await compute(_decodeEpgBytes, bytes);
+    return _buildResult(raw);
+  }
+
+  /// 原始解析：只产出可跨 isolate 传递的纯数据
+  /// programs 每行 = [channelId, title, desc, startMs, endMs]
+  static Map<String, Object?> parseRaw(String xmlContent) {
+    final rows = <List<Object?>>[];
     final channelNames = <String, List<String>>{};
     final channelIcons = <String, String>{};
     try {
       final document = XmlDocument.parse(xmlContent);
       final tvElement = document.findElements('tv').firstOrNull;
       if (tvElement == null) {
-        return (
-          programs: result,
-          channelNames: channelNames,
-          channelIcons: channelIcons,
-        );
+        return {
+          'programs': rows,
+          'names': channelNames,
+          'icons': channelIcons,
+        };
       }
 
       // 频道 id -> 所有显示名 + 台标
@@ -55,33 +86,58 @@ class XmltvEpgParser {
         final title =
             prog.findElements('title').firstOrNull?.innerText ?? '未知节目';
         final desc = prog.findElements('desc').firstOrNull?.innerText ?? '';
-
-        result.putIfAbsent(channelId, () => []).add(EpgProgram(
-              id: '${channelId}_${startTime.millisecondsSinceEpoch}',
-              channelId: channelId,
-              title: title,
-              description: desc,
-              startTime: startTime,
-              endTime: endTime,
-            ));
-      }
-
-      for (final list in result.values) {
-        list.sort((a, b) => a.startTime.compareTo(b.startTime));
+        rows.add([
+          channelId,
+          title,
+          desc,
+          startTime.millisecondsSinceEpoch,
+          endTime.millisecondsSinceEpoch,
+        ]);
       }
     } catch (e) {
       debugPrintEpg('解析 XMLTV 失败: $e');
     }
+    return {
+      'programs': rows,
+      'names': channelNames,
+      'icons': channelIcons,
+    };
+  }
+
+  /// 纯数据还原成 EpgProgram 模型（在主 isolate 上，代价很小）
+  static XmltvResult _buildResult(Map<String, Object?> raw) {
+    final programs = <String, List<EpgProgram>>{};
+    final rows = raw['programs'] as List? ?? const [];
+    for (final row in rows) {
+      final r = row as List;
+      final channelId = r[0] as String;
+      final startMs = r[3] as int;
+      final endMs = r[4] as int;
+      programs.putIfAbsent(channelId, () => []).add(EpgProgram(
+            id: '${channelId}_$startMs',
+            channelId: channelId,
+            title: r[1] as String,
+            description: r[2] as String,
+            startTime: DateTime.fromMillisecondsSinceEpoch(startMs),
+            endTime: DateTime.fromMillisecondsSinceEpoch(endMs),
+          ));
+    }
+    for (final list in programs.values) {
+      list.sort((a, b) => a.startTime.compareTo(b.startTime));
+    }
     return (
-      programs: result,
-      channelNames: channelNames,
-      channelIcons: channelIcons,
+      programs: programs,
+      channelNames: (raw['names'] as Map?)?.cast<String, List<String>>() ??
+          <String, List<String>>{},
+      channelIcons:
+          (raw['icons'] as Map?)?.cast<String, String>() ?? <String, String>{},
     );
   }
 
   /// 归一化名称：忽略大小写、空格、标点、括号差异
-  static String norm(String s) =>
-      s.toLowerCase().replaceAll(RegExp(r'[\s\-_（）()\[\].·、,，+]'), '');
+  static final _normRe = RegExp(r'[\s\-_（）()\[\].·、,，+]');
+
+  static String norm(String s) => s.toLowerCase().replaceAll(_normRe, '');
 
   static final _cctvRe = RegExp(r'cctv[-\s]*(\d+)\s*(\+?)');
 
@@ -164,10 +220,12 @@ class XmltvEpgParser {
   }
 
   /// 解析 XMLTV 日期 "20240101190000 +0800"
+  static final _tzSplitRe = RegExp(r'\s+');
+
   static DateTime? _parseXmltvDate(String str) {
     if (str.isEmpty) return null;
     try {
-      final parts = str.trim().split(RegExp(r'\s+'));
+      final parts = str.trim().split(_tzSplitRe);
       final datePart = parts[0].padRight(14, '0');
       if (datePart.length < 14) return null;
 

@@ -1,7 +1,6 @@
 import 'dart:convert' show jsonDecode, utf8;
 import 'dart:io';
 
-import 'package:archive/archive.dart';
 import 'package:fl_charset/fl_charset.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -435,13 +434,11 @@ class SourceManager {
         throw Exception('HTTP ${resp.statusCode}');
       }
 
-      // 支持 .gz 压缩的 EPG（按 gzip 魔数 1f 8b 判断，不依赖扩展名）
+      // 支持 .gz 压缩的 EPG（按 gzip 魔数 1f 8b 判断，不依赖扩展名）。
+      // 解压 + XML 解析放到后台 isolate：7 MB / 数万条节目在 UI
+      // isolate 上做会把启动画面冻住好几秒
       final bytes = resp.bodyBytes;
-      final body =
-          (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b)
-              ? utf8.decode(GZipDecoder().decodeBytes(bytes))
-              : utf8.decode(bytes);
-      final parsed = XmltvEpgParser.parse(body);
+      final parsed = await XmltvEpgParser.parseBytesAsync(bytes);
       _cachedEpg = parsed.programs;
       _cachedEpgChannelNames = parsed.channelNames;
       _cachedEpgChannelIcons = parsed.channelIcons;
