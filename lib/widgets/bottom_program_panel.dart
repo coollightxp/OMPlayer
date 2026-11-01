@@ -283,7 +283,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           current?.title ?? (hasChannel ? info.channelName : '未选择频道'),
           style: TextStyle(
             color: Colors.white,
-            fontSize: scale < 1 ? 17 : 22,
+            fontSize: scale < 1 ? 22 : 24,
             fontWeight: FontWeight.bold,
           ),
           maxLines: 1,
@@ -311,14 +311,14 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
         if (next != null)
           Text(
             '${_range(next)}  ${next.title}',
-            style: const TextStyle(color: Colors.white54, fontSize: 12.5),
+            style: const TextStyle(color: Colors.white54, fontSize: 14.5),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           )
         else if (!hasChannel)
           const Text(
             '点击屏幕或 ≡ 按钮打开频道列表',
-            style: TextStyle(color: Colors.white38, fontSize: 12),
+            style: TextStyle(color: Colors.white38, fontSize: 13.5),
           ),
       ],
     );
@@ -327,7 +327,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
   Widget _metaText(String text, Color color) {
     return Text(text,
         style:
-            TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500));
+            TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.w500));
   }
 
   Widget _badge(String text) {
@@ -338,7 +338,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(text,
-          style: const TextStyle(color: Colors.white70, fontSize: 11.5)),
+          style: const TextStyle(color: Colors.white70, fontSize: 13)),
     );
   }
 
@@ -432,7 +432,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
       // 源切换文字夹在两个按钮中间，不占遥控器动作位
       _btn(actions[0], big: true),
       Text('源${c.sourceIndex + 1}/${c.sourceCount}',
-          style: const TextStyle(color: Colors.white54, fontSize: 11)),
+          style: const TextStyle(color: Colors.white54, fontSize: 12.5)),
       _btn(actions[1], big: true),
       _btn(actions[2], big: true),
     ];

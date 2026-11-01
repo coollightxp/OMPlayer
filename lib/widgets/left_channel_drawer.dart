@@ -462,8 +462,8 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.live_tv, color: Colors.white, size: 22),
-          const SizedBox(width: 10),
+          const Icon(Icons.live_tv, color: Colors.white, size: 24),
+          const SizedBox(width: 12),
           Expanded(
             child: Text(
               _selectedCategory == null ? '频道列表' : _selectedCategory!.name,
@@ -472,7 +472,7 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 17,
+                fontSize: 20,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -530,12 +530,12 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
               const SizedBox(height: 16),
               const Text(
                 '暂无频道列表',
-                style: TextStyle(color: Colors.white54, fontSize: 16),
+                style: TextStyle(color: Colors.white54, fontSize: 18),
               ),
               const SizedBox(height: 8),
               const Text(
                 '请在设置中添加 M3U/TXT 播放列表',
-                style: TextStyle(color: Colors.white38, fontSize: 12),
+                style: TextStyle(color: Colors.white38, fontSize: 13),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
@@ -641,7 +641,7 @@ class _CategoryTile extends StatelessWidget {
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         decoration: BoxDecoration(
           color: keyboardSelected
               ? Colors.white.withOpacity(0.10)
@@ -654,31 +654,33 @@ class _CategoryTile extends StatelessWidget {
         child: Row(
           children: [
             Container(
-              width: 36,
-              height: 36,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: iconColor.withOpacity(0.2),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Icon(icon, color: iconColor, size: 20),
+              child: Icon(icon, color: iconColor, size: 22),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 14),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     category.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 15,
+                      fontSize: 18,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
                   Text(
                     '${category.channels.length} 个频道',
                     style:
-                        const TextStyle(color: Colors.white54, fontSize: 12),
+                        const TextStyle(color: Colors.white54, fontSize: 13.5),
                   ),
                 ],
               ),
@@ -747,7 +749,7 @@ class _ChannelTile extends StatelessWidget {
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
         decoration: BoxDecoration(
           color: isSelected
               ? Colors.blueAccent.withOpacity(0.2)
@@ -767,7 +769,7 @@ class _ChannelTile extends StatelessWidget {
             // 频道序号（与数字选台）。窄抽屉下压缩列宽，名称单行省略，
             // 避免被挤成一字一行的竖排
             SizedBox(
-              width: 32,
+              width: 34,
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
@@ -777,15 +779,15 @@ class _ChannelTile extends StatelessWidget {
                   softWrap: false,
                   style: TextStyle(
                     color: isSelected ? Colors.blueAccent : Colors.white38,
-                    fontSize: 12,
+                    fontSize: 14,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
             ),
             Container(
-              width: 34,
-              height: 34,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: isSelected ? Colors.blueAccent : Colors.white10,
                 borderRadius: BorderRadius.circular(8),
@@ -793,7 +795,7 @@ class _ChannelTile extends StatelessWidget {
               clipBehavior: Clip.antiAlias,
               child: _buildLogo(),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 10),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -805,8 +807,8 @@ class _ChannelTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: isSelected ? Colors.blueAccent : Colors.white,
-                      fontSize: 14,
-                      height: 1.15,
+                      fontSize: 18,
+                      height: 1.2,
                       fontWeight:
                           isSelected ? FontWeight.bold : FontWeight.normal,
                     ),
@@ -821,7 +823,7 @@ class _ChannelTile extends StatelessWidget {
                         color: isSelected
                             ? Colors.blueAccent.withOpacity(0.85)
                             : Colors.white38,
-                        fontSize: 11,
+                        fontSize: 13.5,
                         height: 1.2,
                       ),
                     ),
@@ -837,17 +839,17 @@ class _ChannelTile extends StatelessWidget {
                   child: Icon(
                     isFav ? Icons.star : Icons.star_border,
                     color: isFav ? Colors.amber : Colors.white38,
-                    size: 18,
+                    size: 20,
                   ),
                 ),
               )
             else if (channel.isFavorite)
-              const Icon(Icons.star, color: Colors.amber, size: 16),
+              const Icon(Icons.star, color: Colors.amber, size: 18),
             if (isSelected)
               const Padding(
                 padding: EdgeInsets.only(left: 4),
                 child:
-                    Icon(Icons.play_arrow, color: Colors.blueAccent, size: 18),
+                    Icon(Icons.play_arrow, color: Colors.blueAccent, size: 20),
               ),
           ],
         ),

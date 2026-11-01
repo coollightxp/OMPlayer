@@ -222,9 +222,9 @@ class RightEpgPanelState extends State<RightEpgPanel> {
     } else if (shortest >= 600) {
       designW = _designWidth * 0.95;
     } else if (size.width >= 800) {
-      designW = (size.width * 0.40).clamp(_designWidth, 560.0).toDouble();
+      designW = (size.width * 0.34).clamp(300.0, 480.0).toDouble();
     } else {
-      designW = (size.width * 0.88).clamp(300.0, 430.0).toDouble();
+      designW = (size.width * 0.80).clamp(300.0, 430.0).toDouble();
     }
     // 不超过屏幕宽度的 92%，避免小逻辑分辨率电视盒子上被裁切
     final drawerW =
@@ -282,7 +282,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
                       '节目单 EPG',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 17,
+                        fontSize: 20,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -292,7 +292,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
                       softWrap: false,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                          color: Colors.white54, fontSize: 12),
+                          color: Colors.white54, fontSize: 14),
                     ),
                     // 联动显示当前正在播放的节目名
                     if (controller.currentProgram != null)
@@ -301,7 +301,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            color: Colors.greenAccent, fontSize: 12),
+                            color: Colors.greenAccent, fontSize: 14),
                       ),
                   ],
                 ),
@@ -417,8 +417,8 @@ class _EpgProgramTile extends StatelessWidget {
   Widget _buildCard(
       BuildContext context, bool isNow, bool isPast, bool canReserve) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: isNow
             ? Colors.blueAccent.withOpacity(0.25)
@@ -440,7 +440,7 @@ class _EpgProgramTile extends StatelessWidget {
             children: [
               Icon(
                 _statusIcon(),
-                size: 14,
+                size: 16,
                 color: isNow
                     ? Colors.greenAccent
                     : (isPast ? Colors.white38 : Colors.white70),
@@ -450,7 +450,7 @@ class _EpgProgramTile extends StatelessWidget {
                 program.timeRange,
                 style: TextStyle(
                   color: isNow ? Colors.greenAccent : Colors.white60,
-                  fontSize: 12,
+                  fontSize: 14,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -465,7 +465,7 @@ class _EpgProgramTile extends StatelessWidget {
                   ),
                   child: const Text(
                     '直播中',
-                    style: TextStyle(color: Colors.white, fontSize: 10),
+                    style: TextStyle(color: Colors.white, fontSize: 11.5),
                   ),
                 ),
               const Spacer(),
@@ -480,7 +480,7 @@ class _EpgProgramTile extends StatelessWidget {
                             ? Icons.alarm_on
                             : Icons.alarm_add,
                         color: reserved ? Colors.amber : Colors.white54,
-                        size: 20,
+                        size: 22,
                       ),
                       onPressed: () {
                         controller.toggleReservation(program);
@@ -504,7 +504,7 @@ class _EpgProgramTile extends StatelessWidget {
             program.title,
             style: TextStyle(
               color: isPast ? Colors.white38 : Colors.white,
-              fontSize: 14,
+              fontSize: 17,
               fontWeight: isNow ? FontWeight.bold : FontWeight.normal,
             ),
           ),
@@ -516,7 +516,7 @@ class _EpgProgramTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: isPast ? Colors.white24 : Colors.white54,
-                fontSize: 11,
+                fontSize: 13,
               ),
             ),
           ],
@@ -529,7 +529,7 @@ class _EpgProgramTile extends StatelessWidget {
                 backgroundColor: Colors.white10,
                 valueColor: const AlwaysStoppedAnimation<Color>(
                     Colors.greenAccent),
-                minHeight: 3,
+                minHeight: 4,
               ),
             ),
           ],
