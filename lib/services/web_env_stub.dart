@@ -15,5 +15,8 @@ String? webEnvOfficialVersion;
 /// 初始化 WebView2 环境（Web 平台空操作）。
 Future<void> initWebViewEnvironment() async {}
 
+/// Web 平台用 IFrame 内嵌，不依赖 WebView2，恒可用
+bool webEmbeddedRuntimeReady() => true;
+
 /// 清理 WebView2 纯缓存目录（Web 平台空操作，参数与 web_env_io 一致）。
 void cleanWebView2Cache({bool full = true}) {}

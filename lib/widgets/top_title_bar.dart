@@ -61,15 +61,45 @@ class TopTitleBar extends StatelessWidget {
                           color: Colors.white70, fontSize: 13),
                     ),
                     const Spacer(),
+                    // 置顶 / 锁定：直接改控制器状态，与设置卡片、
+                    // 退出卡片共用同一份数据，鼠标点完各处即时同步
+                    Consumer<PlayerController>(
+                      builder: (context, pc, _) => Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _winButton(
+                            pc.settings.alwaysOnTop
+                                ? Icons.push_pin
+                                : Icons.push_pin_outlined,
+                            pc.settings.alwaysOnTop ? '取消置顶' : '窗口置顶',
+                            () => pc.updateSettings(pc.settings
+                                .copyWith(
+                                    alwaysOnTop: !pc.settings.alwaysOnTop)),
+                            active: pc.settings.alwaysOnTop,
+                          ),
+                          _winButton(
+                            pc.locked ? Icons.lock : Icons.lock_open,
+                            pc.locked ? '解锁（当前已锁定）' : '锁定（防误触）',
+                            () => pc.toggleLock(),
+                            active: pc.locked,
+                          ),
+                        ],
+                      ),
+                    ),
                     _winButton(Icons.minimize, '最小化',
                         () => windowManager.minimize()),
                     _winButton(Icons.crop_square, '最大化/还原',
                         () async {
+                      // 小窗状态下先恢复原窗口：420×236 直接最大化会留下
+                      // miniWindow 标记与置顶状态，再次缩窗尺寸就乱了
+                      final pc = context.read<PlayerController>();
+                      if (pc.miniWindow) {
+                        await pc.toggleMiniWindow();
+                        return;
+                      }
                       // 全屏状态下先退出全屏（同步控制器状态），否则在
                       // 系统全屏层上做 maximize 视觉无变化，像按钮坏了
-                      if (await context
-                          .read<PlayerController>()
-                          .exitFullscreenIfNeeded()) {
+                      if (await pc.exitFullscreenIfNeeded()) {
                         return;
                       }
                       if (await windowManager.isMaximized()) {
@@ -97,6 +127,7 @@ class TopTitleBar extends StatelessWidget {
     String tooltip,
     VoidCallback onTap, {
     Color hoverColor = Colors.white12,
+    bool active = false,
   }) {
     return Tooltip(
       message: tooltip,
@@ -104,7 +135,8 @@ class TopTitleBar extends StatelessWidget {
         cursor: SystemMouseCursors.click,
         child: GestureDetector(
           onTap: onTap,
-          child: HoverContainer(hoverColor: hoverColor, icon: icon),
+          child:
+              HoverContainer(hoverColor: hoverColor, icon: icon, active: active),
         ),
       ),
     );
@@ -115,10 +147,14 @@ class HoverContainer extends StatefulWidget {
   final Color hoverColor;
   final IconData icon;
 
+  /// 已启用（置顶中/已锁定）：图标常亮琥珀色，便于一眼看出当前状态
+  final bool active;
+
   const HoverContainer({
     super.key,
     required this.hoverColor,
     required this.icon,
+    this.active = false,
   });
 
   @override
@@ -139,7 +175,10 @@ class _HoverContainerState extends State<HoverContainer> {
         color: _hover ? widget.hoverColor : Colors.transparent,
         alignment: Alignment.center,
         child: Icon(widget.icon,
-            color: _hover ? Colors.white : Colors.white70, size: 20),
+            color: widget.active
+                ? Colors.amber
+                : (_hover ? Colors.white : Colors.white70),
+            size: 20),
       ),
     );
   }

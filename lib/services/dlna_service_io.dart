@@ -315,8 +315,12 @@ class DlnaService {
       _notifyAlive();
       await Future.delayed(const Duration(milliseconds: 400));
     }
+    // 周期通告 10 秒一次：开热点的手机自己当发送端时，它发出的
+    // M-SEARCH 组播在热点网卡上常被系统延迟/丢弃（tethering 对
+    // 宿主机组播支持差），发现设备很大程度靠被动收 alive——
+    // 30 秒一次意味着热点机最长要等半分钟才扫到接收端
     _aliveTimer =
-        Timer.periodic(const Duration(seconds: 30), (_) => _notifyAlive());
+        Timer.periodic(const Duration(seconds: 10), (_) => _notifyAlive());
   }
 
   String? _headerValue(String msg, String field) {

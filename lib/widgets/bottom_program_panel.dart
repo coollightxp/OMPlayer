@@ -16,9 +16,6 @@ import 'scaled_panel.dart';
 class BottomProgramPanel extends StatefulWidget {
   final bool isVisible;
   final VoidCallback onTogglePlayPause;
-  final VoidCallback onOpenChannels;
-  final VoidCallback onOpenEpg;
-  final VoidCallback onOpenSettings;
   final VoidCallback onScreenshot;
   final VoidCallback onToggleRecord;
 
@@ -34,7 +31,7 @@ class BottomProgramPanel extends StatefulWidget {
   /// 重载当前频道（网页卡死/黑屏时手动恢复）
   final VoidCallback? onReload;
 
-  /// 遥控器激活「跳转类」按钮（频道/EPG/设置/扫码）后通知播放页关闭面板
+  /// 遥控器激活「跳转类」按钮（扫码）后通知播放页关闭面板
   final VoidCallback? onDismissRemote;
 
   /// 鼠标悬停在面板上/移出面板（悬停期间不自动隐藏）
@@ -46,9 +43,6 @@ class BottomProgramPanel extends StatefulWidget {
     super.key,
     required this.isVisible,
     required this.onTogglePlayPause,
-    required this.onOpenChannels,
-    required this.onOpenEpg,
-    required this.onOpenSettings,
     required this.onScreenshot,
     required this.onToggleRecord,
     this.onSwitchWebNative,
@@ -296,15 +290,17 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           overflow: TextOverflow.ellipsis,
         ),
         SizedBox(height: scale < 1 ? 3 : 5),
-        // 时段 / 频道 / 分辨率 / 线路
+        // 频道 / 分辨率 / 线路（电视直播不显示当前节目时段，
+        // 时段只出现在下方「即将播放」那一行）
         Wrap(
           spacing: 10,
           runSpacing: 4,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            if (current != null)
-              _metaText(_range(current), Colors.amber),
-            if (hasChannel) _metaText(info.channelName, Colors.white70),
+            // 有 EPG 时大字行已是节目名，这里才需要频道名；
+            // 无 EPG 时大字行本身就是频道名，避免重复
+            if (hasChannel && current != null)
+              _metaText(info.channelName, Colors.white70),
             if (c.resolutionText.isNotEmpty)
               _badge(c.resolutionText),
             _badge('线路 ${c.sourceIndex + 1}/${c.sourceCount}'),
@@ -378,11 +374,24 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             c.isRecording ? Icons.stop_rounded : Icons.fiber_manual_record,
             c.isRecording ? '停止录制' : '开始录制',
             hasVideo ? widget.onToggleRecord : null),
+        // 静音 / 全屏（与 OMTV 底部栏一致，鼠标直接可点）
+        _KbAction(
+            'mute',
+            c.isMuted ? Icons.volume_off : Icons.volume_up,
+            c.isMuted ? '取消静音' : '静音',
+            c.toggleMute),
+        _KbAction(
+            'fullscreen',
+            c.isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+            c.isFullscreen ? '退出全屏' : '全屏',
+            c.toggleFullscreen),
       ],
       _KbAction(
           'rotate',
           Icons.screen_rotation,
-          c.videoRotation.value == 0 ? '旋转画面' : '恢复原始方向',
+          c.videoRotation.value == 0
+              ? '旋转画面'
+              : (c.videoRotation.value == 3 ? '恢复原始方向' : '继续旋转 90°'),
           hasVideo ? c.cycleVideoRotation : null),
       // 小窗置顶（桌面端）：再点一次恢复原窗口
       if (c.isDesktop && widget.onToggleMini != null)
@@ -403,16 +412,10 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           c.webPageActive ? '内置播放器播放' : '网页播放器播放',
           c.canSwitchWebNative ? widget.onSwitchWebNative : null,
         ),
-      _KbAction('channels', Icons.list, '频道列表', widget.onOpenChannels,
-          dismiss: true),
-      _KbAction('epg', Icons.menu_book, '节目单', widget.onOpenEpg,
-          dismiss: true),
       if (widget.onOpenRemoteAdmin != null)
         _KbAction('remoteAdmin', Icons.qr_code_2, '手机扫码管理',
             widget.onOpenRemoteAdmin,
             dismiss: true),
-      _KbAction('settings', Icons.settings, '设置', widget.onOpenSettings,
-          dismiss: true),
       if (c.isCasting)
         _KbAction('cast', Icons.cast_connected, '断开投屏',
             c.stopCastAndRestore),
@@ -444,13 +447,12 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
       if (i >= 0) children.add(_btn(actions[i]));
     }
 
+    addById('mute');
+    addById('fullscreen');
     addById('mini');
     addById('reload');
     addById('webnative');
-    addById('channels');
-    addById('epg');
     addById('remoteAdmin');
-    addById('settings');
     addById('cast');
 
     return Row(mainAxisSize: MainAxisSize.min, children: children);

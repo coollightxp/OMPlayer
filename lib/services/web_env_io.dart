@@ -12,6 +12,19 @@ WebViewEnvironment? webViewEnvironment;
 /// 环境创建全部失败时的错误详情（仅用于错误界面展示，不写日志文件）。
 String webEnvLastError = '';
 
+/// 当前系统是否有可用的内嵌网页运行时。
+///
+/// Windows 上等同于「WebView2 环境创建成功」：老系统/未装运行时的情况下
+/// 为 false，此时不能创建 InAppWebView 平台视图（创建会抛异常，退出时
+/// 也容易连带崩溃），播放页据此直接拒绝网页频道并给提示。
+/// 其它平台（Android/macOS/Linux）走系统自带 WebView 或外部浏览器，
+/// 无需此检测。
+bool webEmbeddedRuntimeReady() {
+  if (kIsWeb) return false;
+  if (defaultTargetPlatform != TargetPlatform.windows) return true;
+  return webViewEnvironment != null;
+}
+
 /// 三级检测到的 WebView2 运行时版本（官方 API 或注册表）。
 /// null = 未检测到；用于错误界面区分"已装但起不来"与"确实未安装"。
 String? webEnvOfficialVersion;

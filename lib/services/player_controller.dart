@@ -53,9 +53,10 @@ class PlayerController extends ChangeNotifier {
   /// 仅影响显示，不改变解码器或流本身。投屏竖屏直播时可旋转画面填满屏幕。
   final ValueNotifier<int> videoRotation = ValueNotifier<int>(0);
 
-  /// 旋转/恢复：0° ↔ 90° 二态切换（再点一下回到原始方向）
+  /// 旋转：每点一次顺时针转 90°（0°→90°→180°→270°→0°），
+  /// 与 OMTV 一致，四个方向都能转
   void cycleVideoRotation() {
-    videoRotation.value = videoRotation.value == 0 ? 1 : 0;
+    videoRotation.value = (videoRotation.value + 1) % 4;
   }
 
   PlayerState _state = PlayerState.idle;
@@ -1081,6 +1082,14 @@ class PlayerController extends ChangeNotifier {
           icon: Icons.language);
       return;
     }
+    // 系统没有可用的内嵌网页运行时（老系统/未装 WebView2）：
+    // 绝不能创建 InAppWebView 平台视图——创建即抛异常，退出时也容易
+    // 连带崩溃。这里直接拦下并提示，普通频道/EPG/多源管理不受影响
+    if (!webEmbeddedRuntimeReady()) {
+      OsdBus.show('未检测到可用的 WebView2 运行时，网页频道不可用',
+          icon: Icons.language);
+      return;
+    }
     // 已在播放同一个网页频道：保持现状（网页已在前台/后台缓冲中），
     // 不要把前景状态重置回黑屏缓冲、重新走一遍探测流程
     if (_webPageActive && _currentChannel?.id == channel.id) {
@@ -1400,12 +1409,22 @@ class PlayerController extends ChangeNotifier {
     // 投屏点播（非 HLS）给独立的 15 秒缓冲：旧值 90 秒意味着 seek 后
     // 要攒够 90 秒的媒体数据才恢复播放——视频号等 CDN 远距 seek 后限速
     // 下载，实测 90 秒都填不满（看门狗超时重建→重新缓冲→永远播不出来）。
-    // 15 秒兼顾抗抖动与恢复速度（mpv/Macast 同样是小缓冲即开播）；
-    // 直播/HLS 投屏仍用用户设置，避免拉长直播延迟。
+    // 15 秒兼顾抗抖动与恢复速度（mpv/Macast 同样是小缓冲即开播）。
+    // 投屏 HLS 直播在用户设置基础上封顶 10 秒：直播分片实时生成，
+    // 播放列表滑动窗口只有十来秒可下，目标缓冲比窗口还大物理上
+    // 永远填不满，接收端迟迟不进播放态，发送端 SDK 等不到就直接
+    // 断开投屏（实测缓冲设 20 秒后抖音投屏必掉）
     final rawUrl = channel.streamUrls[_sourceIndex].toLowerCase();
     final isHls = rawUrl.contains('.m3u8') || rawUrl.contains('.m3u');
-    registerFvp(
-        bufferSeconds: _isCasting && !isHls ? 15 : _settings.bufferSeconds);
+    var bufSecs = _settings.bufferSeconds;
+    if (_isCasting) {
+      if (isHls) {
+        if (bufSecs > 10) bufSecs = 10;
+      } else {
+        bufSecs = 15;
+      }
+    }
+    registerFvp(bufferSeconds: bufSecs);
 
     await _disposeVideoController();
 
@@ -1738,6 +1757,13 @@ class PlayerController extends ChangeNotifier {
   /// 切换全屏（仅桌面端）
   Future<void> toggleFullscreen() async {
     if (!isDesktop) return;
+    // 小窗状态下按 F/F11 或双击画面：全屏没有意义（窗口只有 420×236），
+    // 先恢复原窗口，避免 miniWindow 与全屏状态并存
+    // （否则全屏后左上角仍挂着「恢复窗口」按钮、双击又变成缩窗）
+    if (_miniWindow) {
+      await toggleMiniWindow();
+      return;
+    }
     _isFullscreen = !_isFullscreen;
     await windowManager.setFullScreen(_isFullscreen);
     await _applyAlwaysOnTop();
@@ -1791,11 +1817,15 @@ class PlayerController extends ChangeNotifier {
     _miniWindow = !_miniWindow;
     try {
       if (_miniWindow) {
-        // 全屏时任务栏被盖住、无法操作小窗，先进出全屏
+        // 全屏时任务栏被盖住、无法操作小窗，先退出全屏；
+        // 最大化状态下 Windows 会忽略 setSize（窗口仍铺满），也先还原
         if (await windowManager.isFullScreen()) {
           _isFullscreen = false;
           await windowManager.setFullScreen(false);
           await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+        }
+        if (await windowManager.isMaximized()) {
+          await windowManager.unmaximize();
         }
         _sizeBeforeMini = await windowManager.getSize();
         await windowManager.setAlwaysOnTop(true);
@@ -2262,6 +2292,20 @@ class PlayerController extends ChangeNotifier {
     CastLog.write(
         'cast RECOVERY triggered savedPos=${savedPos.inSeconds}s isLive=$isLive fallback=${resumePosMs != null}');
     await _playCurrentSource();
+    // 代际守卫：上面的 await 期间用户可能已断开投屏、恢复了原频道，
+    // 甚至投了新片。若续体继续执行，会把【旧片卡死时记下的进度】
+    // seek 到新播放器上（还绕过了节流），新片被 seek 到错误位置
+    // 甚至超出片长——表现为换片后起播异常/有声无画。
+    // 用控制器实例身份判定（比代际号更准：init 超时原地重拉会让
+    // 代际号再 +1，但仍是本次重建自己的控制器）
+    final mine = _videoController;
+    if (mine == null || !_isCasting || _currentChannel != ch) {
+      CastLog.write('cast RECOVERY aborted: superseded by new play');
+      return;
+    }
+    bool stale() => !_isCasting ||
+        _currentChannel != ch ||
+        !identical(_videoController, mine);
     if (!isLive && savedPos > const Duration(seconds: 2)) {
       // 等内核真正开始播放再 seek：
       // 仅 isInitialized && !isBuffering 不够——init 完成后有极短的
@@ -2269,9 +2313,12 @@ class PlayerController extends ChangeNotifier {
       // 要求位置已实际推进（>0.3s）且在播放中，最多等 10 秒。
       var ready = false;
       for (var i = 0; i < 20; i++) {
-        final nv = _videoController?.value;
-        if (nv != null &&
-            nv.isInitialized &&
+        if (stale()) {
+          CastLog.write('cast RECOVERY aborted during ready-wait');
+          return;
+        }
+        final nv = mine.value;
+        if (nv.isInitialized &&
             !nv.isBuffering &&
             nv.isPlaying &&
             nv.position.inMilliseconds > 300) {
@@ -2281,12 +2328,13 @@ class PlayerController extends ChangeNotifier {
         await Future.delayed(const Duration(milliseconds: 500));
       }
       if (ready) {
+        if (stale()) return; // seek 前最后确认，等待期间被新播放取代则放弃
         CastLog.write(
             'cast RECOVERY resume seek ${savedPos.inSeconds}s');
         try {
-          await _videoController?.seekTo(savedPos);
+          await mine.seekTo(savedPos);
           CastLog.write(
-              'cast RECOVERY seek done pos=${_videoController?.value.position.inSeconds}s');
+              'cast RECOVERY seek done pos=${mine.value.position.inSeconds}s');
         } catch (e) {
           CastLog.write('cast RECOVERY seek FAILED: $e');
         }
@@ -2295,9 +2343,10 @@ class PlayerController extends ChangeNotifier {
       }
       // 10 秒都没正常起播：宁可从头播放，也不 seek 进可能挂死的断点
     }
-    // 重置观察计时，给新流一个干净的开始（不动 _castReinitDone）。
+    // 重置观察计时，给新流一个干净的开始（不动 _castReinitCount）。
     // 否则 _watchAdvanceAt/_bufferingSince 仍是重建前的旧时间，
     // 新流正常缓冲会被立即误判
+    if (stale()) return; // 已被新播放取代：新播放自己有干净的计时，不覆盖
     _watchPosMs = -1;
     _watchAdvanceAt = null;
     _stallNudged = false;

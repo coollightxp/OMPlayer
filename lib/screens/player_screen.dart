@@ -122,10 +122,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.169';
+  static const String _appVersion = '1.0.170';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
-  int _exitDialogFocusIndex = 0; // 0=返回, 1=退出, 2=关机
+  int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
   bool _exitDialogOpen = false;
 
   /// 对话框内部 StatefulBuilder 的刷新句柄：遥控器 ←/→ 改焦点后
@@ -576,9 +576,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   if (controller.webPageActive && controller.isDesktop)
                     Positioned.fill(
                       child: _WebDoubleTapFullScreen(
-                        onToggle: controller.toggleFullscreen,
+                        // 小窗模式下双击 = 恢复原窗口（此时切换全屏没有意义）
+                        onToggle: () => controller.miniWindow
+                            ? controller.toggleMiniWindow()
+                            : controller.toggleFullscreen(),
                       ),
                     ),
+
+                  // 小窗模式：左上角常驻「恢复窗口」按钮。小窗口（420×236）
+                  // 里底部控制面板会被窄窗口裁切，只靠面板按钮容易点不到
+                  if (controller.isDesktop && controller.miniWindow)
+                    _buildMiniRestoreButton(controller),
 
                   // 移动端：屏幕分三区，单击左/中/右分别呼出频道菜单/
                   // 控制面板/EPG（见 _buildGestureLayer），不再使用贴边
@@ -647,9 +655,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                     onHoverExit: _scheduleBottomHide,
                     onHoverMove: _cancelBottomHide,
                     onTogglePlayPause: controller.togglePlayPause,
-                    onOpenChannels: () => _openDrawer(left: true),
-                    onOpenEpg: () => _openDrawer(left: false),
-                    onOpenSettings: _toggleSettings,
                     onScreenshot: _takeScreenshot,
                     onToggleRecord: () => _toggleRecording(controller),
                     onSwitchWebNative: () =>
@@ -830,6 +835,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     }
     if (_settingsOpen) {
       setState(() => _settingsOpen = false);
+      // 与设置面板右上角关闭、S 键切换保持一致：恢复低级钩子的数字键
+      // 拦截，否则网页前台时数字选台会失灵
+      _winHotkeys.setCapture(true);
       return;
     }
     if (c.isCasting) {
@@ -871,12 +879,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
             _exitDialogRefresh = setDialogState;
             // 自绘退出面板：不显示程序图标，内容全部居中，
             // 紧凑布局（短小精悍）：程序名称/版本两行 +
-            // 「返回/退出/关机」三个方块图标按钮（无文字，
+            // 「返回/锁定/设置/退出/关机」方块图标按钮（无文字，
             // 鼠标悬停或遥控器框选时在方块下方显示对应文字）。
             // 安卓电视逻辑分辨率较小（常见 960x540），按屏宽等比缩小面板
             final double panelScale =
                 (MediaQuery.sizeOf(ctx).width / 1280).clamp(0.55, 1.0);
             final options = _exitOptions(c);
+            // 按钮多于 4 个（锁定/设置/关机全出现）时加宽卡片，
+            // 避免 FittedBox 把标题和图标整体缩得太小
+            final double cardW = (options.length > 4 ? 470 : 380) * panelScale;
             return Dialog(
               backgroundColor: const Color(0xFF12151A),
               shape: RoundedRectangleBorder(
@@ -884,7 +895,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                 side: const BorderSide(color: Colors.white24),
               ),
               child: SizedBox(
-                width: 380 * panelScale,
+                width: cardW,
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
                   child: Padding(
@@ -895,7 +906,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
                         const Text(
-                          'OMPlayer',
+                          '欧米直播',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 24,
@@ -953,6 +964,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       case 'lock':
         c.toggleLock();
         break;
+      case 'settings':
+        _toggleSettings();
+        break;
       case 'shutdown':
         final isWindows =
             !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
@@ -973,12 +987,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
           defaultTargetPlatform == TargetPlatform.linux);
 
   /// 退出框按钮列表（顺序即遥控器 ←/→ 的移动顺序）。
-  /// 锁定入口收在这里，底部信息栏只保留播放相关按钮
+  /// 「锁定/设置」统一收在这里，底部信息栏只保留播放相关按钮
   List<_ExitOption> _exitOptions(PlayerController c) => <_ExitOption>[
         const _ExitOption(Icons.arrow_back, '返回', Colors.blueAccent, 'back'),
         if (!c.locked)
           const _ExitOption(
               Icons.lock_open, '锁定', Colors.amberAccent, 'lock'),
+        const _ExitOption(Icons.settings, '设置', Colors.tealAccent, 'settings'),
         const _ExitOption(Icons.logout, '退出', Colors.redAccent, 'exit'),
         // 关闭系统仅 Windows/Linux 原生显示
         if (_canShutdownSystem)
@@ -1613,6 +1628,39 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     );
   }
 
+  /// 小窗模式的「恢复窗口」按钮：左上角常驻，鼠标可直接点回原尺寸
+  /// （小窗口里底部面板会被裁切，面板按钮不总是点得到）
+  ///
+  /// top 取 48 而不是 8：鼠标移到顶部 40px 内会弹出 44px 高的悬停标题栏，
+  /// 标题栏在本按钮之上（Stack 后者居上）的命中层会吞掉点击，导致
+  /// 按钮看似存在却点不动。下移到标题栏下沿以外即可避开。
+  Widget _buildMiniRestoreButton(PlayerController c) {
+    return Positioned(
+      top: 48,
+      left: 8,
+      child: Material(
+        color: Colors.black.withOpacity(0.62),
+        borderRadius: BorderRadius.circular(18),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: c.toggleMiniWindow,
+          child: const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.crop_free, color: Colors.white, size: 16),
+                SizedBox(width: 6),
+                Text('恢复窗口',
+                    style: TextStyle(color: Colors.white, fontSize: 12.5)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// 屏幕中央消息 OSD：半透明深色圆角卡片 + 图标 + 文字，不拦截输入
   Widget _buildMessageOsd() {
     return Positioned.fill(
@@ -1801,9 +1849,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // 第一行：大号数字 + 频道名
+                  // 第一行：左侧大号频道号；右侧上下两行——上：频道名（大字），
+                  // 下：当前节目名（小字）
                   Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       Text(
                         number != null ? number.toString().padLeft(2, '0') : '--',
@@ -1815,29 +1864,34 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                           height: 1,
                         ),
                       ),
-                      SizedBox(width: isPhone ? 8 : 12),
-                      Text(
-                        ch?.name ?? '',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: isPhone ? 15 : 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      SizedBox(width: isPhone ? 10 : 14),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            ch?.name ?? '',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: isPhone ? 16 : 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          if (program != null && program.isNotEmpty)
+                            Padding(
+                              padding: EdgeInsets.only(top: isPhone ? 3 : 5),
+                              child: Text(
+                                '正在直播 · $program',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: isPhone ? 12 : 14,
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ],
                   ),
-                  // 第二行：正在直播 + 当前节目
-                  if (program != null && program.isNotEmpty)
-                    Padding(
-                      padding: EdgeInsets.only(top: isPhone ? 5 : 8),
-                      child: Text(
-                        '正在直播 · $program',
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: isPhone ? 12 : 14,
-                        ),
-                      ),
-                    ),
                   // 数字选台输入提示
                   if (_numBuffer.isNotEmpty)
                     Padding(
@@ -1915,7 +1969,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                   : GestureDetector(
                       onTap: _toggleBottomPanel,
                       onDoubleTap: controller.isDesktop
-                          ? controller.toggleFullscreen
+                          ? (controller.miniWindow
+                              ? controller.toggleMiniWindow
+                              : controller.toggleFullscreen)
                           : controller.togglePlayPause,
                       // 全屏状态下绝不能拖动窗口，否则窗口会掉到最底层、点击穿透
                       onPanStart:
@@ -5233,7 +5289,7 @@ class _ExitOption {
   final String label;
   final Color color;
 
-  /// 点击/确认后的动作标识：back / lock / exit / shutdown
+  /// 点击/确认后的动作标识：back / lock / settings / exit / shutdown
   final String action;
   const _ExitOption(this.icon, this.label, this.color, this.action);
 }

@@ -108,7 +108,7 @@ class _SettingsPanelState extends State<SettingsPanel>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
   }
 
   @override
@@ -198,6 +198,7 @@ class _SettingsPanelState extends State<SettingsPanel>
                         Tab(text: 'EPG'),
                         Tab(text: '播放器'),
                         Tab(text: '系统'),
+                        Tab(text: '说明'),
                       ],
                     ),
                     const Divider(color: Colors.white12, height: 1),
@@ -210,6 +211,7 @@ class _SettingsPanelState extends State<SettingsPanel>
                           _EpgTab(),
                           _PlayerSettingsTab(),
                           _SystemSettingsTab(),
+                          _HelpTab(),
                         ],
                       ),
                     ),
@@ -1154,6 +1156,169 @@ class _SystemSettingsTab extends StatelessWidget {
       },
     );
   }
+}
+
+// ==================== 说明标签页 ====================
+
+/// 说明（参考 OMTV）：键盘/鼠标快捷键、遥控器操作、注意事项
+class _HelpTab extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<PlayerController>(
+      builder: (context, controller, _) {
+        final desktop = controller.isDesktop;
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          children: [
+            _helpSection('键盘快捷键'),
+            _helpInfoCard([
+              _helpRow('空格', '播放 / 暂停'),
+              _helpRow('F / F11', '全屏切换'),
+              _helpRow('M', '静音 / 恢复'),
+              _helpRow('L', '解锁（锁定后也可点顶部标题栏的锁按钮解锁）'),
+              _helpRow('C', '频道列表'),
+              _helpRow('E', '节目单'),
+              _helpRow('S', '设置'),
+              _helpRow('R', '录制（仅桌面端）'),
+              _helpRow('↑ / ↓', '切换频道'),
+              _helpRow('← / →', '切换播放源（点播时 ±60 秒快进/快退）'),
+              _helpRow('数字键', '直接输入频道号'),
+              _helpRow('⏯ / ⏮ / ⏭', '播放暂停 / 上一台 / 下一台'),
+              _helpRow('返回 / Esc', '逐层关闭面板，最后弹出退出卡片'),
+            ]),
+            if (desktop) ...[
+              _helpSection('鼠标操作'),
+              _helpInfoCard([
+                _helpRow('双击画面', '全屏 / 还原（小窗模式下为恢复窗口）'),
+                _helpRow('鼠标移到屏幕左边缘', '打开频道列表'),
+                _helpRow('鼠标移到屏幕右边缘', '打开节目单'),
+                _helpRow('鼠标移到屏幕底部', '显示控制面板'),
+                _helpRow('鼠标移到屏幕顶部', '呼出标题栏：置顶 / 锁定 / 最小化 / 最大化 / 关闭'),
+                _helpRow('底部面板按钮', '静音、全屏、旋转、小窗、重载等可直接点'),
+                _helpRow('右键', '相当于返回键，弹出退出卡片'),
+                _helpRow('网页频道前台时', '右键被网页接管，可移到底部呼出控制面板后右键，或按 S 键'),
+                _helpRow('退出卡片', '返回 / 锁定 / 设置 / 退出 / 关机'),
+              ]),
+            ],
+            _helpSection('遥控器'),
+            _helpInfoCard([
+              _helpRow('方向键 ↑ / ↓', '面板未开时切换频道；面板打开时在面板内移动'),
+              _helpRow('方向键 ← / →', '面板未开时切换播放源；面板打开时移动高亮'),
+              _helpRow('OK', '短按打开频道列表 / 长按呼出控制面板（面板打开时为确认）'),
+              _helpRow('返回', '逐层关闭面板；锁定时解锁'),
+              _helpRow('菜单键', '短按节目单 / 长按设置'),
+              _helpRow('数字键', '直接输入频道号跳转'),
+            ]),
+            _helpSection('注意事项'),
+            _helpNotesCard([
+              '直播源和 EPG 都在本设置里自行添加：可在「播放列表」添加多个 m3u / tvbox / 本地源，'
+                  '在「EPG」添加多个 XMLTV 源，随时切换，不是固定源。',
+              '网页频道（webview:// 源）依赖 WebView2 运行时。系统不支持时，'
+                  '可在「系统」关闭「网页直播支持」，程序启动就不会加载 WebView2；'
+                  '即使忘记关闭，检测不到运行时也只会提示不可用，不会崩溃或影响退出。',
+              '网页频道首次加载较慢属正常；播放位置连续 24 秒不推进会尝试自动重载'
+                  '（每频道最多 3 次），也可在底部面板点「重载频道」。',
+              '锁定后除返回键、菜单键、L 键外，所有遥控器与键盘操作都会被屏蔽。',
+              '手机扫码管理需要手机与电脑连接同一 Wi-Fi，并在防火墙中允许本程序。',
+              '台标优先使用源内 tvg-logo，没有则按台名匹配内置台标，仍没有时留空。',
+            ]),
+          ],
+        );
+      },
+    );
+  }
+}
+
+Widget _helpSection(String title) {
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(4, 18, 4, 8),
+    child: Text(
+      title,
+      style: const TextStyle(
+        color: Colors.blueAccent,
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 1,
+      ),
+    ),
+  );
+}
+
+Widget _helpInfoCard(List<Widget> children) {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+    decoration: BoxDecoration(
+      color: Colors.white.withOpacity(0.04),
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: Colors.white12),
+    ),
+    child: Column(children: children),
+  );
+}
+
+Widget _helpRow(String key, String desc) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 6),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 150,
+          child: Text(
+            key,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Text(desc,
+              style: const TextStyle(color: Colors.white60, fontSize: 13)),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 注意事项：逐条小圆点列表
+Widget _helpNotesCard(List<String> notes) {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    decoration: BoxDecoration(
+      color: Colors.white.withOpacity(0.04),
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: Colors.white12),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < notes.length; i++)
+          Padding(
+            padding:
+                EdgeInsets.only(bottom: i == notes.length - 1 ? 0 : 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 5, right: 8),
+                  child: Icon(Icons.circle,
+                      size: 5, color: Colors.blueAccent),
+                ),
+                Expanded(
+                  child: Text(notes[i],
+                      style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13,
+                          height: 1.45)),
+                ),
+              ],
+            ),
+          ),
+      ],
+    ),
+  );
 }
 
 // ==================== 公共工具 ====================
