@@ -47,6 +47,22 @@ class RightEpgPanelState extends State<RightEpgPanel> {
   static String _programKey(EpgProgram p) =>
       '${p.channelId}@${p.startTime.millisecondsSinceEpoch}';
 
+  /// 只取「今天」的节目单。
+  /// XMLTV 源通常一次给出今明两天（解压后 7 MB、数万条），全列出来
+  /// 滚动极长，打开面板也定位不到正在直播的节目。这里按自然日裁剪：
+  /// 与今天有交集（含跨零点的节目）的条目才显示。
+  List<EpgProgram> _todayPrograms(PlayerController controller) {
+    final all = controller.getCurrentEpg();
+    if (all.isEmpty) return all;
+    final now = DateTime.now();
+    final dayStart = DateTime(now.year, now.month, now.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    return all
+        .where((p) =>
+            p.endTime.isAfter(dayStart) && p.startTime.isBefore(dayEnd))
+        .toList();
+  }
+
   /// OK 按下保持标记：按住时系统自动重复的 down 事件只触发一次预约
   bool _okHeld = false;
 
@@ -97,7 +113,7 @@ class RightEpgPanelState extends State<RightEpgPanel> {
       }
       return;
     }
-    final epg = context.read<PlayerController>().getCurrentEpg();
+    final epg = _todayPrograms(context.read<PlayerController>());
     if (epg.isEmpty) return;
     if (action == 'up' || action == 'down') {
       if (!isDown) return;
@@ -288,11 +304,11 @@ class RightEpgPanelState extends State<RightEpgPanel> {
   Widget _buildEpgList() {
     return Consumer<PlayerController>(
       builder: (context, controller, _) {
-        final epg = controller.getCurrentEpg();
+        final epg = _todayPrograms(controller);
         if (epg.isEmpty) {
           return const Center(
             child: Text(
-              '暂无节目单',
+              '今日暂无节目单',
               style: TextStyle(color: Colors.white54),
             ),
           );

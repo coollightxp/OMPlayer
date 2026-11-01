@@ -105,16 +105,81 @@ class _SettingsPanelState extends State<SettingsPanel>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
+  /// 顶部页签的焦点节点：上下键可以落到这里，左右键在这里切页签
+  final FocusNode _tabFocus = FocusNode(debugLabel: 'settingsTabBar');
+
+  /// 设置内容根节点：判断当前焦点是否已在面板内
+  final GlobalKey _panelKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 5, vsync: this);
+    // 上下方向键统一由面板自己接管（见 _onVerticalKey）
+    HardwareKeyboard.instance.addHandler(_onVerticalKey);
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onVerticalKey);
+    _tabFocus.dispose();
     _tabController.dispose();
     super.dispose();
+  }
+
+  /// 上下键改为在设置内容里纵向移动焦点。
+  /// 滑块（Slider）自身把上下键当成数值增减吃掉了，焦点一旦落在滑块上
+  /// 就跳不出来；这里在按键进入焦点树之前截获上下键，按几何方向移动焦点，
+  /// 左右键仍交给控件自己（滑块调数值、顶部页签切页）。
+  bool _onVerticalKey(KeyEvent event) {
+    if (!widget.isOpen) return false;
+    // 设置里弹出对话框（编辑源、二维码等）时放行：焦点属于对话框，
+    // 不能把焦点抢回设置面板
+    if (!(ModalRoute.of(context)?.isCurrent ?? true)) return false;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+    final key = event.logicalKey;
+    final isUp = key == LogicalKeyboardKey.arrowUp;
+    if (!isUp && key != LogicalKeyboardKey.arrowDown) return false;
+    final focus = FocusManager.instance.primaryFocus;
+    if (focus == null) return false;
+    // 焦点还停在面板外（刚打开、焦点在播放页根节点）：从顶部页签进入，
+    // 否则按根节点的整屏矩形做方向定位会找不到目标
+    if (!_focusInsidePanel(focus)) {
+      _tabFocus.requestFocus();
+      return true;
+    }
+    focus.focusInDirection(
+        isUp ? TraversalDirection.up : TraversalDirection.down);
+    // 焦点移动后把目标滚到可视区（设置内容是可滚动的长列表）
+    final target = FocusManager.instance.primaryFocus?.context;
+    if (target != null && target.mounted) {
+      Scrollable.ensureVisible(
+        target,
+        duration: const Duration(milliseconds: 120),
+        alignmentPolicy: isUp
+            ? ScrollPositionAlignmentPolicy.keepVisibleAtStart
+            : ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      );
+    }
+    // 无论是否真的移动了焦点都吞掉该键，避免落到滑块上继续改数值
+    return true;
+  }
+
+  /// 当前焦点是否位于设置面板内部
+  bool _focusInsidePanel(FocusNode node) {
+    final nodeContext = node.context;
+    final panelContext = _panelKey.currentContext;
+    if (nodeContext == null || panelContext == null) return false;
+    if (nodeContext == panelContext) return true;
+    var inside = false;
+    nodeContext.visitAncestorElements((element) {
+      if (element == panelContext) {
+        inside = true;
+        return false;
+      }
+      return true;
+    });
+    return inside;
   }
 
   @override
@@ -147,6 +212,7 @@ class _SettingsPanelState extends State<SettingsPanel>
                 // 横屏手机等矮屏（高度<500）时面板几乎占满全高，避免太短无法操作
                 final screenH = MediaQuery.of(context).size.height;
                 return SizedBox(
+                  key: _panelKey,
                   height: screenH * (screenH < 500 ? 0.95 : 0.7),
                   child: Column(
                   children: [
@@ -187,19 +253,42 @@ class _SettingsPanelState extends State<SettingsPanel>
                         ],
                       ),
                     ),
-                    // Tab 栏
-                    TabBar(
-                      controller: _tabController,
-                      indicatorColor: Colors.blueAccent,
-                      labelColor: Colors.blueAccent,
-                      unselectedLabelColor: Colors.white54,
-                      tabs: const [
-                        Tab(text: '播放列表'),
-                        Tab(text: 'EPG'),
-                        Tab(text: '播放器'),
-                        Tab(text: '系统'),
-                        Tab(text: '说明'),
-                      ],
+                    // Tab 栏：单独可获得焦点（上下键能落到这里），
+                    // 移到这里后左右键切页签
+                    Focus(
+                      focusNode: _tabFocus,
+                      onKeyEvent: (node, event) {
+                        if (event is! KeyDownEvent &&
+                            event is! KeyRepeatEvent) {
+                          return KeyEventResult.ignored;
+                        }
+                        final k = event.logicalKey;
+                        if (k != LogicalKeyboardKey.arrowLeft &&
+                            k != LogicalKeyboardKey.arrowRight) {
+                          return KeyEventResult.ignored;
+                        }
+                        final next = _tabController.index +
+                            (k == LogicalKeyboardKey.arrowLeft ? -1 : 1);
+                        if (next >= 0 && next < _tabController.length) {
+                          _tabController.animateTo(next);
+                        }
+                        // 焦点留在页签栏上，连续左右按不用重新找焦点
+                        _tabFocus.requestFocus();
+                        return KeyEventResult.handled;
+                      },
+                      child: TabBar(
+                        controller: _tabController,
+                        indicatorColor: Colors.blueAccent,
+                        labelColor: Colors.blueAccent,
+                        unselectedLabelColor: Colors.white54,
+                        tabs: const [
+                          Tab(text: '播放列表'),
+                          Tab(text: 'EPG'),
+                          Tab(text: '播放器'),
+                          Tab(text: '系统'),
+                          Tab(text: '说明'),
+                        ],
+                      ),
                     ),
                     const Divider(color: Colors.white12, height: 1),
                     // Tab 内容
