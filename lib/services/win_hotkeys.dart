@@ -100,4 +100,14 @@ class WinHotkeys {
       await _channel.send(enable ? 'W1' : 'W0');
     } catch (_) {}
   }
+
+  /// 请求 runner 恢复光标/卸载钩子后直接结束进程。
+  /// 用于 Windows 10 1607 等老系统：引擎/插件析构阶段会在
+  /// flutter_windows.dll 内抛 0xc0000005（退出时"已停止工作"）。
+  /// 会先释放 WebView2，再走这条快速退出路径，跳过崩溃的析构链。
+  static Future<void> quitApp() async {
+    try {
+      await _channel.send('Q');
+    } catch (_) {}
+  }
 }
