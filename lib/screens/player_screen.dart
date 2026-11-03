@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../services/osd_bus.dart';
+import '../services/pip.dart';
 import '../services/player_controller.dart';
 import '../services/system_power.dart';
 import '../services/web_diag.dart';
@@ -126,7 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.186';
+  static const String _appVersion = '1.0.187';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -722,10 +723,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       onToggleRecord: () => _toggleRecording(controller),
                       onSwitchWebNative: () =>
                           controller.switchWebNativePlayback(),
-                      // 小窗置顶（仅桌面端）；重载当前频道（卡死/黑屏时手动恢复）
+                      // 小窗：桌面端窗口置顶缩小；移动端系统画中画（PiP）
                       onToggleMini: controller.isDesktop
                           ? controller.toggleMiniWindow
-                          : null,
+                          : (kIsWeb ? null : _enterPip),
                       onReload: controller.reloadCurrentChannel,
                       onOpenRemoteAdmin: controller.remoteAdminUrl.isEmpty
                           ? null
@@ -1192,7 +1193,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         k == LogicalKeyboardKey.arrowDown) {
       return true; // 弹层内无列表导航需求，吞掉防穿透切台
     }
-    if (k == LogicalKeyboardKey.contextMenu) {
+    if (k == LogicalKeyboardKey.contextMenu ||
+        k == LogicalKeyboardKey.menu) {
       if (isDown) Navigator.of(context).maybePop();
       if (isUp) {
         _menuHeld = false;
@@ -1247,7 +1249,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         k == LogicalKeyboardKey.arrowDown) {
       return true; // 两按钮水平排列，上下无意义
     }
-    if (k == LogicalKeyboardKey.contextMenu) {
+    if (k == LogicalKeyboardKey.contextMenu ||
+        k == LogicalKeyboardKey.menu) {
       if (isDown && _exitDialogOpen) {
         _exitDialogOpen = false;
         Navigator.of(context).pop<String?>(null);
@@ -1454,6 +1457,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return true;
     }
     if (k == LogicalKeyboardKey.contextMenu ||
+        k == LogicalKeyboardKey.menu ||
         k == LogicalKeyboardKey.escape) {
       if (isDown && _shutdownDialogOpen) _confirmShutdown(false);
       return true;
@@ -1522,6 +1526,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       if (isDown &&
           (k == LogicalKeyboardKey.escape ||
               k == LogicalKeyboardKey.contextMenu ||
+              k == LogicalKeyboardKey.menu ||
               k == LogicalKeyboardKey.arrowLeft ||
               k == LogicalKeyboardKey.arrowRight ||
               k == LogicalKeyboardKey.arrowUp ||
@@ -1538,7 +1543,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (_settingsOpen) {
       if (isDown &&
           (k == LogicalKeyboardKey.escape ||
-              k == LogicalKeyboardKey.contextMenu)) {
+              k == LogicalKeyboardKey.contextMenu ||
+              k == LogicalKeyboardKey.menu)) {
         _handleBackPressed();
         return true;
       }
@@ -1567,8 +1573,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       if (isUp) _lrUp(left);
       return true;
     }
-    // 菜单键：短按 EPG / 长按设置，走按下-抬起配对
-    if (k == LogicalKeyboardKey.contextMenu) {
+    // 菜单键（遥控器/键盘菜单键）：短按 EPG / 长按二维码，走按下-抬起配对
+    if (k == LogicalKeyboardKey.contextMenu ||
+        k == LogicalKeyboardKey.menu) {
       if (isDown) _menuDown();
       if (isUp) _menuUp();
       return true;
@@ -1795,7 +1802,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _onArrow(isUp ? 'prevChannel' : 'nextChannel');
   }
 
-  /// 菜单键按下：启动 500ms 长按=设置
+  /// 菜单键按下：启动 500ms 长按 = 手机扫码管理二维码卡片
+  /// （短按 = 右侧 EPG 节目单面板）
   void _menuDown() {
     if (_menuHeld) return;
     _menuHeld = true;
@@ -1803,7 +1811,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     _menuLongTimer?.cancel();
     _menuLongTimer = Timer(const Duration(milliseconds: 500), () {
       _menuLongFired = true;
-      _toggleSettings();
+      final c = context.read<PlayerController>();
+      if (c.remoteAdminUrl.isEmpty) {
+        _showOsd('Web 管理服务未开启，请在设置中打开',
+            icon: Icons.qr_code_2);
+        return;
+      }
+      _showRemoteAdminQr(c);
     });
   }
 
@@ -2364,6 +2378,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     final url = controller.remoteAdminUrl;
     if (url.isEmpty) return;
     showRemoteAdminQrDialog(context, url);
+  }
+
+  /// 移动端系统画中画（Android 8.0+）：把播放缩成小窗，
+  /// 切到桌面/其它应用后视频继续播。系统不支持（Android 7 及以下、
+  /// 或未注入原生实现）时提示而不是静默失败。
+  Future<void> _enterPip() async {
+    final ok = await enterPip();
+    if (!ok && mounted) {
+      _showOsd('当前系统不支持小窗播放',
+          icon: Icons.picture_in_picture_alt);
+    }
   }
 
   /// 桌面端快捷键：空格 播放/暂停，F/F11 全屏，M 静音，

@@ -227,6 +227,9 @@ class RightEpgPanelState extends State<RightEpgPanel> {
       // 手机竖屏/横屏/电视盒子统一三等分
       designW = size.width / 3;
     }
+    // 手机（含横屏）与电视盒子：面板只有 1/3 屏宽，字号再缩一档，
+    // 保证节目名/时间/简介能完整显示
+    final compact = shortest < 600;
     // 不超过屏幕宽度的 92%，避免小逻辑分辨率电视盒子上被裁切
     final drawerW =
         designW.clamp(0.0, size.width * 0.92).toDouble();
@@ -247,16 +250,25 @@ class RightEpgPanelState extends State<RightEpgPanel> {
           child: ScaledPanel(
             alignment: Alignment.centerRight,
             scale: 1.0,
-            child: Material(
-              color: Colors.black87,
-              elevation: 16,
-              child: SafeArea(
-                child: Column(
-                  children: [
-                    _buildHeader(),
-                    const Divider(height: 1, color: Colors.white12),
-                    Expanded(child: _buildEpgList()),
-                  ],
+            child: MediaQuery(
+              // 只在面板内缩小文字，不影响主界面其它区域
+              data: MediaQuery.of(context).copyWith(
+                textScaler: TextScaler.linear(
+                  MediaQuery.textScalerOf(context).scale(1.0) *
+                      (compact ? 0.78 : 1.0),
+                ),
+              ),
+              child: Material(
+                color: Colors.black87,
+                elevation: 16,
+                child: SafeArea(
+                  child: Column(
+                    children: [
+                      _buildHeader(),
+                      const Divider(height: 1, color: Colors.white12),
+                      Expanded(child: _buildEpgList()),
+                    ],
+                  ),
                 ),
               ),
             ),

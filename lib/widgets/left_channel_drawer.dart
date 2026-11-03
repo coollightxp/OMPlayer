@@ -414,6 +414,9 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       // 手机竖屏/横屏/电视盒子统一三等分
       designW = size.width / 3;
     }
+    // 手机（含横屏）与电视盒子：面板只有 1/3 屏宽，字号再缩一档，
+    // 保证频道名/正在播节目名能完整显示（"看不全就靠小字"）
+    final compact = shortest < 600;
     // 任何情况下不超过屏幕宽度的 92%：逻辑分辨率很小的电视盒子上
     // 面板不能宽于屏幕，否则内容会被裁掉
     final drawerW =
@@ -435,15 +438,24 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
           child: ScaledPanel(
             alignment: Alignment.centerLeft,
             scale: 1.0,
-            child: Material(
-              color: Colors.black87,
-              elevation: 16,
-              child: SafeArea(
-                child: Column(
-                  children: [
-                    _buildHeader(),
-                    Expanded(child: _buildBody()),
-                  ],
+            child: MediaQuery(
+              // 只在面板内缩小文字，不影响主界面其它区域
+              data: MediaQuery.of(context).copyWith(
+                textScaler: TextScaler.linear(
+                  MediaQuery.textScalerOf(context).scale(1.0) *
+                      (compact ? 0.78 : 1.0),
+                ),
+              ),
+              child: Material(
+                color: Colors.black87,
+                elevation: 16,
+                child: SafeArea(
+                  child: Column(
+                    children: [
+                      _buildHeader(),
+                      Expanded(child: _buildBody()),
+                    ],
+                  ),
                 ),
               ),
             ),

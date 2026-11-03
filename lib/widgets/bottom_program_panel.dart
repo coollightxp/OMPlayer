@@ -397,8 +397,9 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             c.isFullscreen ? '退出全屏' : '全屏',
             c.toggleFullscreen),
       ],
-      // 小窗置顶（桌面端）：再点一次恢复原窗口
-      if (c.isDesktop && widget.onToggleMini != null)
+      // 小窗：桌面端为窗口置顶缩小（再点恢复原窗口）；
+      // 安卓端为系统画中画（PiP），切到桌面后视频继续播
+      if (widget.onToggleMini != null)
         _KbAction(
             'mini',
             c.miniWindow ? Icons.fullscreen : Icons.picture_in_picture_alt,

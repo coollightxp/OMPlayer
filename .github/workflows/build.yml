@@ -61,8 +61,13 @@ jobs:
             || echo "::warning::Android app label patch failed, launcher name may stay omplayer"
           # 显式声明网络权限（video_player 会合并，但显式更稳）
           grep -q "android.permission.INTERNET" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <application|' $MANIFEST
-          # 画中画：声明支持（Android 8+ 可用），并允许活动在 PiP 中继续
-          grep -q "pictureInPicture" $MANIFEST || sed -i 's#<activity #<activity android:supportsPictureInPicture="true" android:configChanges="orientation|screenSize|keyboardHidden" #' $MANIFEST
+          # 画中画：给 MainActivity 声明 supportsPictureInPicture
+          # （默认 manifest 的 <activity 后面直接换行，不能用 '<activity ' 匹配；
+          #  configChanges 系统已自带，重复添加会导致 aapt 报属性冲突）
+          grep -q "supportsPictureInPicture" $MANIFEST \
+            || sed -i 's#android:name=".MainActivity"#android:name=".MainActivity"\n            android:supportsPictureInPicture="true"#' $MANIFEST
+          grep -q "supportsPictureInPicture" $MANIFEST \
+            || echo "::warning::PictureInPicture manifest patch failed"
           # 画中画 + 前台服务 + 通知权限
           grep -q "FOREGROUND_SERVICE_MEDIA_PLAYBACK" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <application|' $MANIFEST
           # TV 盒子可装可用：不强制触摸屏；声明 leanback 非必需
@@ -82,6 +87,77 @@ jobs:
               </style>
           </resources>
           XML
+
+          # 画中画原生桥：直接覆盖 flutter create 生成的 MainActivity.kt。
+          # 该文件默认只有包名 + 一行 class，整体重写最稳（正则 patch
+          # Kotlin 源码在 CI 上不可靠）。包名从原文件读取，保持与工程一致。
+          ACTIVITY=$(find android/app/src/main -name "MainActivity.kt" | head -n1)
+          if [ -n "$ACTIVITY" ]; then
+            PKG=$(grep -m1 '^package ' "$ACTIVITY" | sed 's/package //' | tr -d '\r')
+            cat > "$ACTIVITY" <<KOTLIN
+          package $PKG
+
+          import android.app.PictureInPictureParams
+          import android.content.pm.PackageManager
+          import android.content.res.Configuration
+          import android.os.Build
+          import android.util.Rational
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+
+          class MainActivity : FlutterActivity() {
+              private val channelName = "omplayer/pip"
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "enter" -> result.success(enterPip())
+                              "exit" -> result.success(true)
+                              "isTv" -> result.success(isTv())
+                              "notifGranted" -> result.success(true)
+                              "openNotifSettings" -> result.success(false)
+                              "background" -> result.success(false)
+                              "audioUpdate", "audioStop" -> result.success(true)
+                              else -> result.notImplemented()
+                          }
+                      }
+              }
+
+              private fun enterPip(): Boolean {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+                  if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return false
+                  return try {
+                      val params = PictureInPictureParams.Builder()
+                          .setAspectRatio(Rational(16, 9))
+                          .build()
+                      enterPictureInPictureMode(params)
+                  } catch (e: Exception) {
+                      false
+                  }
+              }
+
+              private fun isTv(): Boolean =
+                  packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+                      packageManager.hasSystemFeature(PackageManager.FEATURE_TELEVISION)
+
+              override fun onPictureInPictureModeChanged(
+                  isInPictureInPictureMode: Boolean,
+                  newConfig: Configuration
+              ) {
+                  super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+                  flutterEngine?.dartExecutor?.binaryMessenger?.let {
+                      MethodChannel(it, channelName).invokeMethod("pip", isInPictureInPictureMode)
+                  }
+              }
+          }
+          KOTLIN
+            echo "MainActivity patched: $ACTIVITY (package=$PKG)"
+          else
+            echo "::warning::MainActivity.kt not found, PiP entry will be unavailable"
+          fi
 
       - name: Install dependencies
         run: flutter pub get
