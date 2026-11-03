@@ -62,7 +62,7 @@ jobs:
           # 显式声明网络权限（video_player 会合并，但显式更稳）
           grep -q "android.permission.INTERNET" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <application|' $MANIFEST
           # 画中画：声明支持（Android 8+ 可用），并允许活动在 PiP 中继续
-          grep -q "pictureInPicture" $MANIFEST || sed -i 's|<activity |<activity android:supportsPictureInPicture="true" android:configChanges="orientation|screenSize|keyboardHidden" |' $MANIFEST
+          grep -q "pictureInPicture" $MANIFEST || sed -i 's#<activity #<activity android:supportsPictureInPicture="true" android:configChanges="orientation|screenSize|keyboardHidden" #' $MANIFEST
           # 画中画 + 前台服务 + 通知权限
           grep -q "FOREGROUND_SERVICE_MEDIA_PLAYBACK" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <application|' $MANIFEST
           # TV 盒子可装可用：不强制触摸屏；声明 leanback 非必需

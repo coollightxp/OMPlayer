@@ -515,6 +515,8 @@ class SourceManager {
       for (final raw in entry.value) {
         final m = raw as Map<String, dynamic>;
         list.add(EpgProgram(
+          id: m['i']?.toString() ?? '',
+          channelId: entry.key,
           title: m['t'] as String? ?? '',
           description: m['d'] as String? ?? '',
           startTime: DateTime.fromMillisecondsSinceEpoch(m['s'] as int? ?? 0),
