@@ -750,9 +750,7 @@ class _ChannelTile extends StatelessWidget {
     }
     // 2. 在线图标：EPG icon 优先（与节目单用同一 matchChannelId 匹配），
     //    其次播放源 M3U tvg-logo
-    final sm = context.read<PlayerController>().sourceManager;
-    final epgLogo = sm.getLogoForChannel(channel);
-    final url = epgLogo.isNotEmpty ? epgLogo : channel.logoUrl;
+    final url = channel.logoUrl;
     if (url.isNotEmpty) {
       return Image.network(
         url,
