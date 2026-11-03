@@ -127,7 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.187';
+  static const String _appVersion = '1.0.188';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -1193,8 +1193,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         k == LogicalKeyboardKey.arrowDown) {
       return true; // 弹层内无列表导航需求，吞掉防穿透切台
     }
-    if (k == LogicalKeyboardKey.contextMenu ||
-        k == LogicalKeyboardKey.menu) {
+    if (k == LogicalKeyboardKey.contextMenu) {
       if (isDown) Navigator.of(context).maybePop();
       if (isUp) {
         _menuHeld = false;
@@ -1249,8 +1248,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         k == LogicalKeyboardKey.arrowDown) {
       return true; // 两按钮水平排列，上下无意义
     }
-    if (k == LogicalKeyboardKey.contextMenu ||
-        k == LogicalKeyboardKey.menu) {
+    if (k == LogicalKeyboardKey.contextMenu) {
       if (isDown && _exitDialogOpen) {
         _exitDialogOpen = false;
         Navigator.of(context).pop<String?>(null);
@@ -1457,7 +1455,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return true;
     }
     if (k == LogicalKeyboardKey.contextMenu ||
-        k == LogicalKeyboardKey.menu ||
         k == LogicalKeyboardKey.escape) {
       if (isDown && _shutdownDialogOpen) _confirmShutdown(false);
       return true;
@@ -1526,7 +1523,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       if (isDown &&
           (k == LogicalKeyboardKey.escape ||
               k == LogicalKeyboardKey.contextMenu ||
-              k == LogicalKeyboardKey.menu ||
               k == LogicalKeyboardKey.arrowLeft ||
               k == LogicalKeyboardKey.arrowRight ||
               k == LogicalKeyboardKey.arrowUp ||
@@ -1543,8 +1539,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (_settingsOpen) {
       if (isDown &&
           (k == LogicalKeyboardKey.escape ||
-              k == LogicalKeyboardKey.contextMenu ||
-              k == LogicalKeyboardKey.menu)) {
+              k == LogicalKeyboardKey.contextMenu)) {
         _handleBackPressed();
         return true;
       }
@@ -1574,8 +1569,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return true;
     }
     // 菜单键（遥控器/键盘菜单键）：短按 EPG / 长按二维码，走按下-抬起配对
-    if (k == LogicalKeyboardKey.contextMenu ||
-        k == LogicalKeyboardKey.menu) {
+    if (k == LogicalKeyboardKey.contextMenu) {
       if (isDown) _menuDown();
       if (isUp) _menuUp();
       return true;
