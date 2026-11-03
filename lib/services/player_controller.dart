@@ -859,7 +859,11 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  /// 刷新 EPG 数据
+  /// 刷新 EPG 数据。
+  /// - 当前 EPG 可用（缓存新鲜或联网成功）→ 正常返回；
+  /// - 当前 EPG 彻底失败且还有其他 EPG 源 → 依次尝试，成功一个就
+  ///   自动切为当前源并保存；
+  /// - 全部失败 → 保持空，记录错误。
   Future<void> refreshEpg() async {
     _isLoadingEpg = true;
     notifyListeners();
@@ -867,6 +871,25 @@ class PlayerController extends ChangeNotifier {
       await sourceManager.loadEpg();
     } catch (e) {
       _lastError = '加载 EPG 失败: $e';
+
+      // 默认 EPG 挂了：循环其他源，成功一个就自动切换
+      final epgs = sourceManager.epgs;
+      if (epgs.length > 1) {
+        final curId = sourceManager.currentEpgId;
+        for (final alt in epgs) {
+          if (alt.id == curId) continue;
+          try {
+            await sourceManager.selectEpg(alt.id);
+            await sourceManager.loadEpg();
+            _lastError = '';
+            // 切换了源，通知 UI 并持久化
+            notifyListeners();
+            break;
+          } catch (_) {
+            // 继续试下一个
+          }
+        }
+      }
     } finally {
       _isLoadingEpg = false;
       notifyListeners();

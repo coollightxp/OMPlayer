@@ -48,7 +48,7 @@ jobs:
           cp branding/android/mipmap-xxhdpi/ic_launcher.png  android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           cp branding/android/mipmap-xxxhdpi/ic_launcher.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
-      - name: Patch Android config (cleartext HTTP / cutout fullscreen)
+      - name: Patch Android config (cleartext HTTP / cutout fullscreen / PiP / notification)
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml
           # IPTV 源多为 http:// 明文地址，必须允许明文流量
@@ -61,9 +61,12 @@ jobs:
             || echo "::warning::Android app label patch failed, launcher name may stay omplayer"
           # 显式声明网络权限（video_player 会合并，但显式更稳）
           grep -q "android.permission.INTERNET" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <application|' $MANIFEST
-          # TV 盒子可装可用：不强制触摸屏；声明 leanback 非必需（Android TV
-          # 桌面/应用市场可见，手机安装不受影响）
-          grep -q "android.software.leanback" $MANIFEST || sed -i 's|<application|<uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    <uses-feature android:name="android.software.leanback" android:required="false" />\n    <application|' $MANIFEST
+          # 画中画：声明支持（Android 8+ 可用），并允许活动在 PiP 中继续
+          grep -q "pictureInPicture" $MANIFEST || sed -i 's|<activity |<activity android:supportsPictureInPicture="true" android:configChanges="orientation|screenSize|keyboardHidden" |' $MANIFEST
+          # 画中画 + 前台服务 + 通知权限
+          grep -q "FOREGROUND_SERVICE_MEDIA_PLAYBACK" $MANIFEST || sed -i 's|<application|<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <application|' $MANIFEST
+          # TV 盒子可装可用：不强制触摸屏；声明 leanback 非必需
+          grep -q "android.software.leanback" $MANIFEST || sed -i 's|<application|<uses-feature android:name="android.hardware.touchscreen" android:required="false" />\n    <uses-feature android:name="android.software.leanback" android:required="false" />\n    <uses-feature android:name="android.hardware.type.television" android:required="false" />\n    <application|' $MANIFEST
           # 挖孔/刘海屏全屏不留黑边
           mkdir -p android/app/src/main/res/values-v28
           cat > android/app/src/main/res/values-v28/styles.xml <<'XML'

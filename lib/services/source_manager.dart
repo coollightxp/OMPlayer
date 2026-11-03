@@ -1,5 +1,6 @@
-import 'dart:convert' show jsonDecode, utf8;
+import 'dart:convert' show base64Decode, base64Encode, jsonDecode, jsonEncode, utf8;
 import 'dart:io';
+import 'dart:async';
 
 import 'package:fl_charset/fl_charset.dart';
 import 'package:http/http.dart' as http;
@@ -19,6 +20,13 @@ class SourceManager {
   static const String _currentPlaylistKey = 'omplayer_current_playlist';
   static const String _epgKey = 'omplayer_epgs';
   static const String _currentEpgKey = 'omplayer_current_epg';
+
+  // EPG 每日缓存：拉取后序列化到 SharedPreferences，24h 内复用，
+  // 避免每次打开都联网（EPG 一天内几乎不变）。
+  // 缓存 key = omplayer_epg_cache_${epgId} / omplayer_epg_cache_time_${epgId}
+  static String _cacheKey(String id) => 'omplayer_epg_cache_$id';
+  static String _cacheTimeKey(String id) => 'omplayer_epg_cache_time_$id';
+  static const Duration _epgCacheTtl = Duration(hours: 24);
 
   List<PlaylistSource> _playlists = [];
   List<EpgSource> _epgs = [];
@@ -417,13 +425,36 @@ class SourceManager {
     await _saveEpgs();
   }
 
-  /// 加载并解析当前 EPG 数据
+  /// 加载并解析当前 EPG 数据。
+  /// - 24h 内已拉取过同一 EPG 源 → 直接读 SharedPreferences 缓存，
+  ///   跳过联网；
+  /// - 超过 24h → 联网拉取，成功后更新缓存；
+  /// - 联网失败但有旧缓存 → fallback 到缓存（断网时也能看到节目单）
   Future<Map<String, List<EpgProgram>>> loadEpg() async {
     final source = currentEpg;
     if (source == null) {
       _cachedEpg = {};
       _epgLoaded = true;
       return {};
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+
+    // 1. 读缓存：如果还在有效期内直接用
+    final cacheTimeMs = prefs.getInt(_cacheTimeKey(source.id));
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (cacheTimeMs != null &&
+        nowMs - cacheTimeMs < _epgCacheTtl.inMilliseconds) {
+      final cacheStr = prefs.getString(_cacheKey(source.id));
+      if (cacheStr != null && cacheStr.isNotEmpty) {
+        try {
+          _applyCachedEpg(cacheStr);
+          _epgLoaded = true;
+          return _cachedEpg;
+        } catch (_) {
+          // 缓存损坏，继续联网拉取
+        }
+      }
     }
 
     try {
@@ -449,12 +480,90 @@ class SourceManager {
         _epgs[idx] = source.copyWith(lastUpdated: DateTime.now());
         await _saveEpgs();
       }
+
+      // 写缓存（base64 序列化，SharedPreferences 只吃字符串）
+      await _writeEpgCache(source.id, parsed.programs, parsed.channelNames,
+          parsed.channelIcons);
     } catch (e) {
+      // 联网失败：如果有任何缓存（哪怕过期），退而用之
+      final cacheStr = prefs.getString(_cacheKey(source.id));
+      if (cacheStr != null && cacheStr.isNotEmpty) {
+        try {
+          _applyCachedEpg(cacheStr);
+          _epgLoaded = true;
+          return _cachedEpg;
+        } catch (_) {}
+      }
       _cachedEpg = {};
       _epgLoaded = true;
       rethrow;
     }
     return _cachedEpg;
+  }
+
+  // ============== EPG 缓存编解码 ==============
+
+  void _applyCachedEpg(String cacheStr) {
+    final bytes = base64Decode(cacheStr);
+    final map = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    final p = (map['p'] as Map?)?.cast<String, List<dynamic>>() ?? {};
+    final n = (map['n'] as Map?)?.cast<String, List<dynamic>>() ?? {};
+    final i = (map['i'] as Map?)?.cast<String, String>() ?? {};
+    _cachedEpg = <String, List<EpgProgram>>{};
+    for (final entry in p.entries) {
+      final list = <EpgProgram>[];
+      for (final raw in entry.value) {
+        final m = raw as Map<String, dynamic>;
+        list.add(EpgProgram(
+          title: m['t'] as String? ?? '',
+          description: m['d'] as String? ?? '',
+          startTime: DateTime.fromMillisecondsSinceEpoch(m['s'] as int? ?? 0),
+          endTime: DateTime.fromMillisecondsSinceEpoch(m['e'] as int? ?? 0),
+        ));
+      }
+      _cachedEpg[entry.key] = list;
+    }
+    _cachedEpgChannelNames = <String, List<String>>{};
+    for (final entry in n.entries) {
+      _cachedEpgChannelNames[entry.key] =
+          (entry.value as List).cast<String>();
+    }
+    _cachedEpgChannelIcons = i;
+  }
+
+  Future<void> _writeEpgCache(
+    String epgId,
+    Map<String, List<EpgProgram>> programs,
+    Map<String, List<String>> channelNames,
+    Map<String, String> channelIcons,
+  ) async {
+    final p = <String, List<Map<String, dynamic>>>{};
+    for (final entry in programs.entries) {
+      p[entry.key] = entry.value
+          .map((pr) => {
+                't': pr.title,
+                'd': pr.description,
+                's': pr.startTime.millisecondsSinceEpoch,
+                'e': pr.endTime.millisecondsSinceEpoch,
+              })
+          .toList();
+    }
+    final enc = utf8.encode(jsonEncode({
+      'p': p,
+      'n': channelNames,
+      'i': channelIcons,
+    }));
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_cacheKey(epgId), base64Encode(enc));
+    await prefs.setInt(
+        _cacheTimeKey(epgId), DateTime.now().millisecondsSinceEpoch);
+  }
+
+  /// 手动清除指定 EPG 的缓存（换源或调试用）
+  Future<void> clearEpgCache(String epgId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_cacheKey(epgId));
+    await prefs.remove(_cacheTimeKey(epgId));
   }
 
   /// 根据频道获取 EPG 节目列表

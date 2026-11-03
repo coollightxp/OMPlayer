@@ -298,6 +298,16 @@ button{font-family:inherit;cursor:pointer;-webkit-appearance:none;appearance:non
 .range::-moz-range-track{height:5px;border-radius:99px;background:#2c3344}
 .range::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:#3b82f6;border:none}
 #scale-val{color:#9fb2e8;font-weight:600;font-size:13px}
+.help-card{padding:4px 2px}
+.help-item{display:-webkit-flex;display:flex;-webkit-align-items:flex-start;align-items:flex-start;gap:10px;margin:0 0 12px}
+.help-k{
+  -webkit-flex:0 0 auto;flex:0 0 auto;
+  background:#2563eb;color:#fff;font-weight:700;font-size:11px;
+  padding:2px 6px;border-radius:4px;min-width:28px;text-align:center;
+  margin-top:1px;
+}
+.help-v{font-size:13px;color:#c8cde0;line-height:1.55;word-break:break-word}
+.help-link{color:#3b82f6;text-decoration:none;border-bottom:1px dashed #3b82f6}
 .set-hint{font-size:11.5px;color:#55607a;margin:2px 2px 0;line-height:1.6}
 .fab{
   position:fixed;right:18px;
@@ -372,6 +382,7 @@ input:focus{border-color:#3b82f6}
     <button id="tab-pl" class="on" onclick="switchTab('pl')">直播源</button>
     <button id="tab-epg" onclick="switchTab('epg')">EPG</button>
     <button id="tab-set" onclick="switchTab('set')">设置</button>
+    <button id="tab-help" onclick="switchTab('help')">说明</button>
   </div>
 </div>
 <div class="wrap" id="list"><div class="loading">加载中…</div></div>
@@ -414,8 +425,9 @@ function switchTab(t){
   document.getElementById('tab-pl').className=t==='pl'?'on':'';
   document.getElementById('tab-epg').className=t==='epg'?'on':'';
   document.getElementById('tab-set').className=t==='set'?'on':'';
-  // 设置页没有添加操作，隐藏右下角 FAB
-  document.getElementById('fab').style.display=t==='set'?'none':'block';
+  document.getElementById('tab-help').className=t==='help'?'on':'';
+  // 设置/说明页没有添加操作，隐藏右下角 FAB
+  document.getElementById('fab').style.display=(t==='set'||t==='help')?'none':'block';
   render();
 }
 function fmtTime(iso){
@@ -425,6 +437,7 @@ function fmtTime(iso){
 }
 function render(){
   if(tab==='set'){renderSettings();return}
+  if(tab==='help'){renderHelp();return}
   var items=tab==='pl'?state.playlists:state.epgs;
   var curId=tab==='pl'?state.currentPlaylistId:state.currentEpgId;
   var el=document.getElementById('list');
@@ -467,6 +480,34 @@ function settingDefs(){
     ['alwaysOnTop','窗口置顶','保持播放器窗口始终在最前',true],
     ['launchAtStartup','开机自启动','登录系统后自动启动欧米直播',true]
   ];
+}
+function renderHelp(){
+  var el=document.getElementById('list');
+  el.innerHTML='<div class="group-title">怎么用</div>'
+    +'<div class="card"><div class="help-card">'
+    +'<div class="help-item"><div class="help-k">1</div><div class="help-v"><b>在同一个 Wi-Fi 下</b>用手机浏览器打开这个地址：<a href="http://'+location.host+'" class="help-link">http://'+location.host+'</a>，或者扫播放器里的二维码</div></div>'
+    +'<div class="help-item"><div class="help-k">2</div><div class="help-v"><b>添加直播源</b>：点右下角 +，粘贴 M3U / M3U8 / TXT 订阅地址，保存；在「直播源」标签里点源卡片右侧的 ★ 设为当前</div></div>'
+    +'<div class="help-item"><div class="help-k">3</div><div class="help-v"><b>添加 EPG 节目单</b>：切到「EPG」标签，粘贴 XMLTV 地址；点 ★ 设为当前后，播放器会每天自动拉取一次</div></div>'
+    +'<div class="help-item"><div class="help-k">4</div><div class="help-v"><b>调整播放设置</b>：切到「设置」标签，开关即时生效并自动保存</div></div>'
+    +'</div></div>'
+    +'<div class="group-title">快捷键</div>'
+    +'<div class="card"><div class="help-card">'
+    +'<div class="help-item"><div class="help-k">Alt+W</div><div class="help-v">呼出本管理页二维码（桌面）</div></div>'
+    +'<div class="help-item"><div class="help-k">Info</div><div class="help-v">遥控器呼出本管理页二维码（安卓 TV / 电视盒子）</div></div>'
+    +'<div class="help-item"><div class="help-k">Esc / 返回</div><div class="help-v">退出锁定、关闭面板</div></div>'
+    +'<div class="help-item"><div class="help-k">空格</div><div class="help-v">播放 / 暂停</div></div>'
+    +'<div class="help-item"><div class="help-k">F / F11</div><div class="help-v">全屏切换</div></div>'
+    +'<div class="help-item"><div class="help-k">M</div><div class="help-v">静音</div></div>'
+    +'<div class="help-item"><div class="help-k">C / E</div><div class="help-v">呼出频道列表 / EPG 面板</div></div>'
+    +'<div class="help-item"><div class="help-k">S / R</div><div class="help-v">设置面板 / 录制切换</div></div>'
+    +'</div></div>'
+    +'<div class="group-title">小贴士</div>'
+    +'<div class="card"><div class="help-card">'
+    +'<div class="help-item"><div class="help-k">·</div><div class="help-v">安卓电视/电视盒子按遥控器 ← → ↑ ↓ OK 操作，长按 OK 呼出控制面板</div></div>'
+    +'<div class="help-item"><div class="help-k">·</div><div class="help-v">锁定后除了返回键解锁，其他按键一律屏蔽；再按一次锁定角标或 Esc 解锁</div></div>'
+    +'<div class="help-item"><div class="help-k">·</div><div class="help-v">「启动即全屏 / 窗口置顶 / 开机自启动」仅桌面端生效，安卓端不会显示</div></div>'
+    +'<div class="help-item"><div class="help-k">·</div><div class="help-v">EPG 节目单每天自动拉取一次，断网时会自动用上一次的缓存；切换 EPG 源需先设为当前源</div></div>'
+    +'</div></div>';
 }
 function renderSettings(){
   var el=document.getElementById('list');

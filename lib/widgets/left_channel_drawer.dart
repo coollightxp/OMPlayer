@@ -398,11 +398,11 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    // 面板宽度：
-    // - 桌面/大平板：设计宽度 320；
-    // - 手机横屏、安卓电视盒子：左中右三等分（各占屏宽 1/3），
-    //   保证中间画面至少 1/3，同时尽量把节目名显示全；
-    // - 手机竖屏：最多占屏宽 88%，避免整屏被盖住。
+    // 面板宽度：左中右三等分策略统一覆盖所有场景。
+    // - 桌面/大平板（shortest >= 700）：设计宽度 320，保证面板内部呼吸；
+    // - 其它所有场景（手机横屏、手机竖屏、安卓电视盒子、小平板）：
+    //   左中右三等分（各占屏宽 1/3），保证中间画面至少 1/3。
+    //   节目名看不全时靠字号再缩一档解决，不能再靠面板变宽。
     final size = MediaQuery.of(context).size;
     final shortest = size.shortestSide;
     final double designW;
@@ -410,11 +410,9 @@ class LeftChannelDrawerState extends State<LeftChannelDrawer> {
       designW = _designWidth;
     } else if (shortest >= 600) {
       designW = _designWidth * 0.95;
-    } else if (size.width >= 800) {
-      // 左中右三等分
-      designW = size.width / 3;
     } else {
-      designW = (size.width * 0.88).clamp(280.0, 400.0).toDouble();
+      // 手机竖屏/横屏/电视盒子统一三等分
+      designW = size.width / 3;
     }
     // 任何情况下不超过屏幕宽度的 92%：逻辑分辨率很小的电视盒子上
     // 面板不能宽于屏幕，否则内容会被裁掉

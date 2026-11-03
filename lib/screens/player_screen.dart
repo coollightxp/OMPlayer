@@ -126,7 +126,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.184';
+  static const String _appVersion = '1.0.185';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -1515,14 +1515,19 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     // 键盘/遥控器一有动作就隐藏鼠标指针（鼠标一移动原生侧自动恢复）
     if (isDown) _hidePointerForRemote();
 
-    // 锁定状态：除「返回键 / 菜单键 / L 键」解锁外，所有按键一律屏蔽，
+    // 锁定状态：除「返回键 / 菜单键」解锁外，所有按键一律屏蔽，
     // 防止遥控器/键盘误触切台、改设置或退出（屏幕上有锁定角标提示）
     final lockedCtl = context.read<PlayerController>();
     if (lockedCtl.locked) {
       if (isDown &&
           (k == LogicalKeyboardKey.escape ||
               k == LogicalKeyboardKey.contextMenu ||
-              k == LogicalKeyboardKey.keyL)) {
+              k == LogicalKeyboardKey.arrowLeft ||
+              k == LogicalKeyboardKey.arrowRight ||
+              k == LogicalKeyboardKey.arrowUp ||
+              k == LogicalKeyboardKey.arrowDown ||
+              k == LogicalKeyboardKey.enter ||
+              k == LogicalKeyboardKey.space)) {
         lockedCtl.unlock();
       }
       return true;
@@ -1620,6 +1625,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       action = 'settings';
     } else if (k == LogicalKeyboardKey.keyR) {
       action = 'record';
+    } else if (k == LogicalKeyboardKey.keyW &&
+        isDown &&
+        (HardwareKeyboard.instance.isAltPressed ||
+            HardwareKeyboard.instance.isControlPressed)) {
+      // Alt+W / Ctrl+W：弹出 Web 管理二维码（遥控器按 Info 也能呼出）
+      action = 'webadmin';
+    } else if (k == LogicalKeyboardKey.info) {
+      // 遥控器 Info 键：弹出 Web 管理二维码
+      action = 'webadmin';
     } else if (k == LogicalKeyboardKey.mediaPlayPause ||
         k == LogicalKeyboardKey.mediaPlay ||
         k == LogicalKeyboardKey.mediaPause) {
@@ -2060,6 +2074,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   // ==================== 抽屉控制 ====================
 
   void _openDrawer({required bool left}) {
+    final c = context.read<PlayerController>();
+    if (c.locked) return;
     setState(() {
       // 打开面板时隐藏悬停标题栏，避免遮挡面板顶部按钮
       _topBarVisible = false;
@@ -2076,6 +2092,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 快捷键用：再次按键时关闭对应面板
   void _toggleDrawer({required bool left}) {
+    final c = context.read<PlayerController>();
+    if (c.locked) return;
     setState(() {
       _topBarVisible = false;
       if (left) {
@@ -2313,6 +2331,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   void _toggleBottomPanel() {
     final c = context.read<PlayerController>();
+    // 锁定时屏蔽所有面板呼出
+    if (c.locked) return;
     // 网页模式下没有原生播放状态（_state 通常仍是 loading），
     // 不能用 state==playing 拦截，否则左右点击永远呼不出面板；
     // 暂停中也允许呼出（遥控器长按 OK 在暂停时同样要看进度/恢复播放）
@@ -2368,6 +2388,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
         controller.toggleMute();
       case 'screenshot':
         _takeScreenshot();
+      case 'webadmin':
+        final url = controller.remoteAdminUrl;
+        if (url.isNotEmpty) _showRemoteAdminQr(controller);
     }
   }
 
@@ -2613,6 +2636,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
 
   /// 桌面端 hover 到底部边缘时显示面板
   void _showBottomPanel() {
+    final c = context.read<PlayerController>();
+    if (c.locked) return;
     setState(() => _bottomPanelVisible = true);
     _bottomHideTimer?.cancel();
   }

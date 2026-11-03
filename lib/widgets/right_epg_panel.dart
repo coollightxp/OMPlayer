@@ -212,7 +212,10 @@ class RightEpgPanelState extends State<RightEpgPanel> {
 
   @override
   Widget build(BuildContext context) {
-    // 面板宽度：与左侧频道抽屉一致，手机横屏/电视盒子左中右三等分
+    // 面板宽度：左中右三等分策略统一覆盖所有场景。
+    // - 桌面/大平板（shortest >= 700）：设计宽度；
+    // - 其它所有场景（手机横屏、手机竖屏、安卓电视盒子）：
+    //   左中右三等分（各占屏宽 1/3），节目名看不全时靠字号再缩。
     final size = MediaQuery.of(context).size;
     final shortest = size.shortestSide;
     final double designW;
@@ -220,11 +223,9 @@ class RightEpgPanelState extends State<RightEpgPanel> {
       designW = _designWidth;
     } else if (shortest >= 600) {
       designW = _designWidth * 0.95;
-    } else if (size.width >= 800) {
-      // 左中右三等分
-      designW = size.width / 3;
     } else {
-      designW = (size.width * 0.80).clamp(300.0, 430.0).toDouble();
+      // 手机竖屏/横屏/电视盒子统一三等分
+      designW = size.width / 3;
     }
     // 不超过屏幕宽度的 92%，避免小逻辑分辨率电视盒子上被裁切
     final drawerW =
