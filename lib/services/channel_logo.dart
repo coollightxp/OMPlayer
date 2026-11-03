@@ -63,7 +63,6 @@ class ChannelLogo {
   /// 频道对应的内置台标资源路径；没有匹配返回空串
   static String assetFor(Channel channel) {
     final map = _assets;
-    // 首次调用先异步建索引（不阻塞首帧），索引就绪后的下一帧即可命中
     if (map == null) {
       ensureLoaded();
       return '';
@@ -71,7 +70,8 @@ class ChannelLogo {
     if (map.isEmpty) return '';
     var name = channel.name.trim();
     if (name.isEmpty) return '';
-    // 依次剥离修饰词，命中即返回
+
+    // 1. 完整原名归一化精确命中
     for (int i = 0; i <= _noise.length; i++) {
       final hit = map[normalize(name)];
       if (hit != null) return hit;
@@ -84,6 +84,48 @@ class ChannelLogo {
       }
       if (name.isEmpty) break;
     }
+
+    // 2. 字母+数字核心（汉字全丢，只留英数）：
+    //    "CCTV1综合频道" → "cctv1"，能命中 asset 里 "cctv1.png"
+    //    "湖南卫视" → 空（没英数），跳过
+    final core = _lettersAndDigitsOnly(channel.name);
+    if (core.isNotEmpty) {
+      final hit = map[core];
+      if (hit != null) return hit;
+      // "cctv5plus" vs "cctv5+"：asset 里可能写成 cctv5plus 或 cctv5+
+      final withPlus = core.replaceFirst('plus', '+');
+      if (withPlus != core) {
+        final hit2 = map[withPlus];
+        if (hit2 != null) return hit2;
+      }
+    }
+
+    // 3. tvg-name 里的字母核心（播放源可能有 tvg-name="cctv1"）
+    if (channel.tvgName.isNotEmpty) {
+      final c = _lettersAndDigitsOnly(channel.tvgName);
+      if (c.isNotEmpty) {
+        final hit = map[c];
+        if (hit != null) return hit;
+      }
+    }
+
+    return '';
+  }
+
+  /// 从频道名里提取英+数字核心（其他汉字/标点全丢）。
+  /// 要求至少同时含字母和数字（避免 "体育"→空；"5"→太泛）
+  static String _lettersAndDigitsOnly(String s) {
+    final sb = StringBuffer();
+    bool sawLetter = false;
+    bool sawDigit = false;
+    for (final code in s.toLowerCase().codeUnits) {
+      if ((code >= 97 && code <= 122) || (code >= 48 && code <= 57)) {
+        sb.writeCharCode(code);
+        if (code >= 97) sawLetter = true;
+        if (code >= 48) sawDigit = true;
+      }
+    }
+    if (sawLetter && sawDigit) return sb.toString();
     return '';
   }
 }

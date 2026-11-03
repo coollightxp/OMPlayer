@@ -224,9 +224,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
   // ==================== 台标 ====================
 
   Widget _buildLogo(PlayerController c, double scale) {
-    // 手机台标 64→92：用户反馈偏小，配合面板整体加高
     final size = scale < 1 ? 92.0 : 128.0;
-    final logo = c.currentLogo;
     Widget placeholder() => Container(
           width: size,
           height: size,
@@ -237,12 +235,11 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           child: Icon(Icons.live_tv,
               color: Colors.white54, size: scale < 1 ? 46 : 64),
         );
-    if (logo.isEmpty) {
-      // 源里没给 tvg-logo：用内置台标按频道名匹配，仍没有则占位
-      final asset = c.currentChannel == null
-          ? ''
-          : ChannelLogo.assetFor(c.currentChannel!);
-      if (asset.isEmpty) return placeholder();
+    // 本地 asset 优先（离线可用 + 匹配更强），其次在线 EPG / M3U
+    final asset = c.currentChannel == null
+        ? ''
+        : ChannelLogo.assetFor(c.currentChannel!);
+    if (asset.isNotEmpty) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
         child: Image.asset(
@@ -254,6 +251,8 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
         ),
       );
     }
+    final logo = c.currentLogo;
+    if (logo.isEmpty) return placeholder();
     return ClipRRect(
       borderRadius: BorderRadius.circular(scale < 1 ? 10 : 16),
       child: Image.network(

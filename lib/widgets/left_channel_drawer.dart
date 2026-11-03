@@ -735,23 +735,32 @@ class _ChannelTile extends StatelessWidget {
     this.keyboardSelected = false,
   });
 
-  /// 列表台标：节目源 tvg-logo 优先，其次内置台标，都没有用默认图标
+  /// 列表台标：本地 asset 优先（匹配更强，且离线可用）；
+  /// 本地没有才用在线 EPG icon / M3U tvg-logo；都没有显示默认图标
   Widget _buildLogo() {
     Widget fallback() => const Icon(Icons.tv, color: Colors.white70, size: 18);
-    if (channel.logoUrl.isNotEmpty) {
-      return Image.network(
-        channel.logoUrl,
+    // 1. 内置 asset（最稳，匹配逻辑含完整名、英数核心、tvg-name 三路）
+    final asset = ChannelLogo.assetFor(channel);
+    if (asset.isNotEmpty) {
+      return Image.asset(
+        asset,
         fit: BoxFit.contain,
         errorBuilder: (_, __, ___) => fallback(),
       );
     }
-    final asset = ChannelLogo.assetFor(channel);
-    if (asset.isEmpty) return fallback();
-    return Image.asset(
-      asset,
-      fit: BoxFit.contain,
-      errorBuilder: (_, __, ___) => fallback(),
-    );
+    // 2. 在线图标：EPG icon 优先（与节目单用同一 matchChannelId 匹配），
+    //    其次播放源 M3U tvg-logo
+    final sm = context.read<PlayerController>().sourceManager;
+    final epgLogo = sm.getLogoForChannel(channel);
+    final url = epgLogo.isNotEmpty ? epgLogo : channel.logoUrl;
+    if (url.isNotEmpty) {
+      return Image.network(
+        url,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => fallback(),
+      );
+    }
+    return fallback();
   }
 
   @override
