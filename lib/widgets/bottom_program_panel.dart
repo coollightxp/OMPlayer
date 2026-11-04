@@ -404,9 +404,15 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             c.miniWindow ? Icons.fullscreen : Icons.picture_in_picture_alt,
             c.miniWindow ? '恢复窗口' : '小窗播放',
             widget.onToggleMini),
-      // 手动重载当前频道：网页卡死/黑屏时不必等自动看门狗
+      // 手动重载当前频道：网页卡死/黑屏时不必等自动看门狗；
+      // 投屏中播放会话由发送端控制，重载无意义（置灰），
+      // 断开投屏后自动恢复可用
       if (widget.onReload != null)
-        _KbAction('reload', Icons.refresh, '重载频道', widget.onReload),
+        _KbAction(
+            'reload',
+            Icons.refresh,
+            c.isCasting ? '重载频道（投屏中不可用）' : '重载频道',
+            c.isCasting ? null : widget.onReload),
       // 网页/内置切换：仅网页频道（含已接管为内置的）出现；
       // 加密页/未嗅探到直连流时置灰不可点
       if (c.webPageActive || c.isNativeSniffPlayback)

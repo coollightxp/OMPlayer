@@ -1949,6 +1949,9 @@ class PlayerController extends ChangeNotifier {
   Future<void> reloadCurrentChannel() async {
     final channel = _currentChannel;
     if (channel == null) return;
+    // 投屏接收中：播放会话由发送端控制，本地重载只会与发送端进度
+    // 脱钩，直接忽略（投屏卡顿由投屏看门狗自愈，或发送端重新推流）
+    if (_isCasting) return;
     OsdBus.show('正在重载「${channel.name}」', icon: Icons.refresh);
     if (_webPageActive) {
       _webReloadSerial++;
@@ -1972,7 +1975,8 @@ class PlayerController extends ChangeNotifier {
     if (_settings.autoReloadStall &&
         total > 0 &&
         _autoReloadCount < total &&
-        _currentChannel != null) {
+        _currentChannel != null &&
+        !_isCasting) {
       _autoReloadCount++;
       final n = _autoReloadCount;
       _state = PlayerState.error;
