@@ -548,7 +548,16 @@ class DlnaService {
     final sid = _sidFor(path);
     final peerHost =
         h.value('X-Forwarded-For') ?? req.connectionInfo?.remoteAddress.address ?? '';
-    _subs[path]?.expireTimer.cancel();
+    // 新订阅顶替同路径旧订阅 = 另一台设备接管投屏：
+    // 按规范先给原发送端推一条「无媒体 STOPPED」断联信号再丢弃它，
+    // 否则原发送端一直显示"投屏中"，点断开也没反应
+    final old = _subs[path];
+    if (old != null) {
+      old.expireTimer.cancel();
+      if (path.contains('AVTransport')) {
+        unawaited(_notify(old, _avtStoppedEventBody()));
+      }
+    }
     final sub = _EventSubscription(
         sid: sid, callback: callback, peerHost: peerHost);
     _subs[path] = sub;
@@ -619,6 +628,30 @@ class DlnaService {
     _lastPushedState = null;
     final sub = _subs['/event/AVTransport'];
     if (sub != null) _notify(sub, _avtEventBody());
+  }
+
+  /// 无媒体的 STOPPED LastChange 事件体（Track 0、URI/时长/位置全空）。
+  /// 按 UPnP 规范这是「会话结束」的明确信号，发送端收到后应退出投屏 UI：
+  /// - 本机投屏被新设备接管时，用它通知原发送端断开
+  /// - SetAVTransportURI 换地址时，先给旧会话补一条 STOPPED 再上新片
+  String _avtStoppedEventBody() {
+    const inner = '<InstanceID val="0">'
+        '<TransportState val="STOPPED"/>'
+        '<TransportStatus val="OK"/>'
+        '<CurrentTrack val="0"/>'
+        '<AVTransportURI val=""/>'
+        '<AVTransportURIMetaData val=""/>'
+        '<CurrentTrackURI val=""/>'
+        '<CurrentTrackMetaData val=""/>'
+        '<CurrentTrackDuration val=""/>'
+        '<RelativeTimePosition val=""/>'
+        '<AbsoluteTimePosition val=""/>'
+        '</InstanceID>';
+    final lastChange = _xmlEscape(
+        '<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">$inner</Event>');
+    return '<e:propertyset xmlns:e="urn:schemas-upnp-org:event-1-0">'
+        '<e:property><LastChange>$lastChange</LastChange></e:property>'
+        '</e:propertyset>';
   }
 
   /// RenderingControl 状态变化事件（音量/静音改变后调用）
@@ -773,7 +806,20 @@ class DlnaService {
     if (service.contains('AVTransport')) {
       switch (action) {
         case 'SetAVTransportURI':
-          _currentUri = _extract(body, 'CurrentURI');
+          final newUri = _extract(body, 'CurrentURI');
+          // 换片/被新投屏顶替：旧地址仍在播放时，先给订阅者推一条
+          // 「无媒体 STOPPED」表示旧会话结束，再上新规——按 UPnP
+          // 规范交互，发送端能清楚看到旧片断开而不是凭空换内容
+          if (_currentUri != null &&
+              _currentUri!.isNotEmpty &&
+              newUri != _currentUri) {
+            final sub = _subs['/event/AVTransport'];
+            if (sub != null) {
+              _lastPushedState = 'STOPPED';
+              unawaited(_notify(sub, _avtStoppedEventBody()));
+            }
+          }
+          _currentUri = newUri;
           _currentTitle = _extractCastTitle(body);
           _currentMetaData = _extract(body, 'CurrentURIMetaData');
           CastLog.write('DLNA SetURI title="$_currentTitle" uri=${_currentUri?.length ?? 0}ch');

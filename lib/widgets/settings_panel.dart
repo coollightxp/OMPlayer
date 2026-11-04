@@ -1226,17 +1226,18 @@ class _SystemSettingsTab extends StatelessWidget {
                 activeColor: Colors.blueAccent,
               ),
             ),
-            // 网页频道卡死自动重载：位置 24 秒不推进即重载（每频道最多 3 次）
+            // 失败自动重载：网页卡死重载 + 直播流播放失败自动重试，共用次数
             ListTile(
               leading: Icon(Icons.refresh,
                   color: s.autoReloadStall
                       ? Colors.greenAccent
                       : Colors.white54),
-              title: const Text('网页卡死自动重载',
+              title: const Text('失败自动重载',
                   style: TextStyle(color: Colors.white, fontSize: 15)),
               subtitle: const Text(
-                '已开启：网页频道播放位置连续 24 秒不推进时自动重载（每频道最多 3 次）\n'
-                '内置播放器的直播流有自己的卡顿自愈，不受此开关影响',
+                '已开启：网页频道卡死（24 秒不推进）自动重载；'
+                '直播流播放失败自动重试当前频道\n'
+                '次数用尽仍失败会提示「链接失效」，手动切台或点重试后重新计数',
                 style: TextStyle(color: Colors.white54, fontSize: 12),
               ),
               trailing: Switch(
@@ -1244,6 +1245,40 @@ class _SystemSettingsTab extends StatelessWidget {
                 onChanged: (v) => controller
                     .updateSettings(s.copyWith(autoReloadStall: v)),
                 activeColor: Colors.blueAccent,
+              ),
+            ),
+            // 自动重载/重试次数：3/5/10 次
+            ListTile(
+              leading: Icon(Icons.repeat,
+                  color: s.autoReloadStall
+                      ? Colors.white70
+                      : Colors.white24),
+              enabled: s.autoReloadStall,
+              title: Text('自动重试次数',
+                  style: TextStyle(
+                      color:
+                          s.autoReloadStall ? Colors.white : Colors.white38,
+                      fontSize: 15)),
+              subtitle: Text('每个频道连续失败达到次数后判定链接失效',
+                  style: TextStyle(
+                      color: s.autoReloadStall
+                          ? Colors.white54
+                          : Colors.white24,
+                      fontSize: 12)),
+              trailing: SegmentedButton<int>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                ),
+                segments: const [3, 5, 10]
+                    .map((v) =>
+                        ButtonSegment(value: v, label: Text('$v 次')))
+                    .toList(),
+                selected: {s.retryTimes},
+                onSelectionChanged: s.autoReloadStall
+                    ? (sel) => controller.updateSettings(
+                        s.copyWith(retryTimes: sel.first))
+                    : null,
               ),
             ),
             // DLNA 投屏接收状态 + 开关
@@ -1266,6 +1301,39 @@ class _SystemSettingsTab extends StatelessWidget {
                 onChanged: (v) => controller
                     .updateSettings(s.copyWith(dlnaEnabled: v)),
                 activeColor: Colors.blueAccent,
+              ),
+            ),
+            // 投屏点播播完后的处理：立即返回直播 / 等待连播 / 一直等待
+            ListTile(
+              leading: Icon(Icons.playlist_play,
+                  color: s.dlnaEnabled ? Colors.white70 : Colors.white24),
+              enabled: s.dlnaEnabled,
+              title: Text('投屏播完后',
+                  style: TextStyle(
+                      color: s.dlnaEnabled ? Colors.white : Colors.white38,
+                      fontSize: 15)),
+              subtitle: Text('等待期间发送端连播（下一集）可直接继续；'
+                  '「一直等」则不返回直播，直到新投屏或手动切台',
+                  style: TextStyle(
+                      color:
+                          s.dlnaEnabled ? Colors.white54 : Colors.white24,
+                      fontSize: 12)),
+              trailing: SegmentedButton<int>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                ),
+                segments: const [
+                  ButtonSegment(value: 0, label: Text('立即')),
+                  ButtonSegment(value: 5, label: Text('5秒')),
+                  ButtonSegment(value: 30, label: Text('30秒')),
+                  ButtonSegment(value: -1, label: Text('一直等')),
+                ],
+                selected: {s.castEndWaitSeconds},
+                onSelectionChanged: s.dlnaEnabled
+                    ? (sel) => controller.updateSettings(
+                        s.copyWith(castEndWaitSeconds: sel.first))
+                    : null,
               ),
             ),
             // 局域网 Web 管理：手机扫码增删改直播源/EPG
@@ -1342,16 +1410,17 @@ class _HelpTab extends StatelessWidget {
               _helpRow('空格', '播放 / 暂停'),
               _helpRow('F / F11', '全屏切换'),
               _helpRow('M', '静音 / 恢复'),
-              _helpRow('L', '解锁（锁定后也可点顶部标题栏的锁按钮解锁）'),
               _helpRow('C', '频道列表'),
               _helpRow('E', '节目单'),
               _helpRow('S', '设置'),
               _helpRow('R', '录制（仅桌面端）'),
+              _helpRow('PrtScr', '截图（仅桌面端）'),
+              _helpRow('Alt+W / Ctrl+W', '手机扫码管理二维码'),
               _helpRow('↑ / ↓', '切换频道'),
               _helpRow('← / →', '切换播放源（点播时 ±60 秒快进/快退）'),
               _helpRow('数字键', '直接输入频道号'),
               _helpRow('⏯ / ⏮ / ⏭', '播放暂停 / 上一台 / 下一台'),
-              _helpRow('返回 / Esc', '逐层关闭面板，最后弹出退出卡片'),
+              _helpRow('返回 / Esc', '逐层关闭面板，最后弹出退出卡片；锁定时解锁'),
             ]),
             if (desktop) ...[
               _helpSection('鼠标操作'),
@@ -1373,7 +1442,7 @@ class _HelpTab extends StatelessWidget {
               _helpRow('方向键 ← / →', '面板未开时切换播放源；面板打开时移动高亮'),
               _helpRow('OK', '短按打开频道列表 / 长按呼出控制面板（面板打开时为确认）'),
               _helpRow('返回', '逐层关闭面板；锁定时解锁'),
-              _helpRow('菜单键', '短按节目单 / 长按设置'),
+              _helpRow('菜单键', '短按节目单 / 长按扫码管理'),
               _helpRow('数字键', '直接输入频道号跳转'),
             ]),
             _helpSection('注意事项'),
@@ -1383,9 +1452,10 @@ class _HelpTab extends StatelessWidget {
               '网页频道（webview:// 源）依赖 WebView2 运行时。系统不支持时，'
                   '可在「系统」关闭「网页直播支持」，程序启动就不会加载 WebView2；'
                   '即使忘记关闭，检测不到运行时也只会提示不可用，不会崩溃或影响退出。',
-              '网页频道首次加载较慢属正常；播放位置连续 24 秒不推进会尝试自动重载'
-                  '（每频道最多 3 次），也可在底部面板点「重载频道」。',
-              '锁定后除返回键、菜单键、L 键外，所有遥控器与键盘操作都会被屏蔽。',
+              '直播流播放失败会自动重试当前频道，网页频道卡死（24 秒不推进）会自动重载；'
+                  '重试次数在「系统」里可调（3/5/10 次），次数用尽会提示链接失效，'
+                  '也可随时在底部面板点「重载频道」。',
+              '锁定后按键与点击均被屏蔽，按返回键（或方向键 / OK / 菜单键）即可解锁。',
               '手机扫码管理需要手机与电脑连接同一 Wi-Fi，并在防火墙中允许本程序。',
               '台标优先使用源内 tvg-logo，没有则按台名匹配内置台标，仍没有时留空。',
             ]),

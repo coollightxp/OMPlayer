@@ -474,7 +474,7 @@ function settingDefs(){
   return [
     ['showClock','显示时间','右上角常驻显示系统时钟',false],
     ['autoPlayNext','自动播放下一台','当前频道播放结束后自动切到下一台',false],
-    ['autoReloadStall','网页频道卡死自动重载','网页播放长时间无进度时自动重载当前频道',false],
+    ['autoReloadStall','失败自动重载','直播流播放失败自动重试、网页频道卡死自动重载；次数用尽提示链接失效',false],
     ['dlnaEnabled','DLNA 投屏接收','允许手机或其它设备投屏到本机',false],
     ['startFullscreen','启动即全屏','程序启动后直接进入全屏',true],
     ['alwaysOnTop','窗口置顶','保持播放器窗口始终在最前',true],

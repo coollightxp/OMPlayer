@@ -36,6 +36,7 @@ import 'web_env.dart';
 import 'web_launch.dart';
 import 'network_monitor.dart';
 import 'osd_bus.dart';
+import 'pip.dart';
 
 /// 播放器状态
 enum PlayerState { idle, loading, playing, paused, error, ended, waitingForNetwork }
@@ -123,9 +124,13 @@ class PlayerController extends ChangeNotifier {
   // 几十毫秒），立即恢复上次频道会与马上到达的新投屏并发拉流。延迟 800ms，
   // 期间收到新投屏则取消恢复
   Timer? _castRestoreTimer;
-  // 投屏点播播完（ended）兜底：上报 STOPPED 后等 5 秒，发送端若没主动
-  // Stop/换片，就自动切回投屏前频道，避免停在最后一帧
+  // 投屏点播播完（ended）兜底：上报 STOPPED 后等待「投屏播完后」设置
+  // 的时长，发送端若没主动 Stop/换片，就自动切回投屏前频道
   Timer? _castEndedTimer;
+
+  // 播放失败自动重试定时器：起播/播放失败进入 error 后，按设置次数
+  // 自动重载当前频道；换台/手动重试时取消
+  Timer? _autoRetryTimer;
 
   // 静音状态
   bool _isMuted = false;
@@ -204,6 +209,26 @@ class PlayerController extends ChangeNotifier {
     return result;
   }
 
+  /// 已同步给原生的「切后台自动画中画」开关状态（去重，避免每次刷新都走通道）
+  bool _autoPipSynced = false;
+
+  /// 是否 Android TV / 电视盒子（启动时检测一次）。
+  /// 电视端按 Home 进小窗会打断看电视的主流程，不做自动画中画
+  bool _isTv = false;
+
+  /// 播放状态可能从多处改变（内核回调/网页 JS/切台/投屏），统一在
+  /// notifyListeners 出口处同步：播放中（非投屏/非电视端）时，
+  /// 安卓按 Home 或切到别的应用会自动进入画中画小窗
+  @override
+  void notifyListeners() {
+    super.notifyListeners();
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    final armed = isPlaying && !_isCasting && !_isTv;
+    if (armed == _autoPipSynced) return;
+    _autoPipSynced = armed;
+    setAutoPip(armed);
+  }
+
   PlayerController() {
     _init();
   }
@@ -211,6 +236,8 @@ class PlayerController extends ChangeNotifier {
   Future<void> _init() async {
     _boot('正在读取设置…');
     await _loadSettings();
+    // Android TV / 电视盒子检测：决定是否启用切后台自动画中画
+    _isTv = await isTvDevice();
     _boot('正在加载节目源…');
     await sourceManager.loadFromPrefs();
     await reservationManager.init(_onReservationTriggered);
@@ -907,8 +934,12 @@ class PlayerController extends ChangeNotifier {
 
   /// 播放指定频道（从第一个源开始，失败自动尝试下一个源）
   Future<void> playChannel(Channel channel) async {
-    // 换频道：网页卡死重载计数清零（同一频道最多自动重载 3 次）
+    // 换频道：失败重载计数清零（同一频道最多自动重试 retryTimes 次），
+    // 并取消上个频道挂起的自动重试
     _autoReloadCount = 0;
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = null;
+    _lastError = null;
     // 无网络时等待网络（开机启动时系统网络可能未就绪）
     if (!await _waitForNetwork()) {
       // 30 秒内仍无网络，保持等待状态，后台继续检测
@@ -1571,6 +1602,10 @@ class PlayerController extends ChangeNotifier {
       await WakelockPlus.enable();
 
       _state = PlayerState.playing;
+      // 起播成功：清错误提示与挂起的自动重试
+      _lastError = null;
+      _autoRetryTimer?.cancel();
+      _autoRetryTimer = null;
       // 嗅探流起播成功：清回退标记
       _sniffedFromWeb = false;
       // 记录当前频道，下次启动时恢复。网页嗅探接管时保存的是原网页
@@ -1610,7 +1645,8 @@ class PlayerController extends ChangeNotifier {
         _sniffPlaybackFailed();
         return;
       }
-      _state = PlayerState.error;
+      // 所有源都失败：按设置自动重试，次数用尽判定链接失效
+      _enterErrorOrRetry();
     } catch (e) {
       if (gen != _playGeneration) {
         discardLate();
@@ -1630,7 +1666,7 @@ class PlayerController extends ChangeNotifier {
         _sniffPlaybackFailed();
         return;
       }
-      _state = PlayerState.error;
+      _enterErrorOrRetry();
     }
     notifyListeners();
   }
@@ -1655,25 +1691,33 @@ class PlayerController extends ChangeNotifier {
         _sniffPlaybackFailed();
         return;
       }
-      _state = PlayerState.error;
-      notifyListeners();
+      // 播放中途出错且无备用源：按设置自动重试，次数用尽判定链接失效
+      _enterErrorOrRetry();
       return;
     }
     // 投屏点播内容正常播完：状态切到 ended（DLNA 上报 STOPPED），
-    // 发送端据此知道视频结束。上报后等 5 秒，发送端若没主动 Stop/换片，
-    // 就自动切回投屏前频道，避免停在最后一帧等用户手动断开。
+    // 发送端据此知道视频结束。之后按「投屏播完后」设置处理：
+    // 0=立即切回直播；N 秒=等待连播（电视剧下一集），超时才切回；
+    // -1=一直等待新投屏或用户手动切台/断开。
     if (_isCasting &&
         v.isCompleted &&
         _state == PlayerState.playing) {
       _state = PlayerState.ended;
       notifyListeners();
       _castEndedTimer?.cancel();
-      _castEndedTimer = Timer(const Duration(seconds: 5), () {
-        _castEndedTimer = null;
-        if (_isCasting && _state == PlayerState.ended) {
-          stopCastAndRestore();
-        }
-      });
+      final wait = _settings.castEndWaitSeconds;
+      if (wait < 0) {
+        // 一直等待：停在本片结束画面（DLNA 已上报 STOPPED），
+        // 新投屏到来会被 playCastUrl 直接接管
+        OsdBus.show('投屏已播完，等待下一条投屏…', icon: Icons.cast);
+      } else {
+        _castEndedTimer = Timer(Duration(seconds: wait), () {
+          _castEndedTimer = null;
+          if (_isCasting && _state == PlayerState.ended) {
+            stopCastAndRestore();
+          }
+        });
+      }
     }
   }
 
@@ -1904,6 +1948,44 @@ class PlayerController extends ChangeNotifier {
     await _playCurrentSource();
   }
 
+  /// 播放失败统一入口：「失败自动重载」开启且次数未用尽时，3 秒后自动
+  /// 重载当前频道（从第一个源重新拉流，与手动点「重载」一致）；
+  /// 次数用尽仍失败则判定链接失效，停留错误页等用户手动处理。
+  /// 与网页频道卡死自动重载共用同一开关与次数（autoReloadStall/retryTimes）
+  void _enterErrorOrRetry() {
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = null;
+    final total = _settings.retryTimes;
+    if (_settings.autoReloadStall &&
+        total > 0 &&
+        _autoReloadCount < total &&
+        _currentChannel != null) {
+      _autoReloadCount++;
+      final n = _autoReloadCount;
+      _state = PlayerState.error;
+      _lastError = '3 秒后自动重试（第 $n/$total 次）…';
+      notifyListeners();
+      final ch = _currentChannel;
+      _autoRetryTimer = Timer(const Duration(seconds: 3), () {
+        _autoRetryTimer = null;
+        // 期间用户已切台/手动重试/开始投屏：放弃本次自动重试
+        if (!identical(_currentChannel, ch) ||
+            _state != PlayerState.error ||
+            _isCasting) {
+          return;
+        }
+        _sourceIndex = 0;
+        _playCurrentSource();
+      });
+      return;
+    }
+    _state = PlayerState.error;
+    _lastError = _autoReloadCount > 0
+        ? '链接失效：已自动重试 $_autoReloadCount 次仍无法播放，请更换频道或检查直播源'
+        : null;
+    notifyListeners();
+  }
+
   // ==================== 设置持久化 ====================
 
   static const _kAutoPlayNext = 'settings_auto_play_next';
@@ -1923,6 +2005,8 @@ class PlayerController extends ChangeNotifier {
   static const _kRemoteAdmin = 'settings_remote_admin';
   static const _kWebEnabled = 'settings_web_enabled';
   static const _kAutoReloadStall = 'settings_auto_reload_stall';
+  static const _kRetryTimes = 'settings_retry_times';
+  static const _kCastEndWait = 'settings_cast_end_wait_seconds';
   static const _kFavoriteChannelIds = 'omplayer_favorite_channel_ids';
 
   Future<void> _loadSettings() async {
@@ -1947,6 +2031,8 @@ class PlayerController extends ChangeNotifier {
         remoteAdminEnabled: p.getBool(_kRemoteAdmin) ?? true,
         webEnabled: p.getBool(_kWebEnabled) ?? true,
         autoReloadStall: p.getBool(_kAutoReloadStall) ?? true,
+        retryTimes: p.getInt(_kRetryTimes) ?? 3,
+        castEndWaitSeconds: p.getInt(_kCastEndWait) ?? 5,
       );
       _favoriteChannelIds
         ..clear()
@@ -1976,6 +2062,8 @@ class PlayerController extends ChangeNotifier {
       await p.setBool(_kRemoteAdmin, _settings.remoteAdminEnabled);
       await p.setBool(_kWebEnabled, _settings.webEnabled);
       await p.setBool(_kAutoReloadStall, _settings.autoReloadStall);
+      await p.setInt(_kRetryTimes, _settings.retryTimes);
+      await p.setInt(_kCastEndWait, _settings.castEndWaitSeconds);
     } catch (_) {}
   }
 
@@ -2920,6 +3008,7 @@ class PlayerController extends ChangeNotifier {
     _tickTimer?.cancel();
     _castRestoreTimer?.cancel();
     _castEndedTimer?.cancel();
+    _autoRetryTimer?.cancel();
     _resetWebRecording();
     if (_isRecording && _videoController != null) {
       fvpRecord(_videoController!, to: null);

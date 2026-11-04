@@ -1505,7 +1505,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   ///   面板打开时方向键/OK 全部用于面板内导航
   /// - ←/→：短按=切源；长按=点播拖动进度（直播忽略长按）
   /// - ↑/↓：切台；⏯ 媒体键：播放/暂停；⏮/⏭：切台；⏪/⏩：单步 ±10s
-  /// - 菜单键（contextMenu）：短按=EPG 节目单，长按=设置面板
+  /// - 菜单键（contextMenu）：短按=EPG 节目单，长按=手机扫码管理二维码
   /// - 返回/Esc：按层级关闭 设置→投屏→面板→全屏，再按弹退出确认。
   ///   Windows 与 Android 行为一致（Android 系统 Back 走 PopScope）
   bool _onGlobalKeyEvent(KeyEvent event) {
@@ -2343,10 +2343,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
     if (c.locked) return;
     // 网页模式下没有原生播放状态（_state 通常仍是 loading），
     // 不能用 state==playing 拦截，否则左右点击永远呼不出面板；
-    // 暂停中也允许呼出（遥控器长按 OK 在暂停时同样要看进度/恢复播放）
+    // 暂停/出错中也允许呼出（出错时要能点面板上的「重载频道」自救，
+    // 遥控器长按 OK 在暂停时同样要看进度/恢复播放）
     if (!c.webPageActive &&
         c.state != PlayerState.playing &&
-        c.state != PlayerState.paused) {
+        c.state != PlayerState.paused &&
+        c.state != PlayerState.error) {
       return;
     }
     setState(() {
@@ -2881,13 +2883,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
 
   /// 网页卡死自动重载：前台播放且已起播时，播放位置连续 8 拍
   /// （24 秒）没有推进且不是用户暂停 → 重载当前频道。
-  /// 设置「网页卡死自动重载」可关闭；每个频道最多重载 3 次。
+  /// 设置「失败自动重载」可关闭；每频道最多重载「自动重试次数」次。
   Future<void> _checkStall() async {
     if (!mounted || _stallBusy || !widget.foreground || !_webPlayReady) return;
     final ctl = Provider.of<PlayerController>(context, listen: false);
     if (!ctl.settings.autoReloadStall) return;
     if (DateTime.now().isBefore(_stallCooldownUntil)) return;
-    if (ctl.autoReloadCount >= 3) return;
+    // 重载次数用设置里的「自动重试次数」（与内置播放器失败重试共用）
+    if (ctl.autoReloadCount >= ctl.settings.retryTimes) return;
     final c = _webController;
     if (c == null) return;
     _stallBusy = true;

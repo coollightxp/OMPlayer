@@ -36,6 +36,9 @@ class VideoPlayerWidget extends StatelessWidget {
 
         // 错误状态
         if (controller.state == PlayerState.error) {
+          // 自动重试中/次数用尽的具体提示（"3 秒后自动重试 (1/3)"、
+          // "链接失效：…"）；无提示时只显示通用标题
+          final detail = controller.lastError;
           return Container(
             color: Colors.black,
             child: Center(
@@ -49,6 +52,18 @@ class VideoPlayerWidget extends StatelessWidget {
                     '播放失败',
                     style: TextStyle(color: Colors.white, fontSize: 16),
                   ),
+                  if (detail != null && detail.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
+                      child: Text(
+                        detail,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 8),
                   ElevatedButton.icon(
                     onPressed: () {

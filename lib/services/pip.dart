@@ -45,6 +45,15 @@ Future<void> exitPip() async {
   } catch (_) {}
 }
 
+/// 同步「切后台自动画中画」开关给原生：播放中按 Home/切到别的应用时
+/// 自动进入画中画小窗（PlayerController 在播放状态变化时调用）。
+/// Android 12+ 由 setAutoEnterEnabled 接管，8–11 走 onUserLeaveHint。
+Future<void> setAutoPip(bool armed) async {
+  try {
+    await _channel.invokeMethod('setAutoPip', {'armed': armed});
+  } catch (_) {}
+}
+
 /// 把应用退到后台但保持播放（听电视隐藏窗口）；成功返回 true
 Future<bool> moveToBackground() async {
   try {

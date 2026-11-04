@@ -108,6 +108,8 @@ jobs:
 
           class MainActivity : FlutterActivity() {
               private val channelName = "omplayer/pip"
+              // 切后台自动画中画：Dart 侧播放状态变化时同步（见 setAutoPip）
+              private var autoPipArmed = false
 
               override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
                   super.configureFlutterEngine(flutterEngine)
@@ -120,6 +122,11 @@ jobs:
                               "notifGranted" -> result.success(true)
                               "openNotifSettings" -> result.success(false)
                               "background" -> result.success(false)
+                              "setAutoPip" -> {
+                                  autoPipArmed = call.argument<Boolean>("armed") == true
+                                  setAutoEnterEnabled(autoPipArmed)
+                                  result.success(true)
+                              }
                               "audioUpdate", "audioStop" -> result.success(true)
                               else -> result.notImplemented()
                           }
@@ -137,6 +144,29 @@ jobs:
                   } catch (e: Exception) {
                       false
                   }
+              }
+
+              // Android 12+：armed 时按 Home/切任务由系统自动进入画中画
+              private fun setAutoEnterEnabled(armed: Boolean) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      try {
+                          val params = PictureInPictureParams.Builder()
+                              .setAspectRatio(Rational(16, 9))
+                              .setAutoEnterEnabled(armed)
+                              .build()
+                          setPictureInPictureParams(params)
+                      } catch (e: Exception) {}
+                  }
+              }
+
+              // Android 8–11：没有 autoEnter，切后台时在 onUserLeaveHint 手动进
+              override fun onUserLeaveHint() {
+                  if (autoPipArmed &&
+                      Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                      Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                      try { enterPictureInPictureMode() } catch (e: Exception) {}
+                  }
+                  super.onUserLeaveHint()
               }
 
               private fun isTv(): Boolean =

@@ -54,10 +54,19 @@ class PlayerSettings {
   /// （webview:// 源）不可用——用于不支持 WebView2 的系统避免退出崩溃
   final bool webEnabled;
 
-  /// 网页频道卡死自动重载（默认开）：网页播放位置连续 24 秒不推进时
-  /// 自动重载当前频道，每个频道最多重载 3 次。仅对网页播放生效，
-  /// 内置播放器（直播流）本身已有卡顿自愈看门狗
+  /// 失败自动重载（默认开）：网页频道播放位置连续 24 秒不推进时自动重载；
+  /// 内置播放器起播/播放失败时自动重试当前频道。重试次数由
+  /// [retryTimes] 决定，次数用尽仍失败则提示链接失效
   final bool autoReloadStall;
+
+  /// 自动重载/重试次数（3/5/10，默认 3）：每个频道连续失败达到该次数后
+  /// 判定链接失效，不再自动重试（手动切台或点重试会清零重新计数）
+  final int retryTimes;
+
+  /// 投屏点播播完后的处理（秒）：0=立即返回直播；5/30=等待该时长，
+  /// 期间发送端连播（电视剧下一集）可继续；超时未等到新投屏才返回直播；
+  /// -1=一直等待，直到新投屏到来或手动切台/断开
+  final int castEndWaitSeconds;
 
   const PlayerSettings({
     this.autoPlayNext = true,
@@ -78,6 +87,8 @@ class PlayerSettings {
     this.remoteAdminEnabled = true,
     this.webEnabled = true,
     this.autoReloadStall = true,
+    this.retryTimes = 3,
+    this.castEndWaitSeconds = 5,
   });
 
   PlayerSettings copyWith({
@@ -99,6 +110,8 @@ class PlayerSettings {
     bool? remoteAdminEnabled,
     bool? webEnabled,
     bool? autoReloadStall,
+    int? retryTimes,
+    int? castEndWaitSeconds,
   }) {
     return PlayerSettings(
       autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -120,6 +133,8 @@ class PlayerSettings {
       remoteAdminEnabled: remoteAdminEnabled ?? this.remoteAdminEnabled,
       webEnabled: webEnabled ?? this.webEnabled,
       autoReloadStall: autoReloadStall ?? this.autoReloadStall,
+      retryTimes: retryTimes ?? this.retryTimes,
+      castEndWaitSeconds: castEndWaitSeconds ?? this.castEndWaitSeconds,
     );
   }
 }
