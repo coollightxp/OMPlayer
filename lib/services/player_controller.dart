@@ -940,6 +940,19 @@ class PlayerController extends ChangeNotifier {
     _autoRetryTimer?.cancel();
     _autoRetryTimer = null;
     _lastError = null;
+    // 投屏中手动切台/选台 = 手动结束投屏：按 UPnP 规范先给发送端推
+    // 「无媒体 STOPPED」断联信号（手机端投屏 UI 随之退出），
+    // 再走正常播放流程；投屏内部换片不走这里（由 playCastUrl 处理）
+    if (_isCasting && !channel.id.startsWith('__dlna_cast__')) {
+      _isCasting = false;
+      _preCastChannel = null;
+      _castRestoreTimer?.cancel();
+      _castRestoreTimer = null;
+      _castEndedTimer?.cancel();
+      _castEndedTimer = null;
+      unawaited(CastStreamProxy.instance.stop());
+      dlnaService.clearCurrentMedia();
+    }
     // 无网络时等待网络（开机启动时系统网络可能未就绪）
     if (!await _waitForNetwork()) {
       // 30 秒内仍无网络，保持等待状态，后台继续检测
