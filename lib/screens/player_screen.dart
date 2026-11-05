@@ -5195,10 +5195,18 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return null;
   }
 
-  /// 央视网（tv.cctv.com/live/* 等）：自动点起播、把视频本体钉满视口、
-  /// 隐藏页头/页尾/侧栏/弹幕/弹窗等杂项，暂停自动恢复。
-  /// 各频道独立 URL，无需 __omSiteGo 页内切台；
-  /// 页面真实 m3u8 流由嗅探系统自动接管为内置播放（避免页内花屏）
+  /// 站点页是否允许安装轻嗅探：央视直播真实流为 m3u8（经 CDN 别名域名
+  /// 分发），装嗅探才有机会接管为内置播放；芒果/咪咕/央视频带完整性
+  /// 检测保持零 hook 纯净环境，仍只在 8 秒兜底时才装
+  static bool _siteSniffAllowed(String url) =>
+      url.contains('cctv.com') || url.contains('cctv.cn');
+
+  /// 央视网（tv.cctv.com/live/* 等）：自动点起播、把视频钉满视口、
+  /// 隐藏页头/页尾/侧栏/弹幕/登录弹层等杂项，暂停自动恢复。
+  /// 实测要点：video（#h5player_player）在主文档，每 1.5 秒重钉防
+  /// 播放器重建节点；登录弹层（outlogin/loginBox 等）必须隐藏否则
+  /// 挡播放；iframe 穿透保留作兜底。各频道独立 URL，无需 __omSiteGo；
+  /// 页面真实 m3u8 流由嗅探系统（央视白名单）自动接管为内置播放
   static const String _cctvJs = r'''
 (function () {
   window.__omSkipPin = 1;
@@ -5217,42 +5225,76 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
   }
 
-  function cssOnce() {
-    if (document.getElementById('om-cctv-css')) return;
-    var s = document.createElement('style');
-    s.id = 'om-cctv-css';
-    s.textContent =
-      'html,body{margin:0!important;padding:0!important;overflow:hidden!important;' +
-      'background:#000!important;width:100%!important;height:100%!important}' +
-      '#page_header,.page_header,.new_header,.top_bar,.header,.footer,.foot,' +
-      '.page_footer,.aside,.right_wrap,.side,.share,.bshare,.bshare-custom,' +
-      '.danmu,.danmaku,.barrage,.copyright-mask,.mask_layer,.login_pop,' +
-      '.pop_layer,.modal,.advert' +
-      '{display:none!important;visibility:hidden!important;pointer-events:none!important}' +
-      'video{object-fit:contain!important;object-position:center center!important}';
-    (document.head || document.documentElement).appendChild(s);
+  // 主文档 + 所有同源 iframe 文档逐个执行（跨域 iframe 访问抛异常跳过）
+  function eachDoc(cb) {
+    try { cb(document, null); } catch (e) {}
+    var fs = [];
+    try { fs = document.querySelectorAll('iframe'); } catch (e) {}
+    for (var i = 0; i < fs.length; i++) {
+      try {
+        var d = fs[i].contentDocument;
+        if (d) cb(d, fs[i]);
+      } catch (e) {}
+    }
   }
 
+  var clutterCss =
+    'html,body{margin:0!important;padding:0!important;overflow:hidden!important;' +
+    'background:#000!important;width:100%!important;height:100%!important}' +
+    '#page_header,.page_header,.new_header,.top_bar,.header,.footer,.foot,' +
+    '.page_footer,.aside,.right_wrap,.side,.share,.bshare,.bshare-custom,' +
+    '.danmu,.danmaku,.barrage,.copyright-mask,.mask_layer,.login_pop,' +
+    '.pop_layer,.modal,.advert,' +
+    // 央视登录弹层（实测选择器）：挡播放挡钉满，必须隐藏
+    '[id*="outlogin"],[class*="outlogin"],#mask,.mask,' +
+    '[id*="loginFloat"],[class*="loginFloat"],#loginMain,.loginMain,' +
+    '#loginBox,.loginBox,[id*="login_layer"],[class*="login_layer"]' +
+    '{display:none!important;visibility:hidden!important;pointer-events:none!important}' +
+    'video{object-fit:contain!important;object-position:center center!important}';
+
+  function cssOnce() {
+    eachDoc(function (d) {
+      if (d.getElementById('om-cctv-css')) return;
+      var s = d.createElement('style');
+      s.id = 'om-cctv-css';
+      s.textContent = clutterCss;
+      (d.head || d.documentElement).appendChild(s);
+    });
+  }
+
+  // 找主视频（所有文档里画面面积最大的 video）；frame=包含它的 iframe
+  var foundFrame = null;
   function mainVideo() {
-    var vs = document.querySelectorAll('video'), best = null, bestA = 0;
-    for (var i = 0; i < vs.length; i++) {
-      var r = vs[i].getBoundingClientRect(), a = r.width * r.height;
-      if (a > bestA) { bestA = a; best = vs[i]; }
-    }
+    var best = null, bestA = 0;
+    foundFrame = null;
+    eachDoc(function (d, f) {
+      var vs = d.querySelectorAll('video');
+      for (var i = 0; i < vs.length; i++) {
+        var r = vs[i].getBoundingClientRect(), a = r.width * r.height;
+        if (a > bestA) { bestA = a; best = vs[i]; foundFrame = f; }
+      }
+    });
     return best;
   }
 
-  // 视频本体钉满视口：容器层级里常有遮罩/控件盖住画面，直接钉 video 最稳
+  // 钉满：视频在 iframe 里时先把 iframe 钉满主视口，再钉视频本体
   function pinVideo(v) {
-    if (!v || v.getAttribute('data-om-cctv')) return;
-    v.setAttribute('data-om-cctv', '1');
-    v.style.cssText = 'position:fixed!important;left:0!important;top:0!important;' +
-      'width:100vw!important;height:100vh!important;z-index:2147483646!important;' +
-      'background:#000!important;object-fit:contain!important;';
+    if (foundFrame) {
+      foundFrame.style.cssText =
+        'position:fixed!important;left:0!important;top:0!important;' +
+        'width:100vw!important;height:100vh!important;' +
+        'z-index:2147483647!important;border:0!important;background:#000!important;';
+    }
+    v.style.cssText =
+      'position:fixed!important;left:0!important;top:0!important;' +
+      'width:100vw!important;height:100vh!important;' +
+      'z-index:2147483646!important;background:#000!important;' +
+      'object-fit:contain!important;';
   }
 
   function tryPlay(v) {
     if (!v) return;
+    try { v.muted = false; } catch (e) {}
     try { if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function(){}); } } catch (e) {}
   }
 
@@ -5261,13 +5303,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var sels = ['.player_start', '.play_btn', '.play-btn', '.playBtn',
       '.v-play', '.video-play', '.tgide_play', '.player-play',
       '.player_cover', '.video_poster', '[class*="playbtn"]'];
-    for (var i = 0; i < sels.length; i++) {
-      var bs = document.querySelectorAll(sels[i]);
-      for (var j = 0; j < bs.length; j++) {
-        try { var r = bs[j].getBoundingClientRect();
-          if (r.width > 0) bs[j].click(); } catch (e) {}
+    eachDoc(function (d) {
+      for (var i = 0; i < sels.length; i++) {
+        var bs = d.querySelectorAll(sels[i]);
+        for (var j = 0; j < bs.length; j++) {
+          try { var r = bs[j].getBoundingClientRect();
+            if (r.width > 0) bs[j].click(); } catch (e) {}
+        }
       }
-    }
+    });
     try { var v0 = mainVideo(); if (v0) v0.click(); } catch (e) {}
   }
 
@@ -5308,8 +5352,11 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         await c.evaluateJavascript(source: _siteGoCall());
         WebDiag.log('sitego', 'via=inject|title=${widget.title}');
       }
-      // 嗅探脚本只在兜底重载后注入；默认页面保持零 hook 纯净环境
-      if (_sniffEnabled) await c.evaluateJavascript(source: _sniffJs);
+      // 嗅探脚本默认只在兜底重载后注入（页面保持零 hook 纯净环境）；
+      // 央视等白名单站点为拿到接管机会立即安装
+      if (_sniffEnabled || _siteSniffAllowed(widget.url)) {
+        await c.evaluateJavascript(source: _sniffJs);
+      }
       WebDiag.log('inject_done',
           'site=${siteJs != null ? 1 : 0}|sniff=$_sniffEnabled');
     } catch (_) {
