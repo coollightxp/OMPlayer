@@ -5244,6 +5244,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   var clutterCss =
     'html,body{margin:0!important;padding:0!important;overflow:hidden!important;' +
     'background:#000!important;width:100%!important;height:100%!important}' +
+    // 央视两条顶部导航（实测选择器）：首页/时政… 与 地方/乡村振兴…
+    '.nav_wrapper,.nav_list,.nav_left,.nav_right,.slide_con,' +
     '#page_header,.page_header,.new_header,.top_bar,.header,.footer,.foot,' +
     '.page_footer,.aside,.right_wrap,.side,.share,.bshare,.bshare-custom,' +
     '.danmu,.danmaku,.barrage,.copyright-mask,.mask_layer,.login_pop,' +
@@ -5253,6 +5255,8 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     '[id*="loginFloat"],[class*="loginFloat"],#loginMain,.loginMain,' +
     '#loginBox,.loginBox,[id*="login_layer"],[class*="login_layer"]' +
     '{display:none!important;visibility:hidden!important;pointer-events:none!important}' +
+    // #player 容器 relative+overflow:hidden 会裁剪内部，放开兜底
+    '#player{overflow:visible!important}' +
     'video{object-fit:contain!important;object-position:center center!important}';
 
   function cssOnce() {
