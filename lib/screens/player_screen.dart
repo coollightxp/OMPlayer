@@ -5209,6 +5209,9 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   /// 页面真实 m3u8 流由嗅探系统（央视白名单）自动接管为内置播放
   static const String _cctvJs = r'''
 (function () {
+  // 安装守卫：document-start 预装与运行时注入并存，防止重复挂轮询
+  if (window.__omCctvInstalled) return;
+  window.__omCctvInstalled = 1;
   window.__omSkipPin = 1;
   try {
     var pinned = document.querySelectorAll('[data-om-pin]');
@@ -5340,29 +5343,35 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   Future<void> _inject() async {
     final c = _webController;
     if (c == null) return;
-    try {
-      await c.evaluateJavascript(source: _noContextMenuJs);
-      await c.evaluateJavascript(source: _cssJs);
-      await c.evaluateJavascript(source: _bootJs);
-      // 站点脚本在 _bootJs 之后注入：置 __omSkipPin 让通用铺满让位，
-      // 并清掉 _bootJs 可能已抢先铺满的元素；随后立刻按当前频道点台
-      final siteJs = _siteJsFor(widget.url);
-      if (siteJs != null) {
-        await c.evaluateJavascript(source: siteJs);
-        await c.evaluateJavascript(source: _siteGoCall());
-        WebDiag.log('sitego', 'via=inject|title=${widget.title}');
+    // 每个脚本独立注入：任何一个抛错（页面未就绪/引擎差异）只记日志，
+    // 绝不连累后续脚本——站点脚本丢一次就再没有重试机会（探测只补
+    // CSS/探针），整个全屏方案随之失效
+    Future<void> one(String tag, String src) async {
+      try {
+        await c.evaluateJavascript(source: src);
+      } catch (e) {
+        WebDiag.log('inject_fail', 'js=$tag|err=$e');
       }
-      // 嗅探脚本默认只在兜底重载后注入（页面保持零 hook 纯净环境）；
-      // 央视等白名单站点为拿到接管机会立即安装
-      if (_sniffEnabled || _siteSniffAllowed(widget.url)) {
-        await c.evaluateJavascript(source: _sniffJs);
-      }
-      WebDiag.log('inject_done',
-          'site=${siteJs != null ? 1 : 0}|sniff=$_sniffEnabled');
-    } catch (_) {
-      // 页面尚未就绪时注入可能失败，轮询探测会在后续重试
-      WebDiag.log('inject_fail');
     }
+
+    await one('menu', _noContextMenuJs);
+    await one('css', _cssJs);
+    await one('boot', _bootJs);
+    // 站点脚本在 _bootJs 之后注入：置 __omSkipPin 让通用铺满让位，
+    // 并清掉 _bootJs 可能已抢先铺满的元素；随后立刻按当前频道点台
+    final siteJs = _siteJsFor(widget.url);
+    if (siteJs != null) {
+      await one('site', siteJs);
+      await one('sitego', _siteGoCall());
+      WebDiag.log('sitego', 'via=inject|title=${widget.title}');
+    }
+    // 嗅探脚本默认只在兜底重载后注入（页面保持零 hook 纯净环境）；
+    // 央视等白名单站点为拿到接管机会立即安装
+    if (_sniffEnabled || _siteSniffAllowed(widget.url)) {
+      await one('sniff', _sniffJs);
+    }
+    WebDiag.log('inject_done',
+        'site=${siteJs != null ? 1 : 0}|sniff=$_sniffEnabled');
   }
 
   Future<void> _probe() async {
@@ -5464,6 +5473,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
               injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
               forMainFrameOnly: false,
             ),
+            // 站点脚本（央视等）同步提前到 document-start：不依赖
+            // onLoadStop/计时器的运行时注入，彻底免疫加载竞态与单次
+            // 注入失败导致的全屏失效；脚本内部有安装守卫，与运行时
+            // 注入并存不会重复执行
+            if (_siteJsFor(widget.url) != null)
+              UserScript(
+                source: _siteJsFor(widget.url)!,
+                injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                forMainFrameOnly: false,
+              ),
           ]),
           initialSettings: InAppWebViewSettings(
             // 网页播放器（如央视频）自动开播，无需用户先点击网页
