@@ -5201,12 +5201,15 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   static bool _siteSniffAllowed(String url) =>
       url.contains('cctv.com') || url.contains('cctv.cn');
 
-  /// 央视网（tv.cctv.com/live/* 等）：自动点起播、把视频钉满视口、
-  /// 隐藏页头/页尾/侧栏/弹幕/登录弹层等杂项，暂停自动恢复。
-  /// 实测要点：video（#h5player_player）在主文档，每 1.5 秒重钉防
-  /// 播放器重建节点；登录弹层（outlogin/loginBox 等）必须隐藏否则
-  /// 挡播放；iframe 穿透保留作兜底。各频道独立 URL，无需 __omSiteGo；
-  /// 页面真实 m3u8 流由嗅探系统（央视白名单）自动接管为内置播放
+  /// 央视网（tv.cctv.com/live/* 等）：整体架构照搬央视频同款——
+  /// 钉播放器容器（#player，px 矩形+幂等键）、沿祖先链隐藏兄弟节点、
+  /// 清祖先裁剪、强制 viewport 元信息对齐移动端布局视口、视频充满
+  /// 容器；另保留央视特有的登录弹层隐藏、起播按钮连点、暂停恢复、
+  /// 跨域 iframe 兜底钉满与诊断上报。每 800ms 重排防播放器重建。
+  /// 实测要点：video（#h5player_player）在主文档 #player.video_flash；
+  /// 两条导航实测选择器 .nav_wrapper/.slide_con（hideSiblings 已能
+  /// 结构性隐藏，选择器清单作双保险）。页面真实 m3u8 流由嗅探系统
+  /// （央视白名单）自动接管为内置播放
   static const String _cctvJs = r'''
 (function () {
   // 安装守卫：document-start 预装与运行时注入并存，防止重复挂轮询
@@ -5260,33 +5263,56 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     'video{object-fit:contain!important;object-position:center center!important}';
 
   function cssOnce() {
-    eachDoc(function (d) {
-      if (d.getElementById('om-cctv-css')) return;
-      var s = d.createElement('style');
-      s.id = 'om-cctv-css';
-      s.textContent = clutterCss;
-      (d.head || d.documentElement).appendChild(s);
-    });
+    var head = document.head || document.documentElement;
+    if (!head) return;
+    // 强制 viewport 元信息（央视频同款）：移动端 WebView 默认按 980px
+    // 布局视口缩放渲染，钉满会量错尺寸——这很可能就是内嵌网页里
+    // 「钉了却没满」的根因
+    if (!document.getElementById('om-cctv-vp')) {
+      var meta = document.createElement('meta');
+      meta.id = 'om-cctv-vp';
+      meta.name = 'viewport';
+      meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no';
+      head.insertBefore(meta, head.firstChild);
+    }
+    if (document.getElementById('om-cctv-css')) return;
+    var s = document.createElement('style');
+    s.id = 'om-cctv-css';
+    s.textContent = clutterCss;
+    head.appendChild(s);
   }
 
-  // 找主视频（所有文档里画面面积最大的 video）；frame=包含它的 iframe
-  var foundFrame = null;
-  function mainVideo() {
+  // 视口矩形（px）：与央视频同款，visualViewport 优先
+  function vp() {
+    var v = window.visualViewport;
+    if (v && v.width > 0 && v.height > 0) {
+      return { x: v.offsetLeft || 0, y: v.offsetTop || 0, w: v.width, h: v.height };
+    }
+    return { x: 0, y: 0, w: window.innerWidth || 0, h: window.innerHeight || 0 };
+  }
+
+  // 播放器容器（实测：DIV#player.video_flash）
+  function playerBox() {
+    return document.querySelector('#player') ||
+           document.querySelector('.video_flash') ||
+           document.querySelector('.video_left .player') ||
+           document.querySelector('.video_left');
+  }
+
+  function videoEl() {
+    var box = playerBox();
+    var v = box ? box.querySelector('video') : null;
+    if (v) return v;
     var best = null, bestA = 0;
-    foundFrame = null;
-    eachDoc(function (d, f) {
-      var vs = d.querySelectorAll('video');
-      for (var i = 0; i < vs.length; i++) {
-        var r = vs[i].getBoundingClientRect(), a = r.width * r.height;
-        if (a > bestA) { bestA = a; best = vs[i]; foundFrame = f; }
-      }
-    });
+    var vs = document.querySelectorAll('video');
+    for (var i = 0; i < vs.length; i++) {
+      var r = vs[i].getBoundingClientRect(), a = r.width * r.height;
+      if (a > bestA) { bestA = a; best = vs[i]; }
+    }
     return best;
   }
 
-  // 找主文档里最大的可见 iframe：应用内嵌网页拿到的页面变体可能把
-  // 播放器装在跨域 iframe 里（同源策略读不到里面的 video），此时
-  // 把 iframe 钉满——iframe 里的同款脚本会再把自己视口的视频钉满
+  // 跨域 iframe 版页面兜底：钉最大的 iframe，iframe 内同款脚本接力
   function mainIframe() {
     var best = null, bestA = 0;
     try {
@@ -5296,23 +5322,136 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         if (a > bestA) { bestA = a; best = fs[i]; }
       }
     } catch (e) {}
-    return bestA > 60000 ? best : null; // 至少约 300x200，免得钉广告框
+    return bestA > 60000 ? best : null;
   }
 
-  // 钉满：视频在 iframe 里时先把 iframe 钉满主视口，再钉视频本体
-  function pinFrame(f) {
-    f.style.cssText =
-      'position:fixed!important;left:0!important;top:0!important;' +
-      'width:100vw!important;height:100vh!important;' +
-      'z-index:2147483647!important;border:0!important;background:#000!important;';
+  // 沿祖先链隐藏兄弟节点（央视频同款）：导航/侧栏不靠选择器清单，
+  // 结构上天然全部消失
+  function hideSiblings(el) {
+    var n = el;
+    while (n && n !== document.body && n !== document.documentElement) {
+      var p = n.parentElement;
+      if (!p) break;
+      var kids = p.children;
+      for (var i = 0; i < kids.length; i++) {
+        var c = kids[i];
+        if (c === n) continue;
+        var tag = c.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'META') continue;
+        c.style.setProperty('display', 'none', 'important');
+        c.style.setProperty('visibility', 'hidden', 'important');
+      }
+      n = p;
+    }
   }
-  function pinVideo(v) {
-    if (foundFrame) pinFrame(foundFrame);
-    v.style.cssText =
-      'position:fixed!important;left:0!important;top:0!important;' +
-      'width:100vw!important;height:100vh!important;' +
-      'z-index:2147483646!important;background:#000!important;' +
-      'object-fit:contain!important;';
+
+  // 清祖先裁剪（央视频同款）：overflow/transform/filter/clip-path
+  // 都会让 fixed/absolute 失效或裁掉画面
+  function unclip(el) {
+    var n = el;
+    while (n && n !== document.documentElement) {
+      if (n.getAttribute && n.getAttribute('data-om-site-box')) {
+        n = n.parentElement;
+        continue;
+      }
+      if (n.style) {
+        n.style.setProperty('overflow', 'visible', 'important');
+        n.style.setProperty('transform', 'none', 'important');
+        n.style.setProperty('filter', 'none', 'important');
+        n.style.setProperty('clip-path', 'none', 'important');
+        n.style.setProperty('zoom', '1', 'important');
+        n.style.setProperty('background', '#000', 'important');
+      }
+      n = n.parentElement;
+    }
+  }
+
+  // 钉满容器（央视频同款）：px 矩形 + 幂等键，不与页面 resize 打架
+  function pinBox(el, s) {
+    if (!el || !el.style || s.w < 8 || s.h < 8) return;
+    var key = s.x + ',' + s.y + ',' + s.w + ',' + s.h;
+    if (el.getAttribute('data-om-site-box') === key && (el.offsetWidth || 0) >= s.w - 8) return;
+    el.setAttribute('data-om-site-box', key);
+    el.style.cssText =
+      'display:block!important;position:fixed!important;' +
+      'left:' + s.x + 'px!important;top:' + s.y + 'px!important;' +
+      'width:' + s.w + 'px!important;height:' + s.h + 'px!important;' +
+      'max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;' +
+      'margin:0!important;padding:0!important;border:none!important;' +
+      'z-index:9998!important;background:#000!important;overflow:hidden!important;' +
+      'transform:none!important;zoom:1!important';
+  }
+
+  // 视频充满容器（央视频同款）
+  function fillVideo(el) {
+    if (!el || !el.style) return;
+    try {
+      el.removeAttribute('width');
+      el.removeAttribute('height');
+      el.controls = false;
+      el.setAttribute('playsinline', '');
+      el.setAttribute('webkit-playsinline', 'true');
+    } catch (e) {}
+    el.style.cssText =
+      'display:block!important;position:absolute!important;' +
+      'left:0!important;top:0!important;right:0!important;bottom:0!important;' +
+      'width:100%!important;height:100%!important;' +
+      'max-width:100%!important;max-height:100%!important;min-width:0!important;min-height:0!important;' +
+      'margin:0!important;padding:0!important;border:none!important;' +
+      'object-fit:contain!important;object-position:center center!important;' +
+      'transform:none!important;zoom:1!important;background:#000!important';
+  }
+
+  // 隐藏播放器内部的封面/起播遮罩（含视频的容器除外）
+  function hideSiteChrome(box) {
+    var nodes = box.querySelectorAll(
+      '.player_cover,.video_poster,.player_start,.cover_mask,' +
+      '[class*="playbtn"],.loading,.poster'
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || el.tagName === 'VIDEO' || el.querySelector('video')) continue;
+      el.style.setProperty('display', 'none', 'important');
+      el.style.setProperty('visibility', 'hidden', 'important');
+      el.style.setProperty('pointer-events', 'none', 'important');
+    }
+  }
+
+  // 剥除通用 _cssJs 的 video 全屏钉层规则（央视频同款，避免两套打架）
+  function cleanOmCss() {
+    try {
+      var s = document.getElementById('__om_fullscreen_style');
+      if (s && s.textContent.indexOf('video{position:fixed') >= 0) {
+        s.textContent = s.textContent.replace(/video\{position:fixed[^}]*\}/g, '');
+      }
+    } catch (e) {}
+  }
+
+  var laying = 0;
+  function layoutWork() {
+    cssOnce();
+    cleanOmCss();
+    var s = vp();
+    if (s.w < 8 || s.h < 8) return false;
+    var box = playerBox();
+    var v = videoEl();
+    if (!box && v && v.parentElement) box = v.parentElement;
+    if (box) {
+      hideSiblings(box);
+      unclip(box);
+      pinBox(box, s);
+      hideSiteChrome(box);
+    } else {
+      var f = mainIframe();
+      if (f) pinBox(f, s);
+    }
+    if (v) { unclip(v); fillVideo(v); }
+    return !!(v && s.w > 8 && s.h > 8);
+  }
+  function layout() {
+    if (laying) return;
+    laying = 1;
+    try { layoutWork(); } finally { laying = 0; }
   }
 
   function tryPlay(v) {
@@ -5335,38 +5474,33 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
         }
       }
     });
-    try { var v0 = mainVideo(); if (v0) v0.click(); } catch (e) {}
+    try { var v0 = videoEl(); if (v0) v0.click(); } catch (e) {}
   }
 
   var fired = false, ticks = 0;
   setInterval(function () {
-    cssOnce();
     ticks++;
-    var v = mainVideo();
-    var f = null;
+    layout();
+    var v = videoEl();
     if (v) {
-      pinVideo(v);
       tryPlay(v);
       if (!fired && !v.paused && v.currentTime > 0) { fired = true; fireReady(); }
-    } else {
-      // 同源文档里找不到视频：播放器多半在跨域 iframe 里，钉 iframe
-      f = mainIframe();
-      if (f) pinFrame(f);
     }
-    // 每约 15 秒上报一次现场数据（钉没钉到目标一眼定位）
-    if (ticks % 10 === 1) {
+    // 每约 12 秒上报一次现场数据（钉没钉到目标一眼定位）
+    if (ticks % 15 === 1) {
       try {
-        var r = v ? v.getBoundingClientRect() : (f ? f.getBoundingClientRect() : null);
+        var b = playerBox();
+        var r = b ? b.getBoundingClientRect() : (v ? v.getBoundingClientRect() : null);
         window.flutter_inappwebview.callHandler('omDiag',
-          'cctv tick=' + ticks + ' v=' + (v ? 1 : 0) + ' f=' + (f ? 1 : 0) +
+          'cctv tick=' + ticks + ' box=' + (b ? 1 : 0) + ' v=' + (v ? 1 : 0) +
           ' rect=' + (r ? ((r.width | 0) + 'x' + (r.height | 0) + '@' + (r.left | 0) + ',' + (r.top | 0)) : '-') +
           ' vw=' + window.innerWidth + 'x' + window.innerHeight +
           ' top=' + (window === window.top ? 1 : 0));
       } catch (e) {}
     }
-    // 起播前 30 秒持续尝试点起播按钮
-    if (!fired && ticks < 20) clickPlayButtons();
-  }, 1500);
+    // 起播前约 24 秒持续尝试点起播按钮
+    if (!fired && ticks < 30) clickPlayButtons();
+  }, 800);
 })();
 ''';
 
