@@ -4586,6 +4586,114 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
       try { layout(); bindVideo(pickGen || 1); } catch (e) {}
     }, 1200);
   }
+
+  // ===== 清晰度切换（OMTV 同款，去掉音频档）=====
+  // 点击页面播放器自带的清晰度菜单项；站点降档后按锁定值自动切回
+  window.__omSetRes = function (level) {
+    var want = String(level);
+    if (want !== '1080' && want !== '720' && want !== '540') return;
+    if (window.__omWantRes !== want) window.__omWantResTries = 0;
+    window.__omWantRes = want;
+    window.__omResLock = want;
+    window.__omResLockAt = Date.now();
+    try { __omTryRes(); } catch (e) {}
+  };
+  function __omQText(el) { return ((el.textContent || '') + '').trim().toUpperCase(); }
+  function __omQHit(want, t) {
+    if (!t || t.length > 12) return false;
+    if (want === '1080') return t.indexOf('1080P') >= 0 || t === '蓝光';
+    if (want === '720') return t.indexOf('720P') >= 0 || t === '超清' || t === '准高清';
+    if (want === '540') return t.indexOf('540P') >= 0 || t.indexOf('480P') >= 0 || t === '高清' || t === '标清';
+    return false;
+  }
+  function __omQItems() {
+    var out = [];
+    var nodes = document.querySelectorAll('[id^="resolution_item_"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = __omQText(nodes[i]);
+      if (t && t.length <= 12) out.push(nodes[i]);
+    }
+    if (out.length) return out;
+    var all = document.querySelectorAll('div,span,li,button,a,p');
+    for (var j = 0; j < all.length; j++) {
+      var el = all[j];
+      if (el.children && el.children.length > 3) continue;
+      var tt = __omQText(el);
+      if (!tt || tt.length > 12) continue;
+      if (!/(蓝光|超清|高清|标清|流畅)|(^[1-9]\d{2,3}P$)/.test(tt)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+  function __omQFind(want, list) {
+    for (var i = 0; i < list.length; i++) { if (__omQHit(want, __omQText(list[i]))) return list[i]; }
+    return null;
+  }
+  // 目标档不存在时向下取最好可用档（央视网封顶 480：选 1080 会落到标清）
+  function __omQFindBest(want, list) {
+    var order = want === '1080' ? ['1080', '720', '540'] : (want === '720' ? ['720', '540'] : ['540']);
+    for (var k = 0; k < order.length; k++) {
+      var h = __omQFind(order[k], list);
+      if (h) return h;
+    }
+    return null;
+  }
+  function __omQClick(el) {
+    if (!el) return;
+    var o = { bubbles: true, cancelable: true, view: window };
+    try { el.dispatchEvent(new PointerEvent('pointerdown', o)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mousedown', o)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mouseup', o)); } catch (e) {}
+    try { el.click(); } catch (e) {}
+  }
+  function __omWakePlayer() {
+    var pl = document.querySelector('#player') || document.querySelector('video');
+    if (!pl) return;
+    var o = { bubbles: true, cancelable: true, view: window,
+              clientX: (window.innerWidth / 2) | 0, clientY: (window.innerHeight / 2) | 0 };
+    try { pl.dispatchEvent(new MouseEvent('mousemove', o)); } catch (e) {}
+    try { pl.dispatchEvent(new MouseEvent('mousedown', o)); } catch (e) {}
+    try { pl.dispatchEvent(new MouseEvent('mouseup', o)); } catch (e) {}
+    try { pl.dispatchEvent(new MouseEvent('click', o)); } catch (e) {}
+  }
+  function __omVideoH() {
+    var vs = document.querySelectorAll('video'), m = 0;
+    for (var i = 0; i < vs.length; i++) { if ((vs[i].videoHeight || 0) > m) m = vs[i].videoHeight; }
+    return m;
+  }
+  function __omTryRes() {
+    var want = window.__omWantRes;
+    // 保持清晰度：站点自行降档（重载/缩放后）时按锁定值切回
+    if (!want && window.__omResLock && document.querySelector('[id^="resolution_item_"]')) {
+      var lh = __omVideoH();
+      if (lh >= 400) {
+        var lt = lh >= 1000 ? '1080' : (lh >= 700 ? '720' : (lh >= 500 ? '540' : ''));
+        var now = Date.now();
+        if (lt && lt !== window.__omResLock && now - (window.__omResLockAt || 0) > 10000) {
+          window.__omResLockAt = now;
+          window.__omWantResTries = 0;
+          want = window.__omWantRes = window.__omResLock;
+        }
+      }
+    }
+    if (!want) return;
+    window.__omWantResTries = (window.__omWantResTries || 0) + 1;
+    if (window.__omWantResTries > 14) { window.__omWantRes = null; return; }
+    var list = __omQItems();
+    var hit = __omQFindBest(want, list);
+    if (hit) { __omQClick(hit); window.__omWantRes = null; return; }
+    var h = __omVideoH();
+    var cur = h >= 1000 ? '1080' : (h >= 700 ? '720' : (h >= 500 ? '540' : ''));
+    // 菜单未展开：先唤出控制栏，再点「当前档」把清晰度菜单展开
+    if (window.__omWantResTries % 3 === 1) __omWakePlayer();
+    var opener = cur ? __omQFind(cur, list) : null;
+    if (!opener) opener = __omQFind('1080', list) || __omQFind('720', list) || __omQFind('540', list);
+    if (opener) __omQClick(opener);
+  }
+  if (!window.__omResTimer) {
+    window.__omResTimer = 1;
+    setInterval(function () { try { __omTryRes(); } catch (e) {} }, 1000);
+  }
 })();
 ''';
 
@@ -5501,6 +5609,114 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     // 起播前约 24 秒持续尝试点起播按钮
     if (!fired && ticks < 30) clickPlayButtons();
   }, 800);
+
+  // ===== 清晰度切换（OMTV 同款，去掉音频档）=====
+  // 点击页面播放器自带的清晰度菜单项；站点降档后按锁定值自动切回
+  window.__omSetRes = function (level) {
+    var want = String(level);
+    if (want !== '1080' && want !== '720' && want !== '540') return;
+    if (window.__omWantRes !== want) window.__omWantResTries = 0;
+    window.__omWantRes = want;
+    window.__omResLock = want;
+    window.__omResLockAt = Date.now();
+    try { __omTryRes(); } catch (e) {}
+  };
+  function __omQText(el) { return ((el.textContent || '') + '').trim().toUpperCase(); }
+  function __omQHit(want, t) {
+    if (!t || t.length > 12) return false;
+    if (want === '1080') return t.indexOf('1080P') >= 0 || t === '蓝光';
+    if (want === '720') return t.indexOf('720P') >= 0 || t === '超清' || t === '准高清';
+    if (want === '540') return t.indexOf('540P') >= 0 || t.indexOf('480P') >= 0 || t === '高清' || t === '标清';
+    return false;
+  }
+  function __omQItems() {
+    var out = [];
+    var nodes = document.querySelectorAll('[id^="resolution_item_"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = __omQText(nodes[i]);
+      if (t && t.length <= 12) out.push(nodes[i]);
+    }
+    if (out.length) return out;
+    var all = document.querySelectorAll('div,span,li,button,a,p');
+    for (var j = 0; j < all.length; j++) {
+      var el = all[j];
+      if (el.children && el.children.length > 3) continue;
+      var tt = __omQText(el);
+      if (!tt || tt.length > 12) continue;
+      if (!/(蓝光|超清|高清|标清|流畅)|(^[1-9]\d{2,3}P$)/.test(tt)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+  function __omQFind(want, list) {
+    for (var i = 0; i < list.length; i++) { if (__omQHit(want, __omQText(list[i]))) return list[i]; }
+    return null;
+  }
+  // 目标档不存在时向下取最好可用档（央视网封顶 480：选 1080 会落到标清）
+  function __omQFindBest(want, list) {
+    var order = want === '1080' ? ['1080', '720', '540'] : (want === '720' ? ['720', '540'] : ['540']);
+    for (var k = 0; k < order.length; k++) {
+      var h = __omQFind(order[k], list);
+      if (h) return h;
+    }
+    return null;
+  }
+  function __omQClick(el) {
+    if (!el) return;
+    var o = { bubbles: true, cancelable: true, view: window };
+    try { el.dispatchEvent(new PointerEvent('pointerdown', o)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mousedown', o)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mouseup', o)); } catch (e) {}
+    try { el.click(); } catch (e) {}
+  }
+  function __omWakePlayer() {
+    var pl = document.querySelector('#player') || document.querySelector('video');
+    if (!pl) return;
+    var o = { bubbles: true, cancelable: true, view: window,
+              clientX: (window.innerWidth / 2) | 0, clientY: (window.innerHeight / 2) | 0 };
+    try { pl.dispatchEvent(new MouseEvent('mousemove', o)); } catch (e) {}
+    try { pl.dispatchEvent(new MouseEvent('mousedown', o)); } catch (e) {}
+    try { pl.dispatchEvent(new MouseEvent('mouseup', o)); } catch (e) {}
+    try { pl.dispatchEvent(new MouseEvent('click', o)); } catch (e) {}
+  }
+  function __omVideoH() {
+    var vs = document.querySelectorAll('video'), m = 0;
+    for (var i = 0; i < vs.length; i++) { if ((vs[i].videoHeight || 0) > m) m = vs[i].videoHeight; }
+    return m;
+  }
+  function __omTryRes() {
+    var want = window.__omWantRes;
+    // 保持清晰度：站点自行降档（重载/缩放后）时按锁定值切回
+    if (!want && window.__omResLock && document.querySelector('[id^="resolution_item_"]')) {
+      var lh = __omVideoH();
+      if (lh >= 400) {
+        var lt = lh >= 1000 ? '1080' : (lh >= 700 ? '720' : (lh >= 500 ? '540' : ''));
+        var now = Date.now();
+        if (lt && lt !== window.__omResLock && now - (window.__omResLockAt || 0) > 10000) {
+          window.__omResLockAt = now;
+          window.__omWantResTries = 0;
+          want = window.__omWantRes = window.__omResLock;
+        }
+      }
+    }
+    if (!want) return;
+    window.__omWantResTries = (window.__omWantResTries || 0) + 1;
+    if (window.__omWantResTries > 14) { window.__omWantRes = null; return; }
+    var list = __omQItems();
+    var hit = __omQFindBest(want, list);
+    if (hit) { __omQClick(hit); window.__omWantRes = null; return; }
+    var h = __omVideoH();
+    var cur = h >= 1000 ? '1080' : (h >= 700 ? '720' : (h >= 500 ? '540' : ''));
+    // 菜单未展开：先唤出控制栏，再点「当前档」把清晰度菜单展开
+    if (window.__omWantResTries % 3 === 1) __omWakePlayer();
+    var opener = cur ? __omQFind(cur, list) : null;
+    if (!opener) opener = __omQFind('1080', list) || __omQFind('720', list) || __omQFind('540', list);
+    if (opener) __omQClick(opener);
+  }
+  if (!window.__omResTimer) {
+    window.__omResTimer = 1;
+    setInterval(function () { try { __omTryRes(); } catch (e) {} }, 1000);
+  }
 })();
 ''';
 

@@ -1126,6 +1126,40 @@ class PlayerController extends ChangeNotifier {
     _applyWebVolume();
     // 网页频道用 CSS filter 调光（系统亮度 API 管不到 WebView2）
     _applyWebBrightness();
+    // 清晰度按设置下发：页面脚本/清晰度菜单渲染较晚，立即+延迟补发
+    _applyWebQuality();
+    Timer(const Duration(seconds: 3), _applyWebQuality);
+    Timer(const Duration(seconds: 8), _applyWebQuality);
+  }
+
+  /// 画质偏好 → 站点清晰度档位（站点封顶自动向下取最好可用档：
+  /// 央视网直播最高 480，选 1080 会落到它的标清档）
+  String get _webQualityLevel => switch (_settings.preferredQuality) {
+        VideoQuality.low => '540',
+        VideoQuality.medium => '720',
+        _ => '1080', // auto/high/ultra 都尽量拉满
+      };
+
+  /// 把画质偏好下发给网页播放器（点击其自带清晰度菜单，OMTV 同款）
+  void _applyWebQuality() {
+    final eval = _webEval;
+    if (eval == null) return;
+    eval('window.__omSetRes && window.__omSetRes("$_webQualityLevel")');
+  }
+
+  /// 底部面板「清晰度」按钮：循环 自动→1080P→720P→540P，持久化并立即生效。
+  /// 返回新档位说明文字（OSD 用）
+  String cycleWebQuality() {
+    const order = [
+      VideoQuality.auto,
+      VideoQuality.high,
+      VideoQuality.medium,
+      VideoQuality.low,
+    ];
+    final i = order.indexOf(_settings.preferredQuality);
+    final next = order[(i + 1) % order.length];
+    updateSettings(_settings.copyWith(preferredQuality: next));
+    return next.label;
   }
 
   /// 注销网页控制桥（WebView 销毁前）
@@ -2165,6 +2199,8 @@ class PlayerController extends ChangeNotifier {
     final launchChanged = settings.launchAtStartup != _settings.launchAtStartup;
     final topChanged = settings.alwaysOnTop != _settings.alwaysOnTop;
     final dlnaChanged = settings.dlnaEnabled != _settings.dlnaEnabled;
+    final qualityChanged =
+        settings.preferredQuality != _settings.preferredQuality;
     final remoteAdminChanged =
         settings.remoteAdminEnabled != _settings.remoteAdminEnabled;
     final webChanged = settings.webEnabled != _settings.webEnabled;
@@ -2197,6 +2233,11 @@ class PlayerController extends ChangeNotifier {
       } else if (_webPageActive) {
         exitWebPage();
       }
+    }
+    if (qualityChanged) {
+      // 网页频道：清晰度变化立即下发给站点播放器（立即+延迟补发）
+      _applyWebQuality();
+      Timer(const Duration(seconds: 2), _applyWebQuality);
     }
     notifyListeners();
   }

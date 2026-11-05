@@ -423,6 +423,11 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           c.webPageActive ? '内置播放器播放' : '网页播放器播放',
           c.canToggleWebNative ? widget.onSwitchWebNative : null,
         ),
+      // 清晰度：网页前台时循环切档（点击页面播放器自带清晰度菜单，
+      // 站点封顶自动落到最好可用档），持久化到画质偏好
+      if (c.webPageActive)
+        _KbAction('quality', Icons.hd_outlined,
+            '清晰度：${c.settings.preferredQuality.label}', c.cycleWebQuality),
       if (widget.onOpenRemoteAdmin != null)
         _KbAction('remoteAdmin', Icons.qr_code_2, '手机扫码管理',
             widget.onOpenRemoteAdmin,
@@ -463,6 +468,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
     addById('mini');
     addById('reload');
     addById('webnative');
+    addById('quality');
     addById('remoteAdmin');
     addById('cast');
 
