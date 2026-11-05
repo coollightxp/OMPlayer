@@ -5284,14 +5284,30 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     return best;
   }
 
+  // 找主文档里最大的可见 iframe：应用内嵌网页拿到的页面变体可能把
+  // 播放器装在跨域 iframe 里（同源策略读不到里面的 video），此时
+  // 把 iframe 钉满——iframe 里的同款脚本会再把自己视口的视频钉满
+  function mainIframe() {
+    var best = null, bestA = 0;
+    try {
+      var fs = document.querySelectorAll('iframe');
+      for (var i = 0; i < fs.length; i++) {
+        var r = fs[i].getBoundingClientRect(), a = r.width * r.height;
+        if (a > bestA) { bestA = a; best = fs[i]; }
+      }
+    } catch (e) {}
+    return bestA > 60000 ? best : null; // 至少约 300x200，免得钉广告框
+  }
+
   // 钉满：视频在 iframe 里时先把 iframe 钉满主视口，再钉视频本体
+  function pinFrame(f) {
+    f.style.cssText =
+      'position:fixed!important;left:0!important;top:0!important;' +
+      'width:100vw!important;height:100vh!important;' +
+      'z-index:2147483647!important;border:0!important;background:#000!important;';
+  }
   function pinVideo(v) {
-    if (foundFrame) {
-      foundFrame.style.cssText =
-        'position:fixed!important;left:0!important;top:0!important;' +
-        'width:100vw!important;height:100vh!important;' +
-        'z-index:2147483647!important;border:0!important;background:#000!important;';
-    }
+    if (foundFrame) pinFrame(foundFrame);
     v.style.cssText =
       'position:fixed!important;left:0!important;top:0!important;' +
       'width:100vw!important;height:100vh!important;' +
@@ -5327,10 +5343,26 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     cssOnce();
     ticks++;
     var v = mainVideo();
+    var f = null;
     if (v) {
       pinVideo(v);
       tryPlay(v);
       if (!fired && !v.paused && v.currentTime > 0) { fired = true; fireReady(); }
+    } else {
+      // 同源文档里找不到视频：播放器多半在跨域 iframe 里，钉 iframe
+      f = mainIframe();
+      if (f) pinFrame(f);
+    }
+    // 每约 15 秒上报一次现场数据（钉没钉到目标一眼定位）
+    if (ticks % 10 === 1) {
+      try {
+        var r = v ? v.getBoundingClientRect() : (f ? f.getBoundingClientRect() : null);
+        window.flutter_inappwebview.callHandler('omDiag',
+          'cctv tick=' + ticks + ' v=' + (v ? 1 : 0) + ' f=' + (f ? 1 : 0) +
+          ' rect=' + (r ? ((r.width | 0) + 'x' + (r.height | 0) + '@' + (r.left | 0) + ',' + (r.top | 0)) : '-') +
+          ' vw=' + window.innerWidth + 'x' + window.innerHeight +
+          ' top=' + (window === window.top ? 1 : 0));
+      } catch (e) {}
     }
     // 起播前 30 秒持续尝试点起播按钮
     if (!fired && ticks < 20) clickPlayButtons();
