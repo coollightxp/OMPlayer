@@ -5188,11 +5188,104 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   static String? _siteJsFor(String url) {
     if (url.contains('mgtv.com')) return _mgtvJs;
     if (url.contains('yangshipin.cn')) return _yangshipinJs;
+    if (url.contains('cctv.com') || url.contains('cctv.cn')) return _cctvJs;
     if (url.contains('miguvideo.com') || url.contains('migu.cn')) {
       return _miguJs;
     }
     return null;
   }
+
+  /// 央视网（tv.cctv.com/live/* 等）：自动点起播、把视频本体钉满视口、
+  /// 隐藏页头/页尾/侧栏/弹幕/弹窗等杂项，暂停自动恢复。
+  /// 各频道独立 URL，无需 __omSiteGo 页内切台；
+  /// 页面真实 m3u8 流由嗅探系统自动接管为内置播放（避免页内花屏）
+  static const String _cctvJs = r'''
+(function () {
+  window.__omSkipPin = 1;
+  try {
+    var pinned = document.querySelectorAll('[data-om-pin]');
+    for (var pi = 0; pi < pinned.length; pi++) {
+      pinned[pi].removeAttribute('data-om-pin');
+      pinned[pi].style.cssText = '';
+    }
+  } catch (e) {}
+
+  function fireReady() {
+    if (window.__omPlayingFired) return;
+    window.__omPlayingFired = true;
+    try { window.flutter_inappwebview.callHandler('omDiag', 'playing|via=site_cctv'); } catch (e) {}
+    try { window.flutter_inappwebview.callHandler('omPlaying'); } catch (e) {}
+  }
+
+  function cssOnce() {
+    if (document.getElementById('om-cctv-css')) return;
+    var s = document.createElement('style');
+    s.id = 'om-cctv-css';
+    s.textContent =
+      'html,body{margin:0!important;padding:0!important;overflow:hidden!important;' +
+      'background:#000!important;width:100%!important;height:100%!important}' +
+      '#page_header,.page_header,.new_header,.top_bar,.header,.footer,.foot,' +
+      '.page_footer,.aside,.right_wrap,.side,.share,.bshare,.bshare-custom,' +
+      '.danmu,.danmaku,.barrage,.copyright-mask,.mask_layer,.login_pop,' +
+      '.pop_layer,.modal,.advert' +
+      '{display:none!important;visibility:hidden!important;pointer-events:none!important}' +
+      'video{object-fit:contain!important;object-position:center center!important}';
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  function mainVideo() {
+    var vs = document.querySelectorAll('video'), best = null, bestA = 0;
+    for (var i = 0; i < vs.length; i++) {
+      var r = vs[i].getBoundingClientRect(), a = r.width * r.height;
+      if (a > bestA) { bestA = a; best = vs[i]; }
+    }
+    return best;
+  }
+
+  // 视频本体钉满视口：容器层级里常有遮罩/控件盖住画面，直接钉 video 最稳
+  function pinVideo(v) {
+    if (!v || v.getAttribute('data-om-cctv')) return;
+    v.setAttribute('data-om-cctv', '1');
+    v.style.cssText = 'position:fixed!important;left:0!important;top:0!important;' +
+      'width:100vw!important;height:100vh!important;z-index:2147483646!important;' +
+      'background:#000!important;object-fit:contain!important;';
+  }
+
+  function tryPlay(v) {
+    if (!v) return;
+    try { if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function(){}); } } catch (e) {}
+  }
+
+  // 央视 tgide 播放器常见起播按钮/封面遮罩（自动播放被浏览器拦截时兜底）
+  function clickPlayButtons() {
+    var sels = ['.player_start', '.play_btn', '.play-btn', '.playBtn',
+      '.v-play', '.video-play', '.tgide_play', '.player-play',
+      '.player_cover', '.video_poster', '[class*="playbtn"]'];
+    for (var i = 0; i < sels.length; i++) {
+      var bs = document.querySelectorAll(sels[i]);
+      for (var j = 0; j < bs.length; j++) {
+        try { var r = bs[j].getBoundingClientRect();
+          if (r.width > 0) bs[j].click(); } catch (e) {}
+      }
+    }
+    try { var v0 = mainVideo(); if (v0) v0.click(); } catch (e) {}
+  }
+
+  var fired = false, ticks = 0;
+  setInterval(function () {
+    cssOnce();
+    ticks++;
+    var v = mainVideo();
+    if (v) {
+      pinVideo(v);
+      tryPlay(v);
+      if (!fired && !v.paused && v.currentTime > 0) { fired = true; fireReady(); }
+    }
+    // 起播前 30 秒持续尝试点起播按钮
+    if (!fired && ticks < 20) clickPlayButtons();
+  }, 1500);
+})();
+''';
 
   /// 调页面内 __omSiteGo(url, 频道名)：芒果TV/央视频同 URL 页内切台，
   /// 未注入站点脚本的页面 __omSiteGo 不存在，短路与直接跳过

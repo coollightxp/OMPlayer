@@ -413,14 +413,15 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             Icons.refresh,
             c.isCasting ? '重载频道（投屏中不可用）' : '重载频道',
             c.isCasting ? null : widget.onReload),
-      // 网页/内置切换：仅网页频道（含已接管为内置的）出现；
-      // 加密页/未嗅探到直连流时置灰不可点
-      if (c.webPageActive || c.isNativeSniffPlayback)
+      // 网页/内置切换：网页频道（含已接管为内置的）来回切；
+      // 普通直播频道也可强制用网页播放器打开（链接实为网页但
+      // 自动判定未识别时手动切换），切回内置同样可用
+      if (c.showWebNativeButton)
         _KbAction(
           'webnative',
           c.webPageActive ? Icons.smart_display : Icons.language,
           c.webPageActive ? '内置播放器播放' : '网页播放器播放',
-          c.canSwitchWebNative ? widget.onSwitchWebNative : null,
+          c.canToggleWebNative ? widget.onSwitchWebNative : null,
         ),
       if (widget.onOpenRemoteAdmin != null)
         _KbAction('remoteAdmin', Icons.qr_code_2, '手机扫码管理',

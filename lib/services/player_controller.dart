@@ -1246,28 +1246,80 @@ class PlayerController extends ChangeNotifier {
   /// 当前是否正在内置播放器中播放接管的网页流
   bool get isNativeSniffPlayback => _sniffNativeActive && !_webPageActive;
 
-  /// 网页播放器与内置播放器之间来回切换（控制面板切换按钮）。
-  /// 仅在 [canSwitchWebNative] 为真时可调用，切换时给一条短暂提示。
+  /// 普通直播频道是否可强制用网页播放器打开：链接实为网页但自动
+  /// 判定保守未识别时，底部面板手动切换。投屏/网页态/接管态下不可用
+  bool get canForceWebPlayback {
+    if (_isCasting || _webPageActive || _sniffNativeActive) return false;
+    final ch = _currentChannel;
+    if (ch == null || ch.isWebPage) return false;
+    final u = ch.streamUrl.trim().toLowerCase();
+    return u.startsWith('http://') || u.startsWith('https://');
+  }
+
+  /// 底部面板「网页/内置切换」按钮是否显示
+  bool get showWebNativeButton =>
+      _webPageActive || _sniffNativeActive || canForceWebPlayback;
+
+  /// 该按钮当前是否可点：网页态需有嗅探目标（真网页频道）或频道本身
+  /// 非网页（强制网页可切回内置）；接管态/可强制网页时直接可点
+  bool get canToggleWebNative {
+    if (_webPageActive) {
+      if (canSwitchWebNative) return true;
+      final ch = _currentChannel;
+      return ch != null && !ch.isWebPage;
+    }
+    if (_sniffNativeActive) return true;
+    return canForceWebPlayback;
+  }
+
+  /// 底部面板「网页/内置切换」：
+  /// 网页态 → 内置（有嗅探目标走嗅探流；强制网页的频道直接回内置）；
+  /// 内置接管态 → 回网页；普通直播频道 → 强制用网页播放器打开
   Future<void> switchWebNativePlayback() async {
     final web = _lastWebChannel;
     final t = _sniffTarget;
-    if (web == null || t == null) return;
     if (_webPageActive) {
-      // 网页 → 内置
-      _userWebChoiceUrl = null;
-      OsdBus.show('正在切换到内置播放器全屏播放',
-          icon: Icons.switch_video);
-      await playSniffedWebStream(
-        url: t.url,
-        referer: t.referer,
-        userAgent: t.ua,
-      );
-    } else {
-      // 内置 → 网页：标记用户选择，overlay 重建后不再自动接管
+      if (web != null && t != null) {
+        // 网页 → 内置
+        _userWebChoiceUrl = null;
+        OsdBus.show('正在切换到内置播放器全屏播放',
+            icon: Icons.switch_video);
+        await playSniffedWebStream(
+          url: t.url,
+          referer: t.referer,
+          userAgent: t.ua,
+        );
+        return;
+      }
+      // 强制网页播放（频道本身不是网页频道）：切回内置播放器重播
+      final ch = _currentChannel;
+      if (ch != null && !ch.isWebPage) {
+        OsdBus.show('正在切换到内置播放器播放', icon: Icons.switch_video);
+        await playChannel(ch);
+      }
+      return;
+    }
+    if (_sniffNativeActive) {
+      // 内置接管态 → 网页：标记用户选择，overlay 重建后不再自动接管
       OsdBus.show('正在切换到网页播放器全屏播放', icon: Icons.language);
       _sniffNativeActive = false;
+      // 强制网页的普通频道：回强制网页并记住用户选择
+      if (web == null) {
+        final ch = _currentChannel;
+        if (ch != null && !ch.isWebPage) {
+          _userWebChoiceUrl = ch.webPageUrl;
+          await _openWebPageChannel(ch);
+        }
+        return;
+      }
       _userWebChoiceUrl = web.webPageUrl;
       await _openWebPageChannel(web);
+      return;
+    }
+    // 普通直播频道 → 强制网页播放（链接实为网页但未被自动识别时）
+    if (canForceWebPlayback) {
+      OsdBus.show('正在切换到网页播放器播放', icon: Icons.language);
+      await _openWebPageChannel(_currentChannel!);
     }
   }
 
