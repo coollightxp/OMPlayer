@@ -127,7 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.194';
+  static const String _appVersion = '1.0.195';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -3073,20 +3073,16 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
           'ok=${ok ? 1 : 0}|cnt=${c.count}|k=${c.kind}|u=${c.url}');
       if (!mounted) return;
       if (ok) {
-        WebDiag.log('takeover', 'k=${c.kind}|u=${c.url}');
-        _sniffDone = true;
-        _sniffChecking = false;
-        _sniffDeadline?.cancel();
-        _decisionTimer?.cancel();
-        _forceForegroundTimer?.cancel();
-        _webReadyGraceTimer?.cancel();
-        // 后台静默接管：网页从未显露，直接内置播放器全屏，
-        // 左上角切台 OSD 会照常显示，不额外弹提示
-        await pc.playSniffedWebStream(
+        // 不自动接管：网页一律以网页方式播放。把预检通过的直连流登记为
+        // 底部面板「内置播放器播放」按钮的手动目标，用户点击才切换
+        WebDiag.log('offer', 'k=${c.kind}|u=${c.url}');
+        pc.offerSniffTarget(
           url: c.url,
           referer: c.referer ?? widget.url,
-          userAgent: c.ua,
+          userAgent: c.ua ?? '',
         );
+        _sniffChecking = false;
+        _finishWithWeb(via: 'offer');
         return;
       }
     }

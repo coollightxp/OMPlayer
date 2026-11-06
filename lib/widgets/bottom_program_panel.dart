@@ -356,9 +356,17 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
     final hasVideo = c.currentChannel != null;
     // 可用动作：禁用按钮不进列表，遥控器只会高亮能点的按钮
     final actions = <_KbAction>[
-      _KbAction('prevSource', Icons.skip_previous, '上一个源',
+      // 网页频道前台时切源键映射为清晰度循环（档位并入切源逻辑，
+      // 遥控器左右键同路径），面板不单独设清晰度按钮
+      _KbAction(
+          'prevSource',
+          Icons.skip_previous,
+          c.webPageActive ? '降低清晰度' : '上一个源',
           c.hasPrevSource ? c.prevSource : null),
-      _KbAction('nextSource', Icons.skip_next, '下一个源',
+      _KbAction(
+          'nextSource',
+          Icons.skip_next,
+          c.webPageActive ? '提升清晰度' : '下一个源',
           c.hasNextSource ? c.nextSource : null),
       _KbAction(
           'playpause',
@@ -413,9 +421,8 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             Icons.refresh,
             c.isCasting ? '重载频道（投屏中不可用）' : '重载频道',
             c.isCasting ? null : widget.onReload),
-      // 网页/内置切换：网页频道（含已接管为内置的）来回切；
-      // 普通直播频道也可强制用网页播放器打开（链接实为网页但
-      // 自动判定未识别时手动切换），切回内置同样可用
+      // 网页/内置切换：仅网页频道体系内可用——网页播放中可切内置流
+      // 播放（需已嗅探到可直连流），接管后可切回网页；纯流频道不显示
       if (c.showWebNativeButton)
         _KbAction(
           'webnative',
@@ -423,11 +430,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           c.webPageActive ? '内置播放器播放' : '网页播放器播放',
           c.canToggleWebNative ? widget.onSwitchWebNative : null,
         ),
-      // 清晰度：网页前台时循环切档（点击页面播放器自带清晰度菜单，
-      // 站点封顶自动落到最好可用档），持久化到画质偏好
-      if (c.webPageActive)
-        _KbAction('quality', Icons.hd_outlined,
-            '清晰度：${c.settings.preferredQuality.label}', c.cycleWebQuality),
       if (widget.onOpenRemoteAdmin != null)
         _KbAction('remoteAdmin', Icons.qr_code_2, '手机扫码管理',
             widget.onOpenRemoteAdmin,
@@ -443,7 +445,10 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
     final children = <Widget>[
       // 源切换文字夹在两个按钮中间，不占遥控器动作位
       _btn(actions[0], big: true),
-      Text('源${c.sourceIndex + 1}/${c.sourceCount}',
+      Text(
+          c.webPageActive
+              ? '清晰度·${c.settings.preferredQuality.label}'
+              : '源${c.sourceIndex + 1}/${c.sourceCount}',
           style: const TextStyle(color: Colors.white54, fontSize: 12.5)),
       _btn(actions[1], big: true),
       _btn(actions[2], big: true),
@@ -468,7 +473,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
     addById('mini');
     addById('reload');
     addById('webnative');
-    addById('quality');
     addById('remoteAdmin');
     addById('cast');
 

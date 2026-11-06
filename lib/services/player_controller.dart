@@ -929,8 +929,9 @@ class PlayerController extends ChangeNotifier {
   int _sourceIndex = 0;
   int get sourceIndex => _sourceIndex;
   int get sourceCount => _currentChannel?.streamUrls.length ?? 0;
-  bool get hasPrevSource => _sourceIndex > 0;
-  bool get hasNextSource => _sourceIndex < sourceCount - 1;
+  // 网页频道前台时恒 true：此时切源键映射为清晰度循环切换
+  bool get hasPrevSource => _webPageActive || _sourceIndex > 0;
+  bool get hasNextSource => _webPageActive || _sourceIndex < sourceCount - 1;
 
   /// 播放指定频道（从第一个源开始，失败自动尝试下一个源）
   Future<void> playChannel(Channel channel) async {
@@ -1147,18 +1148,21 @@ class PlayerController extends ChangeNotifier {
     eval('window.__omSetRes && window.__omSetRes("$_webQualityLevel")');
   }
 
-  /// 底部面板「清晰度」按钮：循环 自动→1080P→720P→540P，持久化并立即生效。
-  /// 返回新档位说明文字（OSD 用）
-  String cycleWebQuality() {
-    const order = [
-      VideoQuality.auto,
-      VideoQuality.high,
-      VideoQuality.medium,
+  /// 网页清晰度循环切换：网页频道前台时，遥控器左右键/面板源按钮即调
+  /// 清晰度（档位并入切源逻辑，面板不单独设按钮）。三档环绕循环：
+  /// 480p → 720p → 1080p，dir=1 升档、dir=-1 降档；auto/ultra 视为
+  /// 当前在最高档。updateSettings 内部会把新档位即时下发给页面播放器
+  String cycleWebQuality([int dir = 1]) {
+    const levels = [
       VideoQuality.low,
+      VideoQuality.medium,
+      VideoQuality.high,
     ];
-    final i = order.indexOf(_settings.preferredQuality);
-    final next = order[(i + 1) % order.length];
+    var i = levels.indexOf(_settings.preferredQuality);
+    if (i < 0) i = 2; // auto/ultra 视为最高档
+    final next = levels[(i + dir + levels.length) % levels.length];
     updateSettings(_settings.copyWith(preferredQuality: next));
+    OsdBus.show('清晰度：${next.label}', icon: Icons.hd_outlined);
     return next.label;
   }
 
@@ -1280,35 +1284,19 @@ class PlayerController extends ChangeNotifier {
   /// 当前是否正在内置播放器中播放接管的网页流
   bool get isNativeSniffPlayback => _sniffNativeActive && !_webPageActive;
 
-  /// 普通直播频道是否可强制用网页播放器打开：链接实为网页但自动
-  /// 判定保守未识别时，底部面板手动切换。投屏/网页态/接管态下不可用
-  bool get canForceWebPlayback {
-    if (_isCasting || _webPageActive || _sniffNativeActive) return false;
-    final ch = _currentChannel;
-    if (ch == null || ch.isWebPage) return false;
-    final u = ch.streamUrl.trim().toLowerCase();
-    return u.startsWith('http://') || u.startsWith('https://');
-  }
+  /// 底部面板「网页/内置切换」按钮是否显示：仅网页频道体系内
+  /// （网页播放中 / 已接管为内置播放）。纯流频道没有机会转网页播放，
+  /// 按钮不显示
+  bool get showWebNativeButton => _webPageActive || _sniffNativeActive;
 
-  /// 底部面板「网页/内置切换」按钮是否显示
-  bool get showWebNativeButton =>
-      _webPageActive || _sniffNativeActive || canForceWebPlayback;
-
-  /// 该按钮当前是否可点：网页态需有嗅探目标（真网页频道）或频道本身
-  /// 非网页（强制网页可切回内置）；接管态/可强制网页时直接可点
+  /// 该按钮当前是否可点：网页态需嗅探到可直连流；接管态可直接切回网页
   bool get canToggleWebNative {
-    if (_webPageActive) {
-      if (canSwitchWebNative) return true;
-      final ch = _currentChannel;
-      return ch != null && !ch.isWebPage;
-    }
-    if (_sniffNativeActive) return true;
-    return canForceWebPlayback;
+    if (_webPageActive) return canSwitchWebNative;
+    return _sniffNativeActive;
   }
 
-  /// 底部面板「网页/内置切换」：
-  /// 网页态 → 内置（有嗅探目标走嗅探流；强制网页的频道直接回内置）；
-  /// 内置接管态 → 回网页；普通直播频道 → 强制用网页播放器打开
+  /// 底部面板「网页/内置切换」：网页态 → 内置（用已登记的嗅探流）；
+  /// 内置接管态 → 回网页。纯流频道没有该按钮，不会走到这里
   Future<void> switchWebNativePlayback() async {
     final web = _lastWebChannel;
     final t = _sniffTarget;
@@ -1323,37 +1311,15 @@ class PlayerController extends ChangeNotifier {
           referer: t.referer,
           userAgent: t.ua,
         );
-        return;
-      }
-      // 强制网页播放（频道本身不是网页频道）：切回内置播放器重播
-      final ch = _currentChannel;
-      if (ch != null && !ch.isWebPage) {
-        OsdBus.show('正在切换到内置播放器播放', icon: Icons.switch_video);
-        await playChannel(ch);
       }
       return;
     }
-    if (_sniffNativeActive) {
-      // 内置接管态 → 网页：标记用户选择，overlay 重建后不再自动接管
+    if (_sniffNativeActive && web != null) {
+      // 内置接管态 → 网页：标记用户选择，不再自动接管
       OsdBus.show('正在切换到网页播放器全屏播放', icon: Icons.language);
       _sniffNativeActive = false;
-      // 强制网页的普通频道：回强制网页并记住用户选择
-      if (web == null) {
-        final ch = _currentChannel;
-        if (ch != null && !ch.isWebPage) {
-          _userWebChoiceUrl = ch.webPageUrl;
-          await _openWebPageChannel(ch);
-        }
-        return;
-      }
       _userWebChoiceUrl = web.webPageUrl;
       await _openWebPageChannel(web);
-      return;
-    }
-    // 普通直播频道 → 强制网页播放（链接实为网页但未被自动识别时）
-    if (canForceWebPlayback) {
-      OsdBus.show('正在切换到网页播放器播放', icon: Icons.language);
-      await _openWebPageChannel(_currentChannel!);
     }
   }
 
@@ -1414,6 +1380,18 @@ class PlayerController extends ChangeNotifier {
     } catch (_) {
       return false;
     }
+  }
+
+  /// 登记嗅探到的可直连流为「内置播放器播放」按钮的手动目标。
+  /// 网页频道一律先按网页方式播放，不自动接管；用户点按钮才切换
+  void offerSniffTarget({
+    required String url,
+    required String referer,
+    required String userAgent,
+  }) {
+    if (_sniffNativeActive || !_webPageActive) return;
+    _sniffTarget = _SniffTarget(url: url, referer: referer, ua: userAgent);
+    notifyListeners();
   }
 
   /// 把网页内 XHR/fetch 嗅探到的真实媒体流（m3u8/mpd/flv 等）
@@ -1495,15 +1473,23 @@ class PlayerController extends ChangeNotifier {
     _webRecBytes = 0;
   }
 
-  /// 切换到上一个播放源
+  /// 切换到上一个播放源（网页频道前台时 = 降一档清晰度）
   Future<void> prevSource() async {
+    if (_webPageActive) {
+      cycleWebQuality(-1);
+      return;
+    }
     if (!hasPrevSource) return;
     _sourceIndex--;
     await _playCurrentSource();
   }
 
-  /// 切换到下一个播放源
+  /// 切换到下一个播放源（网页频道前台时 = 升一档清晰度）
   Future<void> nextSource() async {
+    if (_webPageActive) {
+      cycleWebQuality(1);
+      return;
+    }
     if (!hasNextSource) return;
     _sourceIndex++;
     await _playCurrentSource();
