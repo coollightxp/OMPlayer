@@ -127,7 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.195';
+  static const String _appVersion = '1.0.196';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -723,14 +723,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       onToggleRecord: () => _toggleRecording(controller),
                       onSwitchWebNative: () =>
                           controller.switchWebNativePlayback(),
-                      // 小窗：桌面端窗口置顶缩小；移动端系统画中画（PiP）
-                      onToggleMini: controller.isDesktop
-                          ? controller.toggleMiniWindow
-                          : (kIsWeb ? null : _enterPip),
                       onReload: controller.reloadCurrentChannel,
-                      onOpenRemoteAdmin: controller.remoteAdminUrl.isEmpty
-                          ? null
-                          : () => _showRemoteAdminQr(controller),
                       onDismissRemote: () {
                         if (_bottomPanelVisible) {
                           setState(() => _bottomPanelVisible = false);
@@ -958,9 +951,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
             final double panelScale =
                 (MediaQuery.sizeOf(ctx).width / 1280).clamp(0.55, 1.0);
             final options = _exitOptions(c);
-            // 按钮多于 4 个（锁定/设置/关机全出现）时加宽卡片，
+            // 按钮多于 4 个（锁定/小窗/扫码/设置/关机全出现）时加宽卡片，
             // 避免 FittedBox 把标题和图标整体缩得太小
-            final double cardW = (options.length > 4 ? 430 : 340) * panelScale;
+            final double cardW =
+                (options.length > 5 ? 500 : (options.length > 4 ? 430 : 340)) *
+                    panelScale;
             return Dialog(
               backgroundColor: const Color(0xFF12151A),
               shape: RoundedRectangleBorder(
@@ -1037,6 +1032,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       case 'lock':
         c.toggleLock();
         break;
+      case 'mini':
+        // 桌面端窗口置顶缩小；移动端系统画中画（PiP）
+        if (c.isDesktop) {
+          c.toggleMiniWindow();
+        } else if (!kIsWeb) {
+          await _enterPip();
+        }
+        break;
+      case 'remoteAdmin':
+        _showRemoteAdminQr(c);
+        break;
       case 'settings':
         _toggleSettings();
         break;
@@ -1055,12 +1061,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
           defaultTargetPlatform == TargetPlatform.linux);
 
   /// 退出框按钮列表（顺序即遥控器 ←/→ 的移动顺序）。
-  /// 「锁定/设置」统一收在这里，底部信息栏只保留播放相关按钮
+  /// 「锁定/小窗/扫码/设置」统一收在这里，底部信息栏只保留播放相关按钮
   List<_ExitOption> _exitOptions(PlayerController c) => <_ExitOption>[
         const _ExitOption(Icons.arrow_back, '返回', Colors.blueAccent, 'back'),
         if (!c.locked)
           const _ExitOption(
               Icons.lock_open, '锁定', Colors.amberAccent, 'lock'),
+        // 小窗播放：桌面端窗口置顶缩小；移动端系统画中画（Web 端不支持，不显示）
+        if (!kIsWeb)
+          _ExitOption(
+              c.miniWindow
+                  ? Icons.fullscreen
+                  : Icons.picture_in_picture_alt,
+              c.miniWindow ? '恢复窗口' : '小窗播放',
+              Colors.greenAccent,
+              'mini'),
+        // Web 扫码管理：局域网管理服务未启动（地址为空）时不显示
+        if (c.remoteAdminUrl.isNotEmpty)
+          const _ExitOption(
+              Icons.qr_code_2, '扫码管理', Colors.lightBlueAccent,
+              'remoteAdmin'),
         const _ExitOption(Icons.settings, '设置', Colors.tealAccent, 'settings'),
         const _ExitOption(Icons.logout, '退出', Colors.redAccent, 'exit'),
         // 关闭系统仅 Windows/Linux 原生显示
@@ -5606,11 +5626,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     if (!fired && ticks < 30) clickPlayButtons();
   }, 800);
 
-  // ===== 清晰度切换（OMTV 同款，去掉音频档）=====
-  // 点击页面播放器自带的清晰度菜单项；站点降档后按锁定值自动切回
+  // ===== 清晰度切换（央视网 H5 播放器，5 档）=====
+  // 档位名映射：蓝光=1080 / 超清=720 / 高清=576 / 标清=480 / 流畅=360
+  // （央视网的「高清」是 576P、「超清」才是 720P，与央视频不同级）
+  // 菜单项多为 li、可能 hover 展开、可能在同源 iframe 内；
+  // 点击页面播放器自带的清晰度菜单项，站点降档后按锁定值自动切回
   window.__omSetRes = function (level) {
     var want = String(level);
-    if (want !== '1080' && want !== '720' && want !== '540') return;
+    if (['1080', '720', '576', '480', '360'].indexOf(want) < 0) return;
     if (window.__omWantRes !== want) window.__omWantResTries = 0;
     window.__omWantRes = want;
     window.__omResLock = want;
@@ -5618,40 +5641,43 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     try { __omTryRes(); } catch (e) {}
   };
   function __omQText(el) { return ((el.textContent || '') + '').trim().toUpperCase(); }
+  // 先匹配数字 xxxP；没有数字再精确匹配中文名（防止「超清」误配「高清」）
   function __omQHit(want, t) {
     if (!t || t.length > 12) return false;
-    if (want === '1080') return t.indexOf('1080P') >= 0 || t === '蓝光';
-    if (want === '720') return t.indexOf('720P') >= 0 || t === '超清' || t === '准高清';
-    if (want === '540') return t.indexOf('540P') >= 0 || t.indexOf('480P') >= 0 || t === '高清' || t === '标清';
+    var m = t.match(/(^|[^\d])(1080|720|576|480|360)P/);
+    if (m) return m[2] === want;
+    if (want === '1080') return t === '蓝光';
+    if (want === '720') return t === '超清';
+    if (want === '576') return t === '高清';
+    if (want === '480') return t === '标清';
+    if (want === '360') return t === '流畅';
     return false;
   }
   function __omQItems() {
     var out = [];
-    var nodes = document.querySelectorAll('[id^="resolution_item_"]');
-    for (var i = 0; i < nodes.length; i++) {
-      var t = __omQText(nodes[i]);
-      if (t && t.length <= 12) out.push(nodes[i]);
-    }
-    if (out.length) return out;
-    var all = document.querySelectorAll('div,span,li,button,a,p');
-    for (var j = 0; j < all.length; j++) {
-      var el = all[j];
-      if (el.children && el.children.length > 3) continue;
-      var tt = __omQText(el);
-      if (!tt || tt.length > 12) continue;
-      if (!/(蓝光|超清|高清|标清|流畅)|(^[1-9]\d{2,3}P$)/.test(tt)) continue;
-      out.push(el);
-    }
+    // 主文档 + 所有同源 iframe（播放器控件可能在 iframe 内）
+    eachDoc(function (d) {
+      var all = d.querySelectorAll('li,div,span,button,a,p');
+      for (var j = 0; j < all.length; j++) {
+        var el = all[j];
+        if (el.children && el.children.length > 3) continue;
+        var tt = __omQText(el);
+        if (!tt || tt.length > 12) continue;
+        if (!/(蓝光|超清|高清|标清|流畅)|((1080|720|576|480|360)P)/.test(tt)) continue;
+        out.push(el);
+      }
+    });
     return out;
   }
   function __omQFind(want, list) {
     for (var i = 0; i < list.length; i++) { if (__omQHit(want, __omQText(list[i]))) return list[i]; }
     return null;
   }
-  // 目标档不存在时向下取最好可用档（央视网封顶 480：选 1080 会落到标清）
+  // 目标档不存在时向下取最好可用档
   function __omQFindBest(want, list) {
-    var order = want === '1080' ? ['1080', '720', '540'] : (want === '720' ? ['720', '540'] : ['540']);
-    for (var k = 0; k < order.length; k++) {
+    var order = ['1080', '720', '576', '480', '360'];
+    var start = order.indexOf(want);
+    for (var k = start; k >= 0 && k < order.length; k++) {
       var h = __omQFind(order[k], list);
       if (h) return h;
     }
@@ -5660,33 +5686,43 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   function __omQClick(el) {
     if (!el) return;
     var o = { bubbles: true, cancelable: true, view: window };
+    // 央视网菜单项可能监听 hover 展开/高亮，先补 mouseover/mouseenter
+    try { el.dispatchEvent(new MouseEvent('mouseover', o)); } catch (e) {}
+    try { el.dispatchEvent(new MouseEvent('mouseenter', o)); } catch (e) {}
     try { el.dispatchEvent(new PointerEvent('pointerdown', o)); } catch (e) {}
     try { el.dispatchEvent(new MouseEvent('mousedown', o)); } catch (e) {}
     try { el.dispatchEvent(new MouseEvent('mouseup', o)); } catch (e) {}
     try { el.click(); } catch (e) {}
   }
   function __omWakePlayer() {
-    var pl = document.querySelector('#player') || document.querySelector('video');
-    if (!pl) return;
     var o = { bubbles: true, cancelable: true, view: window,
               clientX: (window.innerWidth / 2) | 0, clientY: (window.innerHeight / 2) | 0 };
-    try { pl.dispatchEvent(new MouseEvent('mousemove', o)); } catch (e) {}
-    try { pl.dispatchEvent(new MouseEvent('mousedown', o)); } catch (e) {}
-    try { pl.dispatchEvent(new MouseEvent('mouseup', o)); } catch (e) {}
-    try { pl.dispatchEvent(new MouseEvent('click', o)); } catch (e) {}
+    eachDoc(function (d) {
+      var pl = d.querySelector('#player') || d.querySelector('video');
+      if (!pl) return;
+      // 只发 mousemove 唤出控制栏：点击视频面会触发播放/暂停切换
+      try { pl.dispatchEvent(new MouseEvent('mousemove', o)); } catch (e) {}
+    });
   }
   function __omVideoH() {
-    var vs = document.querySelectorAll('video'), m = 0;
-    for (var i = 0; i < vs.length; i++) { if ((vs[i].videoHeight || 0) > m) m = vs[i].videoHeight; }
+    var m = 0;
+    eachDoc(function (d) {
+      var vs = d.querySelectorAll('video');
+      for (var i = 0; i < vs.length; i++) { if ((vs[i].videoHeight || 0) > m) m = vs[i].videoHeight; }
+    });
     return m;
+  }
+  // 视频实际高度回推档位
+  function __omLevelOfH(h) {
+    return h >= 1000 ? '1080' : (h >= 700 ? '720' : (h >= 560 ? '576' : (h >= 460 ? '480' : (h > 0 ? '360' : ''))));
   }
   function __omTryRes() {
     var want = window.__omWantRes;
     // 保持清晰度：站点自行降档（重载/缩放后）时按锁定值切回
-    if (!want && window.__omResLock && document.querySelector('[id^="resolution_item_"]')) {
+    if (!want && window.__omResLock) {
       var lh = __omVideoH();
-      if (lh >= 400) {
-        var lt = lh >= 1000 ? '1080' : (lh >= 700 ? '720' : (lh >= 500 ? '540' : ''));
+      if (lh >= 300) {
+        var lt = __omLevelOfH(lh);
         var now = Date.now();
         if (lt && lt !== window.__omResLock && now - (window.__omResLockAt || 0) > 10000) {
           window.__omResLockAt = now;
@@ -5701,12 +5737,14 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
     var list = __omQItems();
     var hit = __omQFindBest(want, list);
     if (hit) { __omQClick(hit); window.__omWantRes = null; return; }
-    var h = __omVideoH();
-    var cur = h >= 1000 ? '1080' : (h >= 700 ? '720' : (h >= 500 ? '540' : ''));
+    var cur = __omLevelOfH(__omVideoH());
     // 菜单未展开：先唤出控制栏，再点「当前档」把清晰度菜单展开
     if (window.__omWantResTries % 3 === 1) __omWakePlayer();
     var opener = cur ? __omQFind(cur, list) : null;
-    if (!opener) opener = __omQFind('1080', list) || __omQFind('720', list) || __omQFind('540', list);
+    if (!opener) {
+      var order = ['1080', '720', '576', '480', '360'];
+      for (var k = 0; k < order.length && !opener; k++) opener = __omQFind(order[k], list);
+    }
     if (opener) __omQClick(opener);
   }
   if (!window.__omResTimer) {
@@ -6168,7 +6206,7 @@ class _ExitOption {
   final String label;
   final Color color;
 
-  /// 点击/确认后的动作标识：back / lock / settings / exit / shutdown
+  /// 点击/确认后的动作标识：back / lock / mini / remoteAdmin / settings / exit / shutdown
   final String action;
   const _ExitOption(this.icon, this.label, this.color, this.action);
 }

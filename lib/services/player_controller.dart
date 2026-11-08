@@ -1133,37 +1133,60 @@ class PlayerController extends ChangeNotifier {
     Timer(const Duration(seconds: 8), _applyWebQuality);
   }
 
-  /// 画质偏好 → 站点清晰度档位（站点封顶自动向下取最好可用档：
-  /// 央视网直播最高 480，选 1080 会落到它的标清档）
-  String get _webQualityLevel => switch (_settings.preferredQuality) {
-        VideoQuality.low => '540',
-        VideoQuality.medium => '720',
-        _ => '1080', // auto/high/ultra 都尽量拉满
-      };
+  /// 网页频道清晰度档位（站点不同档位不同，从大到小排列，首档=最高=默认）：
+  /// 央视频 3 档 1080/720/540（起点 540P、中间档 720P）；央视网多两档共
+  /// 5 档 1080/720/576/480/360——注意央视网的「高清」是 576P、「超清」
+  /// 才是 720P，中间档为 576P 而非 720P；低档位更省流量
+  List<String> get webQualityLevels {
+    final url = _currentChannel?.webPageUrl ?? '';
+    if (url.contains('cctv.com') || url.contains('cctv.cn')) {
+      return const ['1080', '720', '576', '480', '360'];
+    }
+    return const ['1080', '720', '540'];
+  }
 
-  /// 把画质偏好下发给网页播放器（点击其自带清晰度菜单，OMTV 同款）
+  /// 当前档位下标（0=最高，默认直接播放最大分辨率）
+  int _webQualityIndex = 0;
+
+  /// 面板/OSD 显示用：纯分辨率标签（如 1080P），不带「自动/蓝光」等字样
+  String get webQualityLabel => '${webQualityLevels[_webQualityIndex]}P';
+
+  /// 画质偏好 → 默认档位下标：自动/全高清/超清=最高档，高清=中间档，
+  /// 标清=最省流档（央视频中间=720P、央视网中间=576P）
+  int _webQualityIndexFromPref(List<String> levels) {
+    switch (_settings.preferredQuality) {
+      case VideoQuality.low:
+        return levels.length - 1;
+      case VideoQuality.medium:
+        return levels.length ~/ 2;
+      case VideoQuality.auto:
+      case VideoQuality.high:
+      case VideoQuality.ultra:
+        return 0;
+    }
+  }
+
+  /// 把当前档位下发给网页播放器（点击其自带清晰度菜单，OMTV 同款）
   void _applyWebQuality() {
     final eval = _webEval;
     if (eval == null) return;
-    eval('window.__omSetRes && window.__omSetRes("$_webQualityLevel")');
+    eval('window.__omSetRes && window.__omSetRes("${webQualityLevels[_webQualityIndex]}")');
   }
 
-  /// 网页清晰度循环切换：网页频道前台时，遥控器左右键/面板源按钮即调
-  /// 清晰度（档位并入切源逻辑，面板不单独设按钮）。三档环绕循环：
-  /// 480p → 720p → 1080p，dir=1 升档、dir=-1 降档；auto/ultra 视为
-  /// 当前在最高档。updateSettings 内部会把新档位即时下发给页面播放器
+  /// 网页清晰度切换：网页频道前台时，遥控器左右键即调清晰度（档位并入
+  /// 切源逻辑，面板不单独设按钮）。档位列表从大到小排列，dir=1 升一档
+  /// （往更清晰）、dir=-1 降一档（往省流量），到顶/到底后环绕循环
   String cycleWebQuality([int dir = 1]) {
-    const levels = [
-      VideoQuality.low,
-      VideoQuality.medium,
-      VideoQuality.high,
-    ];
-    var i = levels.indexOf(_settings.preferredQuality);
-    if (i < 0) i = 2; // auto/ultra 视为最高档
-    final next = levels[(i + dir + levels.length) % levels.length];
-    updateSettings(_settings.copyWith(preferredQuality: next));
-    OsdBus.show('清晰度：${next.label}', icon: Icons.hd_outlined);
-    return next.label;
+    final levels = webQualityLevels;
+    var i = _webQualityIndex - dir;
+    if (i < 0) i = levels.length - 1;
+    if (i >= levels.length) i = 0;
+    _webQualityIndex = i;
+    _applyWebQuality();
+    final label = webQualityLabel;
+    OsdBus.show('清晰度：$label', icon: Icons.hd_outlined);
+    notifyListeners();
+    return label;
   }
 
   /// 注销网页控制桥（WebView 销毁前）
@@ -1219,6 +1242,8 @@ class PlayerController extends ChangeNotifier {
     await _disposeVideoController();
     _currentChannel = channel;
     _sourceIndex = 0;
+    // 清晰度档位复位：默认直接播放最大分辨率（设置里选了标清/高清的按偏好起步）
+    _webQualityIndex = _webQualityIndexFromPref(webQualityLevels);
     _state = PlayerState.idle;
     await _saveLastChannel();
     // Windows/Android/macOS/Web：使用窗体内嵌网页控件（信息/节目单/EPG
@@ -2221,7 +2246,8 @@ class PlayerController extends ChangeNotifier {
       }
     }
     if (qualityChanged) {
-      // 网页频道：清晰度变化立即下发给站点播放器（立即+延迟补发）
+      // 网页频道：画质偏好变化 → 重算默认档位并立即下发给站点播放器
+      _webQualityIndex = _webQualityIndexFromPref(webQualityLevels);
       _applyWebQuality();
       Timer(const Duration(seconds: 2), _applyWebQuality);
     }

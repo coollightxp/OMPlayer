@@ -817,12 +817,23 @@ class DlnaService {
             if (sub != null) {
               _lastPushedState = 'STOPPED';
               unawaited(_notify(sub, _avtStoppedEventBody()));
+              // 异机接管（新手机顶掉旧手机）：旧订阅随旧会话一并终止，
+              // 否则旧手机会继续收到新会话的 PLAYING 事件，以为还在投屏
+              final peer = req.connectionInfo?.remoteAddress.address ?? '';
+              if (peer.isNotEmpty &&
+                  sub.peerHost.isNotEmpty &&
+                  peer != sub.peerHost) {
+                sub.expireTimer.cancel();
+                _subs.removeWhere((_, s) => s.sid == sub.sid);
+              }
             }
           }
           _currentUri = newUri;
           _currentTitle = _extractCastTitle(body);
           _currentMetaData = _extract(body, 'CurrentURIMetaData');
-          CastLog.write('DLNA SetURI title="$_currentTitle" uri=${_currentUri?.length ?? 0}ch');
+          CastLog.write('DLNA SetURI title="$_currentTitle" '
+              'uri=${_currentUri?.length ?? 0}ch '
+              'ua=${req.headers.value(HttpHeaders.userAgentHeader) ?? ''}');
           // 命令驱动状态：Macast 同款，SetURI 后先报 PAUSED 等 Play
           _cmdState = 'PAUSED_PLAYBACK';
           // 新地址：重置进度推送缓存
@@ -839,12 +850,24 @@ class DlnaService {
           _startReadyWatch();
           return;
         case 'Play':
+          // 无媒体（已 Stop/未投屏）：返回 UPnP 701 且不触发本地播放。
+          // 微信视频号等轮询型 DMC 不解析 GENA 事件，靠控制指令的
+          // 错误返回值感知会话已结束；顺带修正无媒体时 Play 误触发
+          // 本地恢复播放的问题
+          if (_currentUri == null || _currentUri!.isEmpty) {
+            await _soapFault(req, service, 701, 'Transition not available');
+            return;
+          }
           _cmdState = 'PLAYING'; // 立即上报，不等播放器 init（Macast 同款）
           hooks.onResume();
           await _soapResponse(req, service, action, '');
           _startReadyWatch();
           return;
         case 'Pause':
+          if (_currentUri == null || _currentUri!.isEmpty) {
+            await _soapFault(req, service, 701, 'Transition not available');
+            return;
+          }
           _cmdState = 'PAUSED_PLAYBACK';
           hooks.onPause();
           await _soapResponse(req, service, action, '');
@@ -861,6 +884,10 @@ class DlnaService {
           _fireAvtChange();
           return;
         case 'Seek':
+          if (_currentUri == null || _currentUri!.isEmpty) {
+            await _soapFault(req, service, 701, 'Transition not available');
+            return;
+          }
           final target = _extract(body, 'Target');
           final d = _parseTime(target);
           CastLog.write('DLNA Seek target="$target" parsed=$d');
@@ -879,14 +906,15 @@ class DlnaService {
               _currentUri != null && _currentUri!.isNotEmpty;
           final uri = _xmlEscape(_currentUri ?? '');
           if (!hasMedia) {
-            // 无媒体：Track=0、URI/时长/位置全空，投送端据此结束投屏 UI
+            // 无媒体：Track=0、URI/时长/元数据空，位置归零（比空串更好
+            // 解析），轮询型投送端据此结束投屏 UI
             await _soapResponse(req, service, action,
                 '<Track>0</Track>'
                 '<TrackDuration></TrackDuration>'
                 '<TrackMetaData></TrackMetaData>'
                 '<TrackURI></TrackURI>'
-                '<RelTime></RelTime>'
-                '<AbsTime></AbsTime>'
+                '<RelTime>0:00:00</RelTime>'
+                '<AbsTime>0:00:00</AbsTime>'
                 '<RelCount>2147483647</RelCount>'
                 '<AbsCount>2147483647</AbsCount>');
             return;
@@ -1130,6 +1158,26 @@ class DlnaService {
         's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
         '<s:Body><u:$respAction xmlns:u="$service">$argsXml</u:$respAction></s:Body>'
         '</s:Envelope>';
+    await _respondXml(req, body);
+  }
+
+  /// UPnP SOAP Fault（HTTP 500 + s:Fault）：无媒体时的 Play/Pause/Seek
+  /// 等控制指令返回它，轮询型发送端（微信视频号不靠 GENA 事件）据此
+  /// 感知投屏会话已结束
+  Future<void> _soapFault(
+      HttpRequest req, String service, int code, String desc) async {
+    final body = '<?xml version="1.0" encoding="utf-8"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+        '<s:Body><s:Fault>'
+        '<faultcode>s:Client</faultcode>'
+        '<faultstring>UPnPError</faultstring>'
+        '<detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0">'
+        '<errorCode>$code</errorCode>'
+        '<errorDescription>$desc</errorDescription>'
+        '</UPnPError></detail>'
+        '</s:Fault></s:Body></s:Envelope>';
+    req.response.statusCode = HttpStatus.internalServerError;
     await _respondXml(req, body);
   }
 

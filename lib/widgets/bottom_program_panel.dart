@@ -19,14 +19,8 @@ class BottomProgramPanel extends StatefulWidget {
   final VoidCallback onScreenshot;
   final VoidCallback onToggleRecord;
 
-  /// 调出手机扫码管理页（地址为空时传 null，按钮不显示）
-  final VoidCallback? onOpenRemoteAdmin;
-
   /// 网页/内置播放器来回切换（无可切流时置灰不可点）
   final VoidCallback? onSwitchWebNative;
-
-  /// 小窗播放（桌面端缩小窗口并置顶；移动端传 null，按钮不显示）
-  final VoidCallback? onToggleMini;
 
   /// 重载当前频道（网页卡死/黑屏时手动恢复）
   final VoidCallback? onReload;
@@ -46,9 +40,7 @@ class BottomProgramPanel extends StatefulWidget {
     required this.onScreenshot,
     required this.onToggleRecord,
     this.onSwitchWebNative,
-    this.onToggleMini,
     this.onReload,
-    this.onOpenRemoteAdmin,
     this.onDismissRemote,
     this.onHoverEnter,
     this.onHoverExit,
@@ -404,14 +396,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
             c.isFullscreen ? '退出全屏' : '全屏',
             c.toggleFullscreen),
       ],
-      // 小窗：桌面端为窗口置顶缩小（再点恢复原窗口）；
-      // 安卓端为系统画中画（PiP），切到桌面后视频继续播
-      if (widget.onToggleMini != null)
-        _KbAction(
-            'mini',
-            c.miniWindow ? Icons.fullscreen : Icons.picture_in_picture_alt,
-            c.miniWindow ? '恢复窗口' : '小窗播放',
-            widget.onToggleMini),
       // 手动重载当前频道：网页卡死/黑屏时不必等自动看门狗；
       // 投屏中播放会话由发送端控制，重载无意义（置灰），
       // 断开投屏后自动恢复可用
@@ -430,10 +414,6 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
           c.webPageActive ? '内置播放器播放' : '网页播放器播放',
           c.canToggleWebNative ? widget.onSwitchWebNative : null,
         ),
-      if (widget.onOpenRemoteAdmin != null)
-        _KbAction('remoteAdmin', Icons.qr_code_2, '手机扫码管理',
-            widget.onOpenRemoteAdmin,
-            dismiss: true),
       if (c.isCasting)
         _KbAction('cast', Icons.cast_connected, '断开投屏',
             c.stopCastAndRestore),
@@ -447,7 +427,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
       _btn(actions[0], big: true),
       Text(
           c.webPageActive
-              ? '清晰度·${c.settings.preferredQuality.label}'
+              ? '清晰度·${c.webQualityLabel}'
               : '源${c.sourceIndex + 1}/${c.sourceCount}',
           style: const TextStyle(color: Colors.white54, fontSize: 12.5)),
       _btn(actions[1], big: true),
@@ -470,10 +450,8 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
 
     addById('mute');
     addById('fullscreen');
-    addById('mini');
     addById('reload');
     addById('webnative');
-    addById('remoteAdmin');
     addById('cast');
 
     return Row(mainAxisSize: MainAxisSize.min, children: children);
