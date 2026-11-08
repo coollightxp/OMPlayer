@@ -427,7 +427,7 @@ class BottomProgramPanelState extends State<BottomProgramPanel> {
       _btn(actions[0], big: true),
       Text(
           c.webPageActive
-              ? '清晰度·${c.webQualityLabel}'
+              ? c.webQualityLabel
               : '源${c.sourceIndex + 1}/${c.sourceCount}',
           style: const TextStyle(color: Colors.white54, fontSize: 12.5)),
       _btn(actions[1], big: true),

@@ -81,6 +81,73 @@ class DlnaService {
 
   bool get isRunning => _http != null && _ssdp != null;
 
+  /// 本机（接收端 UI）主动断开投屏：清媒体 + 推 STOPPED 事件 +
+  /// 终止所有 GENA 订阅 + SSDP byebye 一轮（微信视频号不解析事件、
+  /// 不续订订阅，只有设备从 SSDP 消失才会清投屏 UI；byebye 只发一次，
+  /// 设备仍在线，正常 alive 周期广播不受影响）
+  void kickCastClients() {
+    final wasActive = _currentUri != null && _currentUri!.isNotEmpty;
+    _currentUri = null;
+    _currentTitle = '';
+    _currentMetaData = '';
+    _cmdState = null;
+    _lastPushedPosSec = -1;
+    // 推 STOPPED + 终止订阅：微信轮询失败后也不会再续上事件通道
+    final avt = _subs['/event/AVTransport'];
+    if (wasActive && avt != null) {
+      _lastPushedState = 'STOPPED';
+      unawaited(_notify(avt, _avtStoppedEventBody()));
+    }
+    for (final sub in _subs.values.toList()) {
+      sub.expireTimer.cancel();
+    }
+    _subs.clear();
+    _lastPushedState = null;
+    if (wasActive) _notifyByebye();
+    CastLog.write('DLNA kickCastClients wasActive=$wasActive');
+  }
+
+  /// SSDP byebye：设备「消失」一次，强制微信等轮询型 DMC 清掉投屏态
+  void _notifyByebye() {
+    final socket = _ssdp;
+    if (socket == null) return;
+    final usnBase = 'uuid:$_uuid';
+    final entries = <List<String>>[
+      ['upnp:rootdevice', '$usnBase::upnp:rootdevice'],
+      [usnBase, usnBase],
+      [
+        'urn:schemas-upnp-org:device:MediaRenderer:1',
+        '$usnBase::urn:schemas-upnp-org:device:MediaRenderer:1'
+      ],
+      [
+        'urn:schemas-upnp-org:service:AVTransport:1',
+        '$usnBase::urn:schemas-upnp-org:service:AVTransport:1'
+      ],
+      [
+        'urn:schemas-upnp-org:service:RenderingControl:1',
+        '$usnBase::urn:schemas-upnp-org:service:RenderingControl:1'
+      ],
+      [
+        'urn:schemas-upnp-org:service:ConnectionManager:1',
+        '$usnBase::urn:schemas-upnp-org:service:ConnectionManager:1'
+      ],
+    ];
+    for (final e in entries) {
+      final pkt = 'NOTIFY * HTTP/1.1\r\n'
+          'HOST: 239.255.255.250:1900\r\n'
+          'NT: ${e[0]}\r\n'
+          'NTS: ssdp:byebye\r\n'
+          'SERVER: OMPlayer/1.0 UPnP/1.0\r\n'
+          'BOOTID.UPNP.ORG: 1\r\n'
+          'CONFIGID.UPNP.ORG: 1\r\n'
+          'USN: ${e[1]}\r\n\r\n';
+      socket.send(pkt.codeUnits, InternetAddress('239.255.255.250'), 1900);
+    }
+    // byebye 后立刻补一轮 alive，让设备不真的从列表里消失（微信已收到
+    // byebye 会清投屏态；其他 App 几乎无感）
+    _notifyAlive();
+  }
+
   /// 清空当前投屏媒体：投屏结束（Stop/自动恢复）后调用，
   /// 这样发送端轮询 GetMediaInfo/GetPositionInfo 时看到无媒体，
   /// 即使 GENA 通知因跨网段发不出去，发送端也能知道投屏已结束

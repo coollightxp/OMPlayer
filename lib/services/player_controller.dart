@@ -765,9 +765,10 @@ class PlayerController extends ChangeNotifier {
     _watchPosMs = -1;
     _watchAdvanceAt = null;
     unawaited(CastStreamProxy.instance.stop());
-    // 清空 DLNA 服务端当前媒体：发送端轮询 GetMediaInfo 时看到无媒体，
-    // 即可知道投屏已结束，不再显示"已连接"。
-    dlnaService.clearCurrentMedia();
+    // 本机主动断开：清 DLNA 媒体 + 推 STOPPED + 终止订阅 + SSDP
+    // byebye 一轮——微信视频号不解析 GENA 事件、订阅不续订，只有
+    // 设备从 SSDP 消失 + 查询返回无媒体双管齐下才会清掉投屏 UI
+    dlnaService.kickCastClients();
     final restore = _preCastChannel;
     _preCastChannel = null;
     if (restore != null) {
