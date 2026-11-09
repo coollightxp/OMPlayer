@@ -1608,6 +1608,10 @@ class PlayerController extends ChangeNotifier {
 
     await _disposeVideoController();
 
+    // 等待释放期间用户已切新台（新代已接管）：本代直接作废，
+    // 不再做预检/建播放器，避免慢源迟到后与新台两路并存
+    if (gen != _playGeneration) return;
+
     // 频道声明的自定义 UA（M3U http-user-agent）：部分源（如 APTV）
     // 必须带指定 UA，否则返回 404/广告。fvp 经 ffmpeg 透传 HTTP 头。
     // 注意：不要给投屏 URL 主动补 UA/Referer——视频号 CDN 实测对
@@ -1658,6 +1662,11 @@ class PlayerController extends ChangeNotifier {
           ? VideoFormat.hls
           : (fmt == 'dash' ? VideoFormat.dash : null);
     }
+
+    // 慢源预检/代理等待期间用户已切新台：本代作废，不再创建播放器。
+    // 关键防并存点——否则迟到的旧代会覆盖 _videoController，出现
+    // 新台前播、旧台后台出声的双路直播
+    if (gen != _playGeneration) return;
 
     final c = VideoPlayerController.networkUrl(
       Uri.parse(streamUrl),
@@ -1915,10 +1924,18 @@ class PlayerController extends ChangeNotifier {
   /// 设置亮度 (0.0 - 1.0)
   Future<void> setBrightness(double value) async {
     _brightness = value.clamp(0.0, 1.0);
-    try {
-      await ScreenBrightness.instance
-          .setApplicationScreenBrightness(_brightness);
-    } catch (_) {}
+    // Windows 桌面（非网页）：原生亮度走 gamma ramp，台式机/外接显示器
+    // 普遍不支持（调了没反应）；改由播放页黑色遮罩压暗视频画面，
+    // 这里跳过原生接口避免双重压暗
+    final skipNative = !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.windows &&
+        !_webPageActive;
+    if (!skipNative) {
+      try {
+        await ScreenBrightness.instance
+            .setApplicationScreenBrightness(_brightness);
+      } catch (_) {}
+    }
     // 网页频道：WebView2 原生 HWND 不受系统亮度影响，用 CSS filter 调光
     if (_webPageActive) _applyWebBrightness();
     notifyListeners();

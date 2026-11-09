@@ -1,4 +1,5 @@
 import 'package:file_picker/file_picker.dart';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -44,6 +45,8 @@ Future<PlatformFile?> _pickLocalFileWithTopmostFix() async {
 /// 输入法（TSF）连接偶发失效——表现为无法键入字符、程序对按键不响应
 /// （系统相关，部分系统没有；其他 Flutter 程序同样存在）。
 /// 点击时先卸载焦点再延时补挂，强制重建 IME 连接，规避该引擎缺陷。
+/// 2026-11：Windows 10 1607（RS1）上 onTap 里 unfocus→延迟 re-focus 会
+/// 让应用挂起（AppHangB1，粘贴后点名称框触发），老系统不做该重连。
 class _ImeSafeTextField extends StatefulWidget {
   final TextEditingController controller;
   final InputDecoration? decoration;
@@ -62,6 +65,22 @@ class _ImeSafeTextField extends StatefulWidget {
 class _ImeSafeTextFieldState extends State<_ImeSafeTextField> {
   late final FocusNode _focus = FocusNode();
 
+  /// Win10 1607 及更老系统上，onTap 里 unfocus→延时 re-focus 的 IME 重连
+  /// 会让应用挂起（AppHangB1），老系统直接跳过该规避
+  static bool get _needsImeWorkaround {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.windows) {
+      return true; // 非 Windows：保持原行为（仅 Windows 有 IME 缺陷与挂起报告）
+    }
+    try {
+      final m =
+          RegExp(r'(\d+)\.(\d+)\.(\d+)').firstMatch(Platform.operatingSystemVersion);
+      final build = m != null ? int.tryParse(m.group(3) ?? '0') ?? 0 : 0;
+      return build >= 17763; // 1809 起才做重连；1607(build 14393) 跳过
+    } catch (_) {
+      return true;
+    }
+  }
+
   @override
   void dispose() {
     _focus.dispose();
@@ -75,12 +94,14 @@ class _ImeSafeTextFieldState extends State<_ImeSafeTextField> {
       focusNode: _focus,
       style: widget.style,
       decoration: widget.decoration,
-      onTap: () {
-        _focus.unfocus();
-        Future.delayed(const Duration(milliseconds: 30), () {
-          if (mounted && !_focus.hasFocus) _focus.requestFocus();
-        });
-      },
+      onTap: !_needsImeWorkaround
+          ? null
+          : () {
+              _focus.unfocus();
+              Future.delayed(const Duration(milliseconds: 30), () {
+                if (mounted && !_focus.hasFocus) _focus.requestFocus();
+              });
+            },
     );
   }
 }
@@ -488,7 +509,8 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                         controller: urlCtl,
                         style: const TextStyle(color: Colors.white),
                         decoration: _inputDecoration(
-                            type == PlaylistSourceType.url ? '直播源地址' : '本地文件路径'),
+                            type == PlaylistSourceType.url ? '直播源地址' : '本地文件路径',
+                            urlCtl),
                       ),
                     ),
                     if (type == PlaylistSourceType.local)
@@ -589,7 +611,8 @@ class _PlaylistTabState extends State<_PlaylistTab> {
                           decoration: _inputDecoration(
                               _type == PlaylistSourceType.url
                                   ? '直播源地址（M3U / TVBox TXT / PHP 等，自动识别）'
-                                  : '本地文件路径（任意类型，自动识别）'),
+                                  : '本地文件路径（任意类型，自动识别）',
+                              _urlController),
                         ),
                       ),
                       if (_type == PlaylistSourceType.local)
@@ -717,7 +740,7 @@ class _EpgTabState extends State<_EpgTab> {
             _ImeSafeTextField(
               controller: urlCtl,
               style: const TextStyle(color: Colors.white),
-              decoration: _inputDecoration('XMLTV EPG 地址 URL'),
+              decoration: _inputDecoration('XMLTV EPG 地址 URL', urlCtl),
             ),
           ],
         ),
@@ -773,7 +796,7 @@ class _EpgTabState extends State<_EpgTab> {
                     controller: _urlController,
                     style: const TextStyle(color: Colors.white),
                     decoration:
-                        _inputDecoration('XMLTV EPG 地址 URL'),
+                        _inputDecoration('XMLTV EPG 地址 URL', _urlController),
                   ),
                   const SizedBox(height: 8),
                   SizedBox(
@@ -1904,7 +1927,38 @@ Future<void> showRemoteAdminQrDialog(BuildContext context, String url) {
   );
 }
 
-InputDecoration _inputDecoration(String hint) {
+/// 地址输入框后缀的「粘贴」按钮：一键读取剪贴板填入
+/// （安卓端系统长按菜单被部分 ROM 阉割/不显眼，给个常驻按钮）
+class _PasteIconButton extends StatelessWidget {
+  final TextEditingController controller;
+
+  const _PasteIconButton(this.controller);
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      icon: const Icon(Icons.content_paste, size: 20),
+      tooltip: '粘贴',
+      color: Colors.white70,
+      visualDensity: VisualDensity.compact,
+      onPressed: () async {
+        final data = await Clipboard.getData(Clipboard.kTextPlain);
+        final text = data?.text?.trim();
+        if (text == null || text.isEmpty) {
+          OsdBus.show('剪贴板是空的', icon: Icons.content_paste_off);
+          return;
+        }
+        controller.text = text;
+        controller.selection =
+            TextSelection.collapsed(offset: text.length);
+        OsdBus.show('已粘贴', icon: Icons.content_paste);
+      },
+    );
+  }
+}
+
+InputDecoration _inputDecoration(String hint,
+    [TextEditingController? pasteTarget]) {
   return InputDecoration(
     hintText: hint,
     hintStyle: const TextStyle(color: Colors.white38),
@@ -1916,5 +1970,7 @@ InputDecoration _inputDecoration(String hint) {
     ),
     contentPadding:
         const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    suffixIcon:
+        pasteTarget == null ? null : _PasteIconButton(pasteTarget),
   );
 }

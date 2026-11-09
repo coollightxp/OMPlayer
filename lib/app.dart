@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 
 import 'services/player_controller.dart';
@@ -34,6 +35,15 @@ class OMPlayerApp extends StatelessWidget {
         builder: (context, controller, _) => MaterialApp(
           title: 'OMPlayer',
           debugShowCheckedModeBanner: false,
+          // 中文本地化：输入框长按菜单（粘贴/复制）等系统文案用中文，
+          // 否则 Android/Windows 上长按输入框弹出的都是英文
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+          locale: const Locale('zh', 'CN'),
           // 全局统一字体族须在 ThemeData 构造函数传入（copyWith 无此参数）
           theme: ThemeData(
             useMaterial3: true,

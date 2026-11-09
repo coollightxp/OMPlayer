@@ -127,11 +127,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.197';
+  static const String _appVersion = '1.0.198';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
   bool _exitDialogOpen = false;
+
+  // 投屏中「再按一次退出」的武装时间：第一次按返回/右键只提示不动作
+  DateTime? _castExitArmAt;
 
   /// 对话框内部 StatefulBuilder 的刷新句柄：遥控器 ←/→ 改焦点后
   /// 通过它只重建对话框（外层 setState 不会触发 showDialog 内容重建）
@@ -611,9 +614,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                                 : const SizedBox.shrink()),
                   ),
 
-                  // 亮度说明：不再使用全屏遮罩——它与 ScreenBrightness 的
-  // 原生亮度调节重复，且会让视频画面常驻一层灰蒙蒙；桌面（gamma ramp）与
-  // 安卓（系统亮度）统一走原生亮度，网页频道同理。
+                  // Windows 桌面亮度遮罩：原生 gamma ramp 在台式机/外接
+                  // 显示器上普遍无效（调了没反应），改为在视频层上压一层
+                  // 黑色遮罩调暗画面。仅内置播放；网页频道走 CSS filter，
+                  // 安卓/macOS 走系统亮度。IgnorePointer 不拦手势。
+                  if (!kIsWeb &&
+                      defaultTargetPlatform == TargetPlatform.windows &&
+                      !controller.webPageActive &&
+                      controller.brightness < 1.0)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: Container(
+                          color: Colors.black.withOpacity(
+                              (1.0 - controller.brightness) * 0.85),
+                        ),
+                      ),
+                    ),
 
                   // 切台 OSD（左上角序号/台名/节目名）
                   // 放在手势层与各面板【之下】：面板滑出时盖住它，
@@ -907,8 +923,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       return;
     }
     if (c.isCasting) {
-      // v1.0.98 已有的标准投屏停止/恢复逻辑
-      await c.stopCastAndRestore();
+      // 投屏中按返回/右键：第一次只提示，2 秒内再按才真正断开，防误触
+      final now = DateTime.now();
+      if (_castExitArmAt != null &&
+          now.difference(_castExitArmAt!) < const Duration(seconds: 2)) {
+        _castExitArmAt = null;
+        await c.stopCastAndRestore();
+      } else {
+        _castExitArmAt = now;
+        OsdBus.show('再按一次退出投屏', icon: Icons.cast_connected);
+      }
       return;
     }
     if (_leftDrawerOpen) {
