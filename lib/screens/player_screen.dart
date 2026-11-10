@@ -127,7 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.200';
+  static const String _appVersion = '1.0.201';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -336,12 +336,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   }
 
   /// 网页频道内由 JS 转发来的按键（焦点在 WebView 时 Flutter
-  /// 收不到键盘消息）：d0-d9 数字选台，fullscreen 切换全屏
+  /// 收不到键盘消息）：d0-d9 数字选台，fullscreen 切换全屏，
+  /// back = 网页内鼠标右键（右键菜单已屏蔽，改为与返回键同效）
   void _onWebKey(String key) {
     if (_settingsOpen) return;
     if (key.startsWith('d')) {
       final n = int.tryParse(key.substring(1));
       if (n != null) _onNumberKey(n);
+    } else if (key == 'back') {
+      _handleBackPressed();
     } else if (key == 'fullscreen') {
       context.read<PlayerController>().toggleFullscreen();
     } else if (key == 'exitfullscreen') {
@@ -950,11 +953,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
       setState(() => _bottomPanelVisible = false);
       return;
     }
-    // 点播尚未加载出画面时按返回：什么都不做，避免把全屏窗口缩小
-    // 或误判为「退出播放器」。用户想退出请在播放中再按返回
-    if (c.state == PlayerState.loading) {
-      return;
-    }
+    // 缓冲中（内置播放器 loading / 网页起播阶段）同样允许呼出退出卡片：
+    // 此时画面还没出来，但用户按返回/右键就是想退出，不能吞掉按键
     // 全屏下无其他面板时：直接弹退出确认，不先退回小窗
     //
     // 无任何可关闭项：退出前确认，避免误触
@@ -3140,17 +3140,53 @@ class _WebChannelOverlayState extends State<_WebChannelOverlay> {
   }
 
   /// 禁用网页右键菜单（<video> 默认的“循环/复制视频地址/另存”等菜单
-  /// 不该出现在播放应用里）。捕获阶段拦截 contextmenu，并对所有
-  /// 同源 iframe 递归挂载；MutationObserver 处理后续动态插入的 iframe。
+  /// 不该出现在播放应用里），并把右键改为与返回键同效（呼出退出卡片）。
+  /// 捕获阶段拦截 contextmenu，对所有同源 iframe 递归挂载；
+  /// MutationObserver 处理后续动态插入的 iframe。
   /// 幂等：顶层与各文档各自打 __omNoCtx 标记，可重复注入。
   static const String _noContextMenuJs = r'''
 (function(){
-  function kill(e){ try { e.preventDefault(); e.stopImmediatePropagation(); } catch(_){} }
+  function back(){
+    try{
+      // 只在顶层调用 bridge：iframe 统一向父文档转发，避免一次右键
+      // 在父子文档各触发一次返回（关一层面板又弹一次退出卡片）
+      if(window.top!==window)return false;
+      if(window.flutter_inappwebview&&window.flutter_inappwebview.callHandler){
+        window.flutter_inappwebview.callHandler('omKey','back');
+        return true;
+      }
+    }catch(e){}
+    return false;
+  }
+  function up(){
+    try{
+      if(window.parent&&window.parent!==window){
+        window.parent.postMessage('__omBack','*');
+        return true;
+      }
+    }catch(e){}
+    return false;
+  }
+  function kill(e){
+    try { e.preventDefault(); e.stopImmediatePropagation(); } catch(_){}
+    if(back())return;
+    up();
+  }
   function bindDoc(d){
     try {
       if (!d || d.__omNoCtx) return;
       d.__omNoCtx = true;
       d.addEventListener('contextmenu', kill, true);
+      // iframe 内没有 JS bridge：向父文档转发，由有 bridge 的顶层调用
+      var w = d.defaultView;
+      if (w && !w.__omBackMsg) {
+        w.__omBackMsg = true;
+        w.addEventListener('message', function(ev){
+          try {
+            if (ev && ev.data === '__omBack' && !back()) up();
+          } catch(_){}
+        }, false);
+      }
       bindFrames(d);
     } catch(e) {}
   }

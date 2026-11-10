@@ -574,6 +574,9 @@ class PlayerController extends ChangeNotifier {
         'alwaysOnTop': s.alwaysOnTop,
         'autoPlayNext': s.autoPlayNext,
         'autoReloadStall': s.autoReloadStall,
+        'retryTimes': s.retryTimes,
+        'castEndWaitSeconds': s.castEndWaitSeconds,
+        'webEnabled': s.webEnabled,
         'startFullscreen': s.startFullscreen,
         'launchAtStartup': s.launchAtStartup,
         'uiScale': s.uiScale,
@@ -636,10 +639,22 @@ class PlayerController extends ChangeNotifier {
       final dlna = rb('dlnaEnabled') ?? cur.dlnaEnabled;
       final autoPlayNext = rb('autoPlayNext') ?? cur.autoPlayNext;
       final autoReloadStall = rb('autoReloadStall') ?? cur.autoReloadStall;
+      final webEnabled = rb('webEnabled') ?? cur.webEnabled;
       final uiScaleAuto = rb('uiScaleAuto') ?? cur.uiScaleAuto;
       double uiScale = cur.uiScale;
       if (rawSettings['uiScale'] is num) {
         uiScale = (rawSettings['uiScale'] as num).toDouble().clamp(0.8, 3.0);
+      }
+      // 数值型选项：只接受界面提供的档位，防止旧/异常页面写入非法值
+      int retryTimes = cur.retryTimes;
+      final rt = rawSettings['retryTimes'];
+      if (rt is num && const {3, 5, 10}.contains(rt.toInt())) {
+        retryTimes = rt.toInt();
+      }
+      int castEndWait = cur.castEndWaitSeconds;
+      final ce = rawSettings['castEndWaitSeconds'];
+      if (ce is num && const {-1, 0, 5, 30}.contains(ce.toInt())) {
+        castEndWait = ce.toInt();
       }
       final startFullscreen = rb('startFullscreen') ?? cur.startFullscreen;
       final alwaysOnTop =
@@ -650,6 +665,9 @@ class PlayerController extends ChangeNotifier {
       if (dlna != cur.dlnaEnabled ||
           autoPlayNext != cur.autoPlayNext ||
           autoReloadStall != cur.autoReloadStall ||
+          webEnabled != cur.webEnabled ||
+          retryTimes != cur.retryTimes ||
+          castEndWait != cur.castEndWaitSeconds ||
           uiScaleAuto != cur.uiScaleAuto ||
           uiScale != cur.uiScale ||
           startFullscreen != cur.startFullscreen ||
@@ -659,6 +677,9 @@ class PlayerController extends ChangeNotifier {
           dlnaEnabled: dlna,
           autoPlayNext: autoPlayNext,
           autoReloadStall: autoReloadStall,
+          webEnabled: webEnabled,
+          retryTimes: retryTimes,
+          castEndWaitSeconds: castEndWait,
           uiScaleAuto: uiScaleAuto,
           uiScale: uiScale,
           startFullscreen: startFullscreen,

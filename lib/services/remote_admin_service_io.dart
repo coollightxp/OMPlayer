@@ -475,6 +475,7 @@ function settingDefs(){
     ['showClock','显示时间','右上角常驻显示系统时钟',false],
     ['autoPlayNext','自动播放下一台','当前频道播放结束后自动切到下一台',false],
     ['autoReloadStall','失败自动重载','直播流播放失败自动重试、网页频道卡死自动重载；次数用尽提示链接失效',false],
+    ['webEnabled','网页直播支持','允许网页频道（webview:// 源）用内置浏览器播放',false],
     ['dlnaEnabled','DLNA 投屏接收','允许手机或其它设备投屏到本机',false],
     ['startFullscreen','启动即全屏','程序启动后直接进入全屏',true],
     ['alwaysOnTop','窗口置顶','保持播放器窗口始终在最前',true],
@@ -525,6 +526,23 @@ function renderSettings(){
       +'<div class="sw-sub">'+d[2]+'</div></div>'
       +'<div class="sw-track'+(on?' on':'')+'"><div class="sw-thumb"></div></div></div>';
   }
+  // 自动重试次数：3/5/10 次（与设备端「系统设置」一致）
+  var rt=typeof s.retryTimes==='number'?s.retryTimes:3;
+  html+='<div class="sw-row col"><div class="sw-text">'
+    +'<div class="sw-title">自动重试次数</div>'
+    +'<div class="sw-sub">每个频道连续失败达到次数后判定链接失效</div></div>'
+    +'<div class="seg" style="margin-top:10px">'
+    +[3,5,10].map(function(v){return '<button class="'+(rt===v?'on':'')+'" onclick="setChoice(\'retryTimes\','+v+')">'+v+' 次</button>'}).join('')
+    +'</div></div>';
+  // 投屏点播播完后：立即回直播 / 等 N 秒连播 / 一直等待
+  var ce=typeof s.castEndWaitSeconds==='number'?s.castEndWaitSeconds:5;
+  var ceOpts=[[0,'立即'],[5,'5 秒'],[30,'30 秒'],[-1,'一直等']];
+  html+='<div class="sw-row col"><div class="sw-text">'
+    +'<div class="sw-title">投屏播完后</div>'
+    +'<div class="sw-sub">等待期间发送端连播（下一集）可直接继续；「一直等」不返回直播</div></div>'
+    +'<div class="seg" style="margin-top:10px">'
+    +ceOpts.map(function(o){return '<button class="'+(ce===o[0]?'on':'')+'" onclick="setChoice(\'castEndWaitSeconds\','+o[0]+')">'+o[1]+'</button>'}).join('')
+    +'</div></div>';
   // 界面缩放：开启自动适配时按屏幕宽度算字号，关闭后才出现手动滑块
   html+='<div class="group-title">显示</div>';
   var autoOn=s.uiScaleAuto!==false;
@@ -565,6 +583,11 @@ function toggleSetting(key){
     render();
     toast('已'+(state.settings[key]?'开启':'关闭'));
   });
+}
+function setChoice(key,val){
+  if(!state.settings)state.settings={};
+  state.settings[key]=val;
+  persist().then(function(){render();toast('已保存')});
 }
 function setType(t){
   editType=t;
