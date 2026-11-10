@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart'
@@ -151,6 +152,8 @@ class _SettingsPanelState extends State<SettingsPanel>
     _tabController.addListener(_onTabIndexChanged);
     // 上下方向键统一由面板自己接管（见 _onVerticalKey）
     HardwareKeyboard.instance.addHandler(_onVerticalKey);
+    // 安卓端：开始采样剪贴板（粘贴按钮弹出历史供选择）
+    if (_showPasteButton) _ClipHistory.ensureWatching();
   }
 
   @override
@@ -213,6 +216,15 @@ class _SettingsPanelState extends State<SettingsPanel>
     final key = event.logicalKey;
     final isUp = key == LogicalKeyboardKey.arrowUp;
     if (!isUp && key != LogicalKeyboardKey.arrowDown) return false;
+
+    // 焦点在输入框内时放行：输入法（尤其是中文）用上下键选候选词，
+    // 面板不能在这里抢焦点切控件——否则选词过程被中断，老系统
+    // （Win10 1607）上还会出现输入框无响应（AppHangB1）
+    final focusCtx = FocusManager.instance.primaryFocus?.context;
+    if (focusCtx != null &&
+        focusCtx.findAncestorWidgetOfExactType<EditableText>() != null) {
+      return false;
+    }
 
     // 面板内所有可聚焦节点的树顺序（页签栏在最前，内容自上而下）
     final stops = <FocusNode>[];
@@ -1929,32 +1941,102 @@ Future<void> showRemoteAdminQrDialog(BuildContext context, String url) {
   );
 }
 
-/// 地址输入框后缀的「粘贴」按钮：一键读取剪贴板填入
-/// （安卓端系统长按菜单被部分 ROM 阉割/不显眼，给个常驻按钮）
+/// 是否显示地址输入框后缀的「剪贴板」按钮。
+/// 仅安卓端需要：系统长按菜单在没有输入法（电视盒子/部分 ROM）时
+/// 弹不出来，给一个常驻按钮。桌面端右键菜单够用，不加按钮。
+bool get _showPasteButton =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+/// 应用内剪贴板历史：Flutter 读不到系统剪贴板历史，只能在前台
+/// 周期性采样，记录最近复制过的文本，供粘贴按钮弹出选择
+class _ClipHistory {
+  static final List<String> items = <String>[];
+  static Timer? _timer;
+  static String? _last;
+
+  static void ensureWatching() {
+    if (_timer != null) return;
+    _timer = Timer.periodic(
+        const Duration(milliseconds: 1500), (_) => _sample());
+    _sample();
+  }
+
+  static Future<void> _sample() async {
+    try {
+      final d = await Clipboard.getData(Clipboard.kTextPlain);
+      final t = d?.text?.trim();
+      if (t == null || t.isEmpty || t == _last) return;
+      _last = t;
+      items.remove(t);
+      items.insert(0, t);
+      if (items.length > 20) items.removeRange(20, items.length);
+    } catch (_) {}
+  }
+
+  static Future<void> sampleNow() => _sample();
+}
+
+/// 地址输入框后缀的「剪贴板」按钮：弹出最近复制过的文本，点选后填入
 class _PasteIconButton extends StatelessWidget {
   final TextEditingController controller;
 
   const _PasteIconButton(this.controller);
 
+  Future<void> _open(BuildContext context) async {
+    await _ClipHistory.sampleNow();
+    final list = List<String>.from(_ClipHistory.items);
+    if (list.isEmpty) {
+      OsdBus.show('剪贴板是空的', icon: Icons.content_paste_off);
+      return;
+    }
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('从剪贴板选择'),
+        content: SizedBox(
+          width: 460,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 360),
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: list.length,
+              separatorBuilder: (_, __) =>
+                  const Divider(color: Colors.white12, height: 1),
+              itemBuilder: (_, i) => ListTile(
+                dense: true,
+                title: Text(
+                  list[i],
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white),
+                ),
+                onTap: () => Navigator.pop(ctx, list[i]),
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    controller.text = picked;
+    controller.selection = TextSelection.collapsed(offset: picked.length);
+    OsdBus.show('已粘贴', icon: Icons.content_paste);
+  }
+
   @override
   Widget build(BuildContext context) {
     return IconButton(
       icon: const Icon(Icons.content_paste, size: 20),
-      tooltip: '粘贴',
+      tooltip: '剪贴板',
       color: Colors.white70,
       visualDensity: VisualDensity.compact,
-      onPressed: () async {
-        final data = await Clipboard.getData(Clipboard.kTextPlain);
-        final text = data?.text?.trim();
-        if (text == null || text.isEmpty) {
-          OsdBus.show('剪贴板是空的', icon: Icons.content_paste_off);
-          return;
-        }
-        controller.text = text;
-        controller.selection =
-            TextSelection.collapsed(offset: text.length);
-        OsdBus.show('已粘贴', icon: Icons.content_paste);
-      },
+      onPressed: () => _open(context),
     );
   }
 }
@@ -1972,7 +2054,9 @@ InputDecoration _inputDecoration(String hint,
     ),
     contentPadding:
         const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-    suffixIcon:
-        pasteTarget == null ? null : _PasteIconButton(pasteTarget),
+    // 剪贴板按钮仅安卓端显示（桌面端用右键菜单）
+    suffixIcon: (pasteTarget == null || !_showPasteButton)
+        ? null
+        : _PasteIconButton(pasteTarget),
   );
 }

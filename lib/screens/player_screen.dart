@@ -127,7 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
   IconData _msgOsdIcon = Icons.info_outline;
 
   // 退出确认面板展示的应用版本（与 pubspec.yaml version 前半保持一致）
-  static const String _appVersion = '1.0.198';
+  static const String _appVersion = '1.0.199';
 
   // 退出确认对话框的遥控器友好句柄：左右键移动焦点，OK 确认当前按钮
   int _exitDialogFocusIndex = 0; // 0=返回（其余项按 _exitOptions 顺序）
@@ -795,10 +795,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WindowListener {
                       },
                     ),
 
-                  // 鼠标右键 = 遥控器返回：按层级关闭 设置→投屏→抽屉→面板，
+                  // 鼠标右键 = 遥控器返回：按层级关闭 投屏→抽屉→面板，
                   // 再按弹退出确认（网页频道前台时右键被 WebView 消费，
-                  // 网页区内不触发；网页菜单已在 JS 层禁用）
-                  if (controller.isDesktop && !mini)
+                  // 网页区内不触发；网页菜单已在 JS 层禁用）。
+                  // 设置面板打开时不拦截：输入框里右键要能弹「全选/复制/
+                  // 粘贴」系统菜单，不能被当成返回。
+                  if (controller.isDesktop && !mini && !_settingsOpen)
                     Positioned.fill(
                       child: GestureDetector(
                         behavior: HitTestBehavior.translucent,
