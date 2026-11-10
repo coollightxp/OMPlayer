@@ -1701,12 +1701,17 @@ class PlayerController extends ChangeNotifier {
         c.removeListener(closure);
       } catch (_) {}
       // 必须真正释放：只移除监听会泄漏整个 native 播放器。
-      // 若新代已先行 dispose 过该实例，这里重复操作的异常被吞掉即可。
-      c.pause().timeout(const Duration(seconds: 1)).then((_) {},
-          onError: (_) {});
-      c.dispose().timeout(const Duration(seconds: 3)).then((_) {},
-          onError: (_) {
-        _orphanControllers.add(c);
+      // 注意必须串行且不并发：fvp 对同一播放器同时调 pause/dispose
+      // 会直接崩溃（0xc0000409，快速切台时旧代迟到即命中此路径）
+      Future<void>(() async {
+        try {
+          await c.pause().timeout(const Duration(seconds: 1));
+        } catch (_) {
+          return; // 内核卡死：不再触碰该实例
+        }
+        try {
+          await c.dispose().timeout(const Duration(seconds: 3));
+        } catch (_) {}
       });
     }
 
@@ -3111,35 +3116,44 @@ class PlayerController extends ChangeNotifier {
         } catch (_) {}
       }
       // 先暂停：即使后续 dispose 在内核卡死时超时放弃，孤儿实例也
-      // 不会继续播放出声（双声音防线）。pause 本身可能挂，限时 1 秒
+      // 不会继续播放出声（双声音防线）。pause 本身可能挂，限时 2 秒。
+      //
+      // 关键：超时后底层 pause 仍在执行，此时绝不能再发 dispose——
+      // fvp 对同一 native 播放器的并发调用会直接崩（0xc0000409，
+      // 实测 4K 高码率台切台时 pause 超过 1 秒，随后 dispose 并发释放）
+      var paused = false;
       try {
-        await c.pause().timeout(const Duration(seconds: 1));
+        await c.pause().timeout(const Duration(seconds: 2));
+        paused = true;
       } catch (_) {}
+      if (!paused) {
+        // 内核已卡死：不再触碰该实例（交给进程回收），保证后续起播不被拖住
+        return;
+      }
       try {
-        // 播放器卡死时 native dispose 也可能挂起：最多等 3 秒，
-        // 超时就放弃该实例，绝不能阻塞后续播放（重试按钮"没反应"的防线）
         await c.dispose().timeout(const Duration(seconds: 3));
+      } on TimeoutException {
+        // 底层释放仍在进行：不重复 dispose（并发释放同一实例会崩溃），
+        // 也不再登记重试，直接放弃该实例
       } catch (_) {
-        // dispose 挂起：登记为孤儿，下次播放前再次尝试释放，
-        // 避免 native 实例永久泄漏
+        // 明确失败（非超时）：登记孤儿，下次播放前再释放一次
         _orphanControllers.add(c);
       }
     }
   }
 
-  /// dispose 超时挂起的孤儿控制器：不阻塞当前流程，后续重试释放
-  final List<VideoPlayerController> _orphanControllers = [];
+  /// dispose 明确失败的控制器：不阻塞当前流程，后续单次重试释放。
+  /// 用 Set 防重复——同一实例两次 native dispose 并发会崩溃
+  final Set<VideoPlayerController> _orphanControllers = <VideoPlayerController>{};
 
   void _retryOrphanDispose() {
     if (_orphanControllers.isEmpty) return;
     final list = List<VideoPlayerController>.from(_orphanControllers);
     _orphanControllers.clear();
     for (final c in list) {
-      c.dispose().timeout(const Duration(seconds: 2)).then((_) {
-        // 释放成功
-      }, onError: (_) {
-        _orphanControllers.add(c); // 仍失败：留待下轮
-      });
+      // 只调一次：失败也不再放回（重复调用可能与其在途的释放并发）
+      c.dispose().timeout(const Duration(seconds: 8)).then((_) {},
+          onError: (_) {});
     }
   }
 
