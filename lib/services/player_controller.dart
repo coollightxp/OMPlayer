@@ -1676,11 +1676,14 @@ class PlayerController extends ChangeNotifier {
       // fvp 不会设置 avio.headers，与不传等价
       httpHeaders: headers,
     );
-    _videoController = c;
     // 闭包绑定实例身份：迟到的旧 controller 事件不得读取/修改全局状态
     final closure = () => _onVideoListener(c);
-    _videoListenerClosure = closure;
     c.addListener(closure);
+    // 关键：initialize 完成前绝不能把 c 挂到 _videoController。
+    // 4K 等高码率台 initialize 很慢，用户此时切台会进入
+    // _disposeVideoController，对仍在初始化的实例调 pause/dispose，
+    // 与 fvp 原生初始化并发 → flutter_windows.dll 0xc0000409 崩溃
+    // （实测必现：浙江卫视 4K → 湖南卫视）
 
     // 起播超时：
     // - 普通频道按用户设置（默认 5 秒，超时自动切下一个源）
@@ -1722,6 +1725,10 @@ class PlayerController extends ChangeNotifier {
         discardLate();
         return;
       }
+      // initialize 完成、代际仍有效：此时才接管为当前播放器，
+      // 后续切台对它的释放不会与初始化并发
+      _videoController = c;
+      _videoListenerClosure = closure;
       await c.setLooping(false);
       await c.play();
       await WakelockPlus.enable();
@@ -1745,6 +1752,9 @@ class PlayerController extends ChangeNotifier {
         discardLate();
         return;
       }
+      // initialize 超时只是 Dart 侧放弃等待，底层初始化/解码仍在进行。
+      // 此时绝不能 pause/dispose——与在途初始化并发会让 fvp 直接崩溃
+      // （0xc0000409）。该实例既不接管也不释放，任其自然结束
       debugPrint('源 ${_sourceIndex + 1}/$sourceCount 初始化超时');
       if (_isCasting) {
         // 投屏首拉偶发"音频已通、视频尺寸迟迟不上报"导致 initialize 超时：
@@ -1777,6 +1787,8 @@ class PlayerController extends ChangeNotifier {
         discardLate();
         return;
       }
+      // initialize 抛错（非超时）：实例已结束，可安全释放，避免泄漏
+      if (!identical(c, _videoController)) discardLate();
       debugPrint('源 ${_sourceIndex + 1}/$sourceCount 播放失败: $e');
       // 自动尝试下一个源
       if (hasNextSource) {
